@@ -15,8 +15,9 @@ def test_reader_returns_none_on_clean_eof() -> None:
 
 
 def test_missing_content_length_is_rejected() -> None:
+    data = b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n{}"
     with pytest.raises(FramingError, match="missing Content-Length"):
-        MessageReader(BytesIO(b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n{}")) .read()
+        MessageReader(BytesIO(data)).read()
 
 
 def test_duplicate_content_length_is_rejected() -> None:
@@ -32,7 +33,7 @@ def test_oversized_message_is_rejected_before_payload_read() -> None:
 
 def test_truncated_payload_is_rejected() -> None:
     with pytest.raises(FramingError, match="unexpected EOF"):
-        MessageReader(BytesIO(b"Content-Length: 4\r\n\r\n{}")) .read()
+        MessageReader(BytesIO(b"Content-Length: 4\r\n\r\n{}")).read()
 
 
 def test_non_object_jsonrpc_payload_is_rejected() -> None:
