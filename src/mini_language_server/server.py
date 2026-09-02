@@ -30,7 +30,6 @@ class LanguageServer:
             return self._error(request_id, -32600, "Invalid Request") if is_request else None
 
         method = message["method"]
-        params = message.get("params")
 
         if method == "exit":
             self.exit_code = 0 if self.state is ServerState.SHUTDOWN else 1
@@ -57,7 +56,9 @@ class LanguageServer:
             )
 
         if method == "initialize":
-            return self._error(request_id, -32600, "Initialize request already received") if is_request else None
+            if is_request:
+                return self._error(request_id, -32600, "Initialize request already received")
+            return None
 
         if method == "shutdown":
             if not is_request:
