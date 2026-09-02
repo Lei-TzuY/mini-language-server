@@ -37,6 +37,125 @@ def test_replace_rejects_duplicate_or_stale_version(version: int) -> None:
     assert store.get("file:///a.nova").text == "current"
 
 
+def test_incremental_changes_are_applied_sequentially() -> None:
+    store = DocumentStore()
+    uri = "file:///a.nova"
+    store.open(uri=uri, language_id="nova", version=1, text="alpha\nbeta\n")
+
+    updated = store.apply_changes(
+        uri=uri,
+        version=2,
+        changes=[
+            {
+                "range": {
+                    "start": {"line": 0, "character": 5},
+                    "end": {"line": 0, "character": 5},
+                },
+                "text": "!",
+            },
+            {
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 1, "character": 4},
+                },
+                "text": "BETA",
+            },
+        ],
+    )
+
+    assert updated.version == 2
+    assert updated.text == "alpha!\nBETA\n"
+
+
+def test_incremental_positions_use_utf16_code_units() -> None:
+    store = DocumentStore()
+    uri = "file:///emoji.nova"
+    store.open(uri=uri, language_id="nova", version=1, text="a😀b\n")
+
+    updated = store.apply_changes(
+        uri=uri,
+        version=2,
+        changes=[
+            {
+                "range": {
+                    "start": {"line": 0, "character": 1},
+                    "end": {"line": 0, "character": 3},
+                },
+                "text": "X",
+            }
+        ],
+    )
+
+    assert updated.text == "aXb\n"
+
+
+def test_incremental_change_rejects_surrogate_split_without_commit() -> None:
+    store = DocumentStore()
+    uri = "file:///emoji.nova"
+    original = store.open(uri=uri, language_id="nova", version=1, text="a😀b")
+
+    with pytest.raises(DocumentError, match="surrogate pair"):
+        store.apply_changes(
+            uri=uri,
+            version=2,
+            changes=[
+                {
+                    "range": {
+                        "start": {"line": 0, "character": 2},
+                        "end": {"line": 0, "character": 3},
+                    },
+                    "text": "X",
+                }
+            ],
+        )
+
+    assert store.get(uri) == original
+
+
+def test_multiple_changes_are_atomic_when_later_range_is_invalid() -> None:
+    store = DocumentStore()
+    uri = "file:///a.nova"
+    original = store.open(uri=uri, language_id="nova", version=1, text="abc")
+
+    with pytest.raises(DocumentError, match="outside the line"):
+        store.apply_changes(
+            uri=uri,
+            version=2,
+            changes=[
+                {
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 1},
+                    },
+                    "text": "z",
+                },
+                {
+                    "range": {
+                        "start": {"line": 0, "character": 99},
+                        "end": {"line": 0, "character": 99},
+                    },
+                    "text": "!",
+                },
+            ],
+        )
+
+    assert store.get(uri) == original
+
+
+def test_full_replacement_can_appear_in_content_change_batch() -> None:
+    store = DocumentStore()
+    uri = "file:///a.nova"
+    store.open(uri=uri, language_id="nova", version=1, text="old")
+
+    updated = store.apply_changes(
+        uri=uri,
+        version=2,
+        changes=[{"text": "new"}],
+    )
+
+    assert updated.text == "new"
+
+
 def test_close_removes_snapshot() -> None:
     store = DocumentStore()
     store.open(uri="file:///a.nova", language_id="nova", version=1, text="x")
