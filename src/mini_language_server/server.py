@@ -5,6 +5,7 @@ from __future__ import annotations
 from enum import Enum, auto
 from typing import Any
 
+from .documents import DocumentError, DocumentStore
 from .protocol import JsonRpcError
 
 
@@ -16,11 +17,12 @@ class ServerState(Enum):
 
 
 class LanguageServer:
-    """Handle the protocol lifecycle without binding to any language frontend."""
+    """Handle protocol lifecycle and versioned document notifications."""
 
     def __init__(self) -> None:
         self.state = ServerState.PRE_INITIALIZE
         self.exit_code: int | None = None
+        self.documents = DocumentStore()
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         request_id = message.get("id")
@@ -50,7 +52,7 @@ class LanguageServer:
             return self._result(
                 request_id,
                 {
-                    "capabilities": {},
+                    "capabilities": {"textDocumentSync": 1},
                     "serverInfo": {"name": "mini-language-server", "version": "0.1.0"},
                 },
             )
@@ -74,9 +76,52 @@ class LanguageServer:
         if method == "initialized":
             return None
 
+        if not is_request and method.startswith("textDocument/"):
+            self._handle_document_notification(method, message.get("params"))
+            return None
+
         if is_request:
             return self._error(request_id, -32601, "Method not found")
         return None
+
+    def _handle_document_notification(self, method: str, params: Any) -> None:
+        if not isinstance(params, dict):
+            return
+        try:
+            if method == "textDocument/didOpen":
+                text_document = params.get("textDocument")
+                if not isinstance(text_document, dict):
+                    return
+                self.documents.open(
+                    uri=text_document.get("uri"),
+                    language_id=text_document.get("languageId"),
+                    version=text_document.get("version"),
+                    text=text_document.get("text"),
+                )
+            elif method == "textDocument/didChange":
+                text_document = params.get("textDocument")
+                changes = params.get("contentChanges")
+                if not isinstance(text_document, dict) or not isinstance(changes, list):
+                    return
+                if len(changes) != 1 or not isinstance(changes[0], dict):
+                    return
+                change = changes[0]
+                if "range" in change:
+                    return
+                self.documents.replace(
+                    uri=text_document.get("uri"),
+                    version=text_document.get("version"),
+                    text=change.get("text"),
+                )
+            elif method == "textDocument/didClose":
+                text_document = params.get("textDocument")
+                if not isinstance(text_document, dict):
+                    return
+                uri = text_document.get("uri")
+                if isinstance(uri, str):
+                    self.documents.close(uri)
+        except DocumentError:
+            return
 
     @staticmethod
     def _result(request_id: Any, result: Any) -> dict[str, Any]:
