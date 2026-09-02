@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 class DocumentError(ValueError):
@@ -39,17 +40,38 @@ class DocumentStore:
         return document
 
     def replace(self, *, uri: str, version: int, text: str) -> Document:
-        current = self._documents.get(uri)
-        if current is None:
-            raise DocumentError(f"document is not open: {uri}")
-        if not isinstance(version, int) or isinstance(version, bool):
-            raise DocumentError("document version must be an integer")
-        if version <= current.version:
-            raise DocumentError(
-                f"stale document version for {uri}: {version} <= {current.version}"
-            )
+        current = self._require_newer(uri, version)
         if not isinstance(text, str):
             raise DocumentError("document text must be a string")
+        document = Document(uri, current.language_id, version, text)
+        self._documents[uri] = document
+        return document
+
+    def apply_changes(
+        self, *, uri: str, version: int, changes: list[dict[str, Any]]
+    ) -> Document:
+        """Apply LSP content changes sequentially, committing only if all are valid."""
+        current = self._require_newer(uri, version)
+        if not changes:
+            raise DocumentError("content changes must not be empty")
+
+        text = current.text
+        for change in changes:
+            if not isinstance(change, dict) or not isinstance(change.get("text"), str):
+                raise DocumentError("each content change must contain string text")
+            replacement = change["text"]
+            if "range" not in change:
+                text = replacement
+                continue
+            range_ = change["range"]
+            if not isinstance(range_, dict):
+                raise DocumentError("change range must be an object")
+            start = self._position_to_offset(text, range_.get("start"))
+            end = self._position_to_offset(text, range_.get("end"))
+            if start > end:
+                raise DocumentError("change range start is after end")
+            text = text[:start] + replacement + text[end:]
+
         document = Document(uri, current.language_id, version, text)
         self._documents[uri] = document
         return document
@@ -59,6 +81,60 @@ class DocumentStore:
             return self._documents.pop(uri)
         except KeyError as exc:
             raise DocumentError(f"document is not open: {uri}") from exc
+
+    def _require_newer(self, uri: str, version: int) -> Document:
+        current = self._documents.get(uri)
+        if current is None:
+            raise DocumentError(f"document is not open: {uri}")
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise DocumentError("document version must be an integer")
+        if version <= current.version:
+            raise DocumentError(
+                f"stale document version for {uri}: {version} <= {current.version}"
+            )
+        return current
+
+    @staticmethod
+    def _position_to_offset(text: str, position: Any) -> int:
+        if not isinstance(position, dict):
+            raise DocumentError("position must be an object")
+        line = position.get("line")
+        character = position.get("character")
+        if (
+            not isinstance(line, int)
+            or isinstance(line, bool)
+            or line < 0
+            or not isinstance(character, int)
+            or isinstance(character, bool)
+            or character < 0
+        ):
+            raise DocumentError("position line and character must be non-negative integers")
+
+        lines = text.splitlines(keepends=True)
+        if line >= len(lines):
+            if line == 0 and not lines:
+                line_text = ""
+                line_start = 0
+            elif line == len(lines) and text.endswith(("\n", "\r")):
+                line_text = ""
+                line_start = len(text)
+            else:
+                raise DocumentError("position line is outside the document")
+        else:
+            line_start = sum(len(part) for part in lines[:line])
+            line_text = lines[line].rstrip("\r\n")
+
+        utf16_units = 0
+        for index, char in enumerate(line_text):
+            if utf16_units == character:
+                return line_start + index
+            units = 2 if ord(char) > 0xFFFF else 1
+            if utf16_units < character < utf16_units + units:
+                raise DocumentError("position splits a UTF-16 surrogate pair")
+            utf16_units += units
+        if utf16_units == character:
+            return line_start + len(line_text)
+        raise DocumentError("position character is outside the line")
 
     @staticmethod
     def _snapshot(uri: str, language_id: str, version: int, text: str) -> Document:
