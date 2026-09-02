@@ -52,7 +52,7 @@ class LanguageServer:
             return self._result(
                 request_id,
                 {
-                    "capabilities": {"textDocumentSync": 1},
+                    "capabilities": {"textDocumentSync": 2},
                     "serverInfo": {"name": "mini-language-server", "version": "0.1.0"},
                 },
             )
@@ -103,15 +103,10 @@ class LanguageServer:
                 changes = params.get("contentChanges")
                 if not isinstance(text_document, dict) or not isinstance(changes, list):
                     return
-                if len(changes) != 1 or not isinstance(changes[0], dict):
-                    return
-                change = changes[0]
-                if "range" in change:
-                    return
-                self.documents.replace(
+                self.documents.apply_changes(
                     uri=text_document.get("uri"),
                     version=text_document.get("version"),
-                    text=change.get("text"),
+                    changes=changes,
                 )
             elif method == "textDocument/didClose":
                 text_document = params.get("textDocument")
