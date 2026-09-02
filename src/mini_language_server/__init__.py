@@ -3,6 +3,7 @@
 from .documents import Document, DocumentError, DocumentStore
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
 from .server import LanguageServer, ServerState
+from .source import Position, SourceError, SourceText, Span
 
 __all__ = [
     "Document",
@@ -12,6 +13,10 @@ __all__ = [
     "JsonRpcError",
     "LanguageServer",
     "MessageReader",
+    "Position",
     "ServerState",
+    "SourceError",
+    "SourceText",
+    "Span",
     "encode_message",
 ]
