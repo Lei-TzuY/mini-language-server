@@ -7,6 +7,10 @@ from typing import Any
 
 from .documents import DocumentError, DocumentStore
 from .protocol import JsonRpcError
+from .semantic import SemanticDatabase, SemanticSnapshot
+from .source import Position, SourceError, SourceText, Span
+from .symbols import SymbolIndex
+from .syntax import SyntaxStore
 
 
 class ServerState(Enum):
@@ -17,12 +21,15 @@ class ServerState(Enum):
 
 
 class LanguageServer:
-    """Handle protocol lifecycle and versioned document notifications."""
+    """Handle protocol lifecycle, documents, and version-bound semantic queries."""
 
     def __init__(self) -> None:
         self.state = ServerState.PRE_INITIALIZE
         self.exit_code: int | None = None
         self.documents = DocumentStore()
+        self.syntax = SyntaxStore(self.documents)
+        self.symbols = SymbolIndex(self.syntax)
+        self.semantics = SemanticDatabase(self.symbols)
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         request_id = message.get("id")
@@ -52,7 +59,11 @@ class LanguageServer:
             return self._result(
                 request_id,
                 {
-                    "capabilities": {"textDocumentSync": 2},
+                    "capabilities": {
+                        "textDocumentSync": 2,
+                        "definitionProvider": True,
+                        "referencesProvider": True,
+                    },
                     "serverInfo": {"name": "mini-language-server", "version": "0.1.0"},
                 },
             )
@@ -79,6 +90,9 @@ class LanguageServer:
         if not is_request and method.startswith("textDocument/"):
             self._handle_document_notification(method, message.get("params"))
             return None
+
+        if is_request and method in {"textDocument/definition", "textDocument/references"}:
+            return self._handle_semantic_request(method, request_id, message.get("params"))
 
         if is_request:
             return self._error(request_id, -32601, "Method not found")
@@ -117,6 +131,92 @@ class LanguageServer:
                     self.documents.close(uri)
         except DocumentError:
             return
+
+    def _handle_semantic_request(
+        self, method: str, request_id: Any, params: Any
+    ) -> dict[str, Any]:
+        parsed = self._semantic_query(params)
+        if parsed is None:
+            return self._error(request_id, -32602, "Invalid params")
+
+        semantics, offset, source = parsed
+        if semantics is None:
+            empty_result = None if method == "textDocument/definition" else []
+            return self._result(request_id, empty_result)
+
+        target = semantics.definition_at(offset)
+        if target is None:
+            empty_result = None if method == "textDocument/definition" else []
+            return self._result(request_id, empty_result)
+
+        if method == "textDocument/definition":
+            return self._result(
+                request_id,
+                self._location(semantics.uri, source, target.span),
+            )
+
+        assert isinstance(params, dict)
+        context = params.get("context")
+        include_declaration = False
+        if context is not None:
+            if not isinstance(context, dict) or not isinstance(
+                context.get("includeDeclaration"), bool
+            ):
+                return self._error(request_id, -32602, "Invalid params")
+            include_declaration = context["includeDeclaration"]
+
+        locations = [
+            self._location(semantics.uri, source, span)
+            for span in semantics.references_to(
+                target, include_declaration=include_declaration
+            )
+        ]
+        return self._result(request_id, locations)
+
+    def _semantic_query(
+        self, params: Any
+    ) -> tuple[SemanticSnapshot | None, int, SourceText] | None:
+        if not isinstance(params, dict):
+            return None
+        text_document = params.get("textDocument")
+        position = params.get("position")
+        if not isinstance(text_document, dict) or not isinstance(position, dict):
+            return None
+        uri = text_document.get("uri")
+        line = position.get("line")
+        character = position.get("character")
+        if not isinstance(uri, str) or not uri:
+            return None
+        try:
+            lsp_position = Position(line=line, character=character)
+        except SourceError:
+            return None
+
+        semantics = self.semantics.get(uri)
+        document = self.documents.get(uri)
+        if document is None:
+            return None
+        source = SourceText(document.text)
+        try:
+            offset = source.offset_at(lsp_position)
+        except SourceError:
+            return None
+        if semantics is None:
+            return None, offset, source
+        if semantics.symbols.syntax.document is not document:
+            return None, offset, source
+        return semantics, offset, source
+
+    @staticmethod
+    def _location(uri: str, source: SourceText, span: Span) -> dict[str, Any]:
+        start, end = source.range_from_span(span)
+        return {
+            "uri": uri,
+            "range": {
+                "start": {"line": start.line, "character": start.character},
+                "end": {"line": end.line, "character": end.character},
+            },
+        }
 
     @staticmethod
     def _result(request_id: Any, result: Any) -> dict[str, Any]:
