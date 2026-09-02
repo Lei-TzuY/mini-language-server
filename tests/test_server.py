@@ -25,7 +25,7 @@ def test_initialize_transitions_server_to_running() -> None:
     server = LanguageServer()
     response = server.handle(request("initialize", params={"capabilities": {}}))
     assert response is not None
-    assert response["result"]["capabilities"] == {"textDocumentSync": 1}
+    assert response["result"]["capabilities"] == {"textDocumentSync": 2}
     assert server.state is ServerState.RUNNING
 
 
@@ -81,9 +81,7 @@ def test_repeated_initialize_is_rejected() -> None:
     }
 
 
-def test_document_notifications_track_only_newer_full_sync_snapshots() -> None:
-    server = initialized_server()
-    uri = "file:///workspace/main.nova"
+def open_document(server: LanguageServer, uri: str, text: str, version: int = 1) -> None:
     server.handle(
         notification(
             "textDocument/didOpen",
@@ -91,12 +89,18 @@ def test_document_notifications_track_only_newer_full_sync_snapshots() -> None:
                 "textDocument": {
                     "uri": uri,
                     "languageId": "nova",
-                    "version": 7,
-                    "text": "old",
+                    "version": version,
+                    "text": text,
                 }
             },
         )
     )
+
+
+def test_document_notifications_track_only_newer_snapshots() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "old", version=7)
     server.handle(
         notification(
             "textDocument/didChange",
@@ -122,22 +126,40 @@ def test_document_notifications_track_only_newer_full_sync_snapshots() -> None:
     assert document.text == "new"
 
 
-def test_incremental_change_is_ignored_until_supported() -> None:
+def test_incremental_change_updates_document() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
+    open_document(server, uri, "hello world\n")
+
     server.handle(
         notification(
-            "textDocument/didOpen",
+            "textDocument/didChange",
             {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "nova",
-                    "version": 1,
-                    "text": "abc",
-                }
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [
+                    {
+                        "range": {
+                            "start": {"line": 0, "character": 6},
+                            "end": {"line": 0, "character": 11},
+                        },
+                        "text": "Nova",
+                    }
+                ],
             },
         )
     )
+
+    document = server.documents.get(uri)
+    assert document is not None
+    assert document.version == 2
+    assert document.text == "hello Nova\n"
+
+
+def test_invalid_incremental_batch_does_not_advance_version() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "abc")
+
     server.handle(
         notification(
             "textDocument/didChange",
@@ -150,7 +172,14 @@ def test_incremental_change_is_ignored_until_supported() -> None:
                             "end": {"line": 0, "character": 1},
                         },
                         "text": "z",
-                    }
+                    },
+                    {
+                        "range": {
+                            "start": {"line": 4, "character": 0},
+                            "end": {"line": 4, "character": 0},
+                        },
+                        "text": "!",
+                    },
                 ],
             },
         )
@@ -165,19 +194,7 @@ def test_incremental_change_is_ignored_until_supported() -> None:
 def test_did_close_removes_document() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    server.handle(
-        notification(
-            "textDocument/didOpen",
-            {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "nova",
-                    "version": 1,
-                    "text": "x",
-                }
-            },
-        )
-    )
+    open_document(server, uri, "x")
 
     server.handle(notification("textDocument/didClose", {"textDocument": {"uri": uri}}))
 
