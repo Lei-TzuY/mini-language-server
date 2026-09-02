@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .source import Position, SourceError, SourceText
+
 
 class DocumentError(ValueError):
     """Raised when an invalid document lifecycle or version transition is requested."""
@@ -66,11 +68,15 @@ class DocumentStore:
             range_ = change["range"]
             if not isinstance(range_, dict):
                 raise DocumentError("change range must be an object")
-            start = self._position_to_offset(text, range_.get("start"))
-            end = self._position_to_offset(text, range_.get("end"))
-            if start > end:
-                raise DocumentError("change range start is after end")
-            text = text[:start] + replacement + text[end:]
+            try:
+                source = SourceText(text)
+                span = source.span_from_range(
+                    self._parse_position(range_.get("start")),
+                    self._parse_position(range_.get("end")),
+                )
+            except SourceError as exc:
+                raise DocumentError(str(exc)) from exc
+            text = text[: span.start] + replacement + text[span.end :]
 
         document = Document(uri, current.language_id, version, text)
         self._documents[uri] = document
@@ -95,46 +101,13 @@ class DocumentStore:
         return current
 
     @staticmethod
-    def _position_to_offset(text: str, position: Any) -> int:
+    def _parse_position(position: Any) -> Position:
         if not isinstance(position, dict):
             raise DocumentError("position must be an object")
-        line = position.get("line")
-        character = position.get("character")
-        if (
-            not isinstance(line, int)
-            or isinstance(line, bool)
-            or line < 0
-            or not isinstance(character, int)
-            or isinstance(character, bool)
-            or character < 0
-        ):
-            raise DocumentError("position line and character must be non-negative integers")
-
-        lines = text.splitlines(keepends=True)
-        if line >= len(lines):
-            if line == 0 and not lines:
-                line_text = ""
-                line_start = 0
-            elif line == len(lines) and text.endswith(("\n", "\r")):
-                line_text = ""
-                line_start = len(text)
-            else:
-                raise DocumentError("position line is outside the document")
-        else:
-            line_start = sum(len(part) for part in lines[:line])
-            line_text = lines[line].rstrip("\r\n")
-
-        utf16_units = 0
-        for index, char in enumerate(line_text):
-            if utf16_units == character:
-                return line_start + index
-            units = 2 if ord(char) > 0xFFFF else 1
-            if utf16_units < character < utf16_units + units:
-                raise DocumentError("position splits a UTF-16 surrogate pair")
-            utf16_units += units
-        if utf16_units == character:
-            return line_start + len(line_text)
-        raise DocumentError("position character is outside the line")
+        try:
+            return Position(position.get("line"), position.get("character"))
+        except SourceError as exc:
+            raise DocumentError(str(exc)) from exc
 
     @staticmethod
     def _snapshot(uri: str, language_id: str, version: int, text: str) -> Document:
