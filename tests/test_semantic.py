@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from threading import Event, Thread
+
 import pytest
 
 from mini_language_server import DocumentStore, Span
-from mini_language_server.semantic import Reference, SemanticDatabase, SemanticError
+from mini_language_server.semantic import (
+    Reference,
+    SemanticDatabase,
+    SemanticError,
+    SemanticSnapshot,
+)
 from mini_language_server.symbols import Symbol, SymbolIndex
 from mini_language_server.syntax import SyntaxStore
 
@@ -139,3 +146,59 @@ def test_query_rejects_symbol_not_owned_by_snapshot() -> None:
 
     with pytest.raises(SemanticError, match="non-negative integer"):
         snapshot.definition_at(-1)
+
+
+def test_reindex_cannot_split_semantic_compare_and_publish() -> None:
+    _, _, index, parsed, symbols, declaration = current_symbols()
+    database = SemanticDatabase(index)
+    publish_entered = Event()
+    release_publish = Event()
+    reindex_started = Event()
+    reindex_finished = Event()
+    errors: list[Exception] = []
+
+    class BlockingSnapshots(dict[str, SemanticSnapshot]):
+        def __setitem__(self, key: str, value: SemanticSnapshot) -> None:
+            publish_entered.set()
+            assert release_publish.wait(2)
+            super().__setitem__(key, value)
+
+    database._snapshots = BlockingSnapshots()
+
+    def publish_semantics() -> None:
+        try:
+            database.publish(symbols, [Reference(Span(13, 19), declaration)])
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    publisher = Thread(target=publish_semantics, name="semantic-publish")
+    publisher.start()
+    assert publish_entered.wait(2)
+
+    replacement = Symbol("answer", "variable", Span(4, 10))
+
+    def reindex() -> None:
+        reindex_started.set()
+        try:
+            index.publish(parsed, [replacement])
+            reindex_finished.set()
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    reindexing = Thread(target=reindex, name="symbol-reindex")
+    reindexing.start()
+    assert reindex_started.wait(2)
+    assert not reindex_finished.wait(0.05)
+
+    release_publish.set()
+    publisher.join(2)
+    reindexing.join(2)
+
+    assert not publisher.is_alive()
+    assert not reindexing.is_alive()
+    assert errors == []
+    assert reindex_finished.is_set()
+    current = index.get(symbols.uri)
+    assert current is not None
+    assert current is not symbols
+    assert database.get(symbols.uri) is None
