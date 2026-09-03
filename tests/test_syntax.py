@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from threading import Event, Thread
+
 import pytest
 
 from mini_language_server import DocumentStore
-from mini_language_server.syntax import SyntaxError, SyntaxStore
+from mini_language_server.syntax import SyntaxError, SyntaxSnapshot, SyntaxStore
 
 
 def open_document(store: DocumentStore, *, version: int = 1):
@@ -96,3 +98,62 @@ def test_current_publish_replaces_older_cached_result() -> None:
     assert syntax.get(current.uri) is new_snapshot
     assert syntax.discard(current.uri) is new_snapshot
     assert syntax.get(current.uri) is None
+
+
+def test_document_update_cannot_split_syntax_compare_and_publish() -> None:
+    documents = DocumentStore()
+    syntax = SyntaxStore(documents)
+    original = open_document(documents)
+    publish_entered = Event()
+    release_publish = Event()
+    replace_started = Event()
+    replace_finished = Event()
+    errors: list[Exception] = []
+
+    class BlockingSnapshots(dict[str, SyntaxSnapshot]):
+        def __setitem__(self, key: str, value: SyntaxSnapshot) -> None:
+            publish_entered.set()
+            assert release_publish.wait(2)
+            super().__setitem__(key, value)
+
+    syntax._snapshots = BlockingSnapshots()
+
+    def publish() -> None:
+        try:
+            syntax.publish(original, ("version", 1))
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    publisher = Thread(target=publish, name="syntax-publish")
+    publisher.start()
+    assert publish_entered.wait(2)
+
+    def replace() -> None:
+        replace_started.set()
+        try:
+            documents.replace(
+                uri=original.uri,
+                version=2,
+                text="let answer = 43\n",
+            )
+            replace_finished.set()
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    replacer = Thread(target=replace, name="document-replace")
+    replacer.start()
+    assert replace_started.wait(2)
+    assert not replace_finished.wait(0.05)
+
+    release_publish.set()
+    publisher.join(2)
+    replacer.join(2)
+
+    assert not publisher.is_alive()
+    assert not replacer.is_alive()
+    assert errors == []
+    assert replace_finished.is_set()
+    current = documents.get(original.uri)
+    assert current is not None
+    assert current.version == 2
+    assert syntax.get(original.uri) is None
