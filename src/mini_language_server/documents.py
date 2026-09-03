@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import RLock
-from typing import Any
+from typing import Any, TypeVar
 
 from .source import Position, SourceError, SourceText
 
@@ -21,6 +22,9 @@ class Document:
     language_id: str
     version: int
     text: str
+
+
+_T = TypeVar("_T")
 
 
 class DocumentStore:
@@ -42,6 +46,26 @@ class DocumentStore:
     def get(self, uri: str) -> Document | None:
         with self._lock:
             return self._documents.get(uri)
+
+    def commit_if_current(self, document: Document, commit: Callable[[], _T]) -> _T:
+        """Run *commit* atomically while *document* remains the current snapshot.
+
+        Derived caches parse or analyze immutable document snapshots outside this
+        store. They can use this compare-and-commit boundary to publish a derived
+        result without a document change slipping between the identity check and the
+        cache write.
+        """
+        if not isinstance(document, Document):
+            raise DocumentError("current snapshot guard requires a Document")
+        if not callable(commit):
+            raise DocumentError("snapshot commit must be callable")
+        with self._lock:
+            current = self._documents.get(document.uri)
+            if current is not document:
+                raise DocumentError(
+                    f"stale document snapshot for {document.uri} at version {document.version}"
+                )
+            return commit()
 
     def open(self, *, uri: str, language_id: str, version: int, text: str) -> Document:
         with self._lock:
