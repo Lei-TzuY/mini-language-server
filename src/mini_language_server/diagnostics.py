@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from threading import RLock
+from typing import TypeVar
 
 from .semantic import SemanticDatabase, SemanticError, SemanticSnapshot
 from .source import Span
@@ -59,6 +60,9 @@ class DiagnosticSnapshot:
         return self.semantic.version
 
 
+_T = TypeVar("_T")
+
+
 class DiagnosticStore:
     """Publish diagnostics only for the exact current semantic snapshot.
 
@@ -67,8 +71,8 @@ class DiagnosticStore:
     requires the exact :class:`SemanticSnapshot` used for computation to remain
     current. Publication uses the semantic database's compare-and-commit boundary so
     semantic replacement cannot slip between the identity check and diagnostic-cache
-    write. This gives callers a single stale-result boundary without coupling the core
-    to any language adapter.
+    write. Downstream publication can use :meth:`commit_if_current` to extend the same
+    guarantee through protocol notification emission without coupling the core to LSP.
     """
 
     def __init__(self, semantic: SemanticDatabase) -> None:
@@ -84,6 +88,31 @@ class DiagnosticStore:
             if semantic is None or snapshot is None or snapshot.semantic is not semantic:
                 return None
             return snapshot
+
+    def commit_if_current(
+        self, snapshot: DiagnosticSnapshot, commit: Callable[[], _T]
+    ) -> _T:
+        """Run *commit* atomically while *snapshot* remains current diagnostics."""
+        if not isinstance(snapshot, DiagnosticSnapshot):
+            raise DiagnosticError("current snapshot guard requires a DiagnosticSnapshot")
+        if not callable(commit):
+            raise DiagnosticError("snapshot commit must be callable")
+
+        def guarded_commit() -> _T:
+            with self._lock:
+                current = self._snapshots.get(snapshot.uri)
+                if current is not snapshot:
+                    raise DiagnosticError(
+                        f"stale diagnostic snapshot for {snapshot.uri} at version {snapshot.version}"
+                    )
+                return commit()
+
+        try:
+            return self._semantic.commit_if_current(snapshot.semantic, guarded_commit)
+        except SemanticError as exc:
+            raise DiagnosticError(
+                f"stale diagnostic snapshot for {snapshot.uri} at version {snapshot.version}"
+            ) from exc
 
     def publish(
         self, semantic: SemanticSnapshot, diagnostics: Iterable[Diagnostic]
