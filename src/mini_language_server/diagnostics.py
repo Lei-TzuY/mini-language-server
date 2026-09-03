@@ -103,7 +103,8 @@ class DiagnosticStore:
                 current = self._snapshots.get(snapshot.uri)
                 if current is not snapshot:
                     raise DiagnosticError(
-                        f"stale diagnostic snapshot for {snapshot.uri} at version {snapshot.version}"
+                        "stale diagnostic snapshot for "
+                        f"{snapshot.uri} at version {snapshot.version}"
                     )
                 return commit()
 
