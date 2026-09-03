@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from enum import Enum, auto
 from typing import Any
 
+from .diagnostics import Diagnostic, DiagnosticError, DiagnosticStore
 from .documents import DocumentError, DocumentStore
 from .protocol import JsonRpcError
 from .semantic import SemanticDatabase, SemanticSnapshot
@@ -30,6 +32,8 @@ class LanguageServer:
         self.syntax = SyntaxStore(self.documents)
         self.symbols = SymbolIndex(self.syntax)
         self.semantics = SemanticDatabase(self.symbols)
+        self.diagnostics = DiagnosticStore(self.semantics)
+        self._notifications: list[dict[str, Any]] = []
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         request_id = message.get("id")
@@ -102,6 +106,33 @@ class LanguageServer:
             return self._error(request_id, -32601, "Method not found")
         return None
 
+    def publish_diagnostics(
+        self, semantic: SemanticSnapshot, diagnostics: Iterable[Diagnostic]
+    ) -> bool:
+        """Queue current diagnostics as an LSP notification.
+
+        Returns ``False`` when computation finished against a stale semantic snapshot.
+        No notification is emitted in that case, so late/out-of-order work cannot
+        overwrite diagnostics for a newer document generation.
+        """
+        try:
+            snapshot = self.diagnostics.publish(semantic, diagnostics)
+        except DiagnosticError:
+            return False
+
+        source = SourceText(snapshot.semantic.symbols.syntax.document.text)
+        rendered = [
+            self._diagnostic(source, diagnostic) for diagnostic in snapshot.diagnostics
+        ]
+        self._queue_publish_diagnostics(snapshot.uri, snapshot.version, rendered)
+        return True
+
+    def drain_notifications(self) -> list[dict[str, Any]]:
+        """Return queued server notifications in emission order and clear the outbox."""
+        notifications = self._notifications
+        self._notifications = []
+        return notifications
+
     def _handle_document_notification(self, method: str, params: Any) -> None:
         if not isinstance(params, dict):
             return
@@ -121,18 +152,22 @@ class LanguageServer:
                 changes = params.get("contentChanges")
                 if not isinstance(text_document, dict) or not isinstance(changes, list):
                     return
-                self.documents.apply_changes(
+                document = self.documents.apply_changes(
                     uri=text_document.get("uri"),
                     version=text_document.get("version"),
                     changes=changes,
                 )
+                self.diagnostics.discard(document.uri)
+                self._queue_publish_diagnostics(document.uri, document.version, [])
             elif method == "textDocument/didClose":
                 text_document = params.get("textDocument")
                 if not isinstance(text_document, dict):
                     return
                 uri = text_document.get("uri")
                 if isinstance(uri, str):
-                    self.documents.close(uri)
+                    document = self.documents.close(uri)
+                    self.diagnostics.discard(uri)
+                    self._queue_publish_diagnostics(document.uri, None, [])
         except DocumentError:
             return
 
@@ -242,6 +277,38 @@ class LanguageServer:
         if semantics.symbols.syntax.document is not document:
             return None, offset, source
         return semantics, offset, source
+
+    @staticmethod
+    def _diagnostic(source: SourceText, diagnostic: Diagnostic) -> dict[str, Any]:
+        rendered: dict[str, Any] = {
+            "range": LanguageServer._range(source, diagnostic.span),
+            "severity": {
+                "error": 1,
+                "warning": 2,
+                "information": 3,
+                "hint": 4,
+            }[diagnostic.severity],
+            "message": diagnostic.message,
+        }
+        if diagnostic.code is not None:
+            rendered["code"] = diagnostic.code
+        if diagnostic.source is not None:
+            rendered["source"] = diagnostic.source
+        return rendered
+
+    def _queue_publish_diagnostics(
+        self, uri: str, version: int | None, diagnostics: list[dict[str, Any]]
+    ) -> None:
+        params: dict[str, Any] = {"uri": uri, "diagnostics": diagnostics}
+        if version is not None:
+            params["version"] = version
+        self._notifications.append(
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": params,
+            }
+        )
 
     @staticmethod
     def _range(source: SourceText, span: Span) -> dict[str, Any]:
