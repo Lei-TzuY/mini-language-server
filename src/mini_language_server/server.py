@@ -130,7 +130,15 @@ class LanguageServer:
         rendered = [
             self._diagnostic(source, diagnostic) for diagnostic in snapshot.diagnostics
         ]
-        self._queue_publish_diagnostics(snapshot.uri, snapshot.version, rendered)
+        try:
+            self.diagnostics.commit_if_current(
+                snapshot,
+                lambda: self._queue_publish_diagnostics(
+                    snapshot.uri, snapshot.version, rendered
+                ),
+            )
+        except DiagnosticError:
+            return False
         return True
 
     def drain_notifications(self) -> list[dict[str, Any]]:
