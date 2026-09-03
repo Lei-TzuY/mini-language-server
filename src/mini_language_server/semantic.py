@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from threading import RLock
 
 from .source import Span
-from .symbols import Symbol, SymbolIndex, SymbolSnapshot
+from .symbols import Symbol, SymbolError, SymbolIndex, SymbolSnapshot
 
 
 class SemanticError(ValueError):
@@ -81,30 +82,28 @@ class SemanticDatabase:
     the exact :class:`SymbolSnapshot` used for resolution to remain current. Reference
     targets must be object-identical members of that snapshot, preventing structurally
     equal symbols from an older index generation from leaking into current queries.
+    Publication uses the symbol index's compare-and-commit boundary so a re-index cannot
+    slip between the identity check and semantic-cache write.
     """
 
     def __init__(self, symbols: SymbolIndex) -> None:
         self._symbols = symbols
         self._snapshots: dict[str, SemanticSnapshot] = {}
+        self._lock = RLock()
 
     def get(self, uri: str) -> SemanticSnapshot | None:
         """Return semantics only when derived from the current symbol snapshot."""
         symbols = self._symbols.get(uri)
-        snapshot = self._snapshots.get(uri)
-        if symbols is None or snapshot is None or snapshot.symbols is not symbols:
-            return None
-        return snapshot
+        with self._lock:
+            snapshot = self._snapshots.get(uri)
+            if symbols is None or snapshot is None or snapshot.symbols is not symbols:
+                return None
+            return snapshot
 
     def publish(
         self, symbols: SymbolSnapshot, references: Iterable[Reference]
     ) -> SemanticSnapshot:
-        """Publish deterministic references if *symbols* is still current."""
-        current = self._symbols.get(symbols.uri)
-        if current is not symbols:
-            raise SemanticError(
-                f"stale semantic result for {symbols.uri} at version {symbols.version}"
-            )
-
+        """Atomically publish deterministic references if *symbols* is current."""
         materialized = tuple(references)
         text_length = len(symbols.syntax.document.text)
         members = {id(symbol) for symbol in symbols.symbols}
@@ -137,9 +136,20 @@ class SemanticDatabase:
             previous_end = reference.span.end
 
         snapshot = SemanticSnapshot(symbols=symbols, references=ordered)
-        self._snapshots[symbols.uri] = snapshot
-        return snapshot
+
+        def commit() -> SemanticSnapshot:
+            with self._lock:
+                self._snapshots[symbols.uri] = snapshot
+            return snapshot
+
+        try:
+            return self._symbols.commit_if_current(symbols, commit)
+        except SymbolError as exc:
+            raise SemanticError(
+                f"stale semantic result for {symbols.uri} at version {symbols.version}"
+            ) from exc
 
     def discard(self, uri: str) -> SemanticSnapshot | None:
         """Discard any cached semantic snapshot for *uri*, current or stale."""
-        return self._snapshots.pop(uri, None)
+        with self._lock:
+            return self._snapshots.pop(uri, None)
