@@ -32,6 +32,7 @@ def test_initialize_transitions_server_to_running() -> None:
         "textDocumentSync": 2,
         "definitionProvider": True,
         "referencesProvider": True,
+        "renameProvider": True,
     }
     assert server.state is ServerState.RUNNING
 
