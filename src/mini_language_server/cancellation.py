@@ -51,7 +51,7 @@ class RequestTracker:
             return len(self._active)
 
     def start(self, request_id: Any, *, uri: str | None = None) -> RequestContext:
-        if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
+        if not isinstance(request_id, str | int) or isinstance(request_id, bool):
             raise RequestError("request id must be a string or integer")
         if isinstance(request_id, str) and not request_id:
             raise RequestError("request id must not be empty")
