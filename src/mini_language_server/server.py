@@ -63,6 +63,7 @@ class LanguageServer:
                         "textDocumentSync": 2,
                         "definitionProvider": True,
                         "referencesProvider": True,
+                        "renameProvider": True,
                     },
                     "serverInfo": {"name": "mini-language-server", "version": "0.1.0"},
                 },
@@ -93,6 +94,9 @@ class LanguageServer:
 
         if is_request and method in {"textDocument/definition", "textDocument/references"}:
             return self._handle_semantic_request(method, request_id, message.get("params"))
+
+        if is_request and method == "textDocument/rename":
+            return self._handle_rename_request(request_id, message.get("params"))
 
         if is_request:
             return self._error(request_id, -32601, "Method not found")
@@ -173,6 +177,38 @@ class LanguageServer:
         ]
         return self._result(request_id, locations)
 
+    def _handle_rename_request(self, request_id: Any, params: Any) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            return self._error(request_id, -32602, "Invalid params")
+        new_name = params.get("newName")
+        if not isinstance(new_name, str) or not new_name:
+            return self._error(request_id, -32602, "Invalid params")
+
+        parsed = self._semantic_query(params)
+        if parsed is None:
+            return self._error(request_id, -32602, "Invalid params")
+
+        semantics, offset, source = parsed
+        if semantics is None:
+            return self._result(request_id, None)
+
+        target = semantics.definition_at(offset)
+        if target is None:
+            return self._result(request_id, None)
+
+        spans = semantics.references_to(target, include_declaration=True)
+        previous_end = -1
+        for span in spans:
+            if span.start < previous_end:
+                return self._error(request_id, -32603, "Unsafe overlapping rename edits")
+            previous_end = span.end
+
+        edits = [
+            {"range": self._range(source, span), "newText": new_name}
+            for span in spans
+        ]
+        return self._result(request_id, {"changes": {semantics.uri: edits}})
+
     def _semantic_query(
         self, params: Any
     ) -> tuple[SemanticSnapshot | None, int, SourceText] | None:
@@ -208,15 +244,16 @@ class LanguageServer:
         return semantics, offset, source
 
     @staticmethod
-    def _location(uri: str, source: SourceText, span: Span) -> dict[str, Any]:
+    def _range(source: SourceText, span: Span) -> dict[str, Any]:
         start, end = source.range_from_span(span)
         return {
-            "uri": uri,
-            "range": {
-                "start": {"line": start.line, "character": start.character},
-                "end": {"line": end.line, "character": end.character},
-            },
+            "start": {"line": start.line, "character": start.character},
+            "end": {"line": end.line, "character": end.character},
         }
+
+    @staticmethod
+    def _location(uri: str, source: SourceText, span: Span) -> dict[str, Any]:
+        return {"uri": uri, "range": LanguageServer._range(source, span)}
 
     @staticmethod
     def _result(request_id: Any, result: Any) -> dict[str, Any]:
