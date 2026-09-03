@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from threading import RLock
+from typing import TypeVar
 
 from .source import Span
 from .symbols import Symbol, SymbolError, SymbolIndex, SymbolSnapshot
@@ -75,6 +76,9 @@ class SemanticSnapshot:
         return spans
 
 
+_T = TypeVar("_T")
+
+
 class SemanticDatabase:
     """Publish semantic results only for the exact current symbol snapshot.
 
@@ -83,7 +87,9 @@ class SemanticDatabase:
     targets must be object-identical members of that snapshot, preventing structurally
     equal symbols from an older index generation from leaking into current queries.
     Publication uses the symbol index's compare-and-commit boundary so a re-index cannot
-    slip between the identity check and semantic-cache write.
+    slip between the identity check and semantic-cache write. Derived diagnostic caches
+    can use :meth:`commit_if_current` to extend the same guarantee to one exact semantic
+    snapshot.
     """
 
     def __init__(self, symbols: SymbolIndex) -> None:
@@ -99,6 +105,31 @@ class SemanticDatabase:
             if symbols is None or snapshot is None or snapshot.symbols is not symbols:
                 return None
             return snapshot
+
+    def commit_if_current(
+        self, semantic: SemanticSnapshot, commit: Callable[[], _T]
+    ) -> _T:
+        """Run *commit* atomically while *semantic* remains the current snapshot."""
+        if not isinstance(semantic, SemanticSnapshot):
+            raise SemanticError("current snapshot guard requires a SemanticSnapshot")
+        if not callable(commit):
+            raise SemanticError("snapshot commit must be callable")
+
+        def guarded_commit() -> _T:
+            with self._lock:
+                current = self._snapshots.get(semantic.uri)
+                if current is not semantic:
+                    raise SemanticError(
+                        f"stale semantic snapshot for {semantic.uri} at version {semantic.version}"
+                    )
+                return commit()
+
+        try:
+            return self._symbols.commit_if_current(semantic.symbols, guarded_commit)
+        except SymbolError as exc:
+            raise SemanticError(
+                f"stale semantic snapshot for {semantic.uri} at version {semantic.version}"
+            ) from exc
 
     def publish(
         self, symbols: SymbolSnapshot, references: Iterable[Reference]
