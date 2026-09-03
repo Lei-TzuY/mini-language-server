@@ -1,5 +1,12 @@
 """mini-language-server package."""
 
+from .cancellation import (
+    RequestCancelled,
+    RequestContext,
+    RequestError,
+    RequestTracker,
+    StaleRequest,
+)
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
 from .documents import Document, DocumentError, DocumentStore
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
@@ -23,6 +30,10 @@ __all__ = [
     "MessageReader",
     "Position",
     "Reference",
+    "RequestCancelled",
+    "RequestContext",
+    "RequestError",
+    "RequestTracker",
     "SemanticDatabase",
     "SemanticError",
     "SemanticSnapshot",
@@ -30,6 +41,7 @@ __all__ = [
     "SourceError",
     "SourceText",
     "Span",
+    "StaleRequest",
     "Symbol",
     "SymbolError",
     "SymbolIndex",
