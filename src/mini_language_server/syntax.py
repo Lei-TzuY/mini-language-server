@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .documents import Document, DocumentStore
+from .documents import Document, DocumentError, DocumentStore
 
 
 class SyntaxError(ValueError):
@@ -36,8 +36,8 @@ class SyntaxStore:
 
     Parsing may happen outside this object and may race with document updates. A caller
     must retain the :class:`Document` it parsed and publish against that exact object.
-    If the document changed or closed while parsing, publication is rejected so stale
-    results never replace syntax for the current document.
+    Publication uses the document store's compare-and-commit boundary so a document
+    transition cannot slip between the identity check and the derived-cache write.
     """
 
     def __init__(self, documents: DocumentStore) -> None:
@@ -53,15 +53,19 @@ class SyntaxStore:
         return snapshot
 
     def publish(self, document: Document, tree: object) -> SyntaxSnapshot:
-        """Publish a syntax tree if *document* is still the current open snapshot."""
-        current = self._documents.get(document.uri)
-        if current is not document:
+        """Atomically publish a syntax tree if *document* is still current."""
+        snapshot = SyntaxSnapshot(document=document, tree=tree)
+
+        def commit() -> SyntaxSnapshot:
+            self._snapshots[document.uri] = snapshot
+            return snapshot
+
+        try:
+            return self._documents.commit_if_current(document, commit)
+        except DocumentError as exc:
             raise SyntaxError(
                 f"stale syntax result for {document.uri} at version {document.version}"
-            )
-        snapshot = SyntaxSnapshot(document=document, tree=tree)
-        self._snapshots[document.uri] = snapshot
-        return snapshot
+            ) from exc
 
     def discard(self, uri: str) -> SyntaxSnapshot | None:
         """Discard any cached syntax for *uri*, whether current or stale."""
