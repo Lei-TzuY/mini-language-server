@@ -33,7 +33,7 @@ def publish_semantics(server: LanguageServer, uri: str):
     )
 
 
-def test_document_change_between_diagnostic_cache_and_notification_suppresses_stale_publish() -> None:
+def test_document_change_suppresses_stale_diagnostic_notification() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
     server.handle(
