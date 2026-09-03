@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from threading import RLock
 
-from .semantic import SemanticDatabase, SemanticSnapshot
+from .semantic import SemanticDatabase, SemanticError, SemanticSnapshot
 from .source import Span
 
 
@@ -64,32 +65,30 @@ class DiagnosticStore:
     Diagnostic computation may race with semantic recomputation, reparsing, document
     updates, close/reopen cycles, or other concurrent work. Publication therefore
     requires the exact :class:`SemanticSnapshot` used for computation to remain
-    current. This gives callers a single stale-result boundary without coupling the
-    core to any language adapter.
+    current. Publication uses the semantic database's compare-and-commit boundary so
+    semantic replacement cannot slip between the identity check and diagnostic-cache
+    write. This gives callers a single stale-result boundary without coupling the core
+    to any language adapter.
     """
 
     def __init__(self, semantic: SemanticDatabase) -> None:
         self._semantic = semantic
         self._snapshots: dict[str, DiagnosticSnapshot] = {}
+        self._lock = RLock()
 
     def get(self, uri: str) -> DiagnosticSnapshot | None:
         """Return diagnostics only when derived from current semantics."""
         semantic = self._semantic.get(uri)
-        snapshot = self._snapshots.get(uri)
-        if semantic is None or snapshot is None or snapshot.semantic is not semantic:
-            return None
-        return snapshot
+        with self._lock:
+            snapshot = self._snapshots.get(uri)
+            if semantic is None or snapshot is None or snapshot.semantic is not semantic:
+                return None
+            return snapshot
 
     def publish(
         self, semantic: SemanticSnapshot, diagnostics: Iterable[Diagnostic]
     ) -> DiagnosticSnapshot:
-        """Publish deterministic diagnostics if *semantic* is still current."""
-        current = self._semantic.get(semantic.uri)
-        if current is not semantic:
-            raise DiagnosticError(
-                f"stale diagnostic result for {semantic.uri} at version {semantic.version}"
-            )
-
+        """Atomically publish deterministic diagnostics if *semantic* is current."""
         materialized = tuple(diagnostics)
         text_length = len(semantic.symbols.syntax.document.text)
         for diagnostic in materialized:
@@ -115,9 +114,20 @@ class DiagnosticStore:
             )
         )
         snapshot = DiagnosticSnapshot(semantic=semantic, diagnostics=ordered)
-        self._snapshots[semantic.uri] = snapshot
-        return snapshot
+
+        def commit() -> DiagnosticSnapshot:
+            with self._lock:
+                self._snapshots[semantic.uri] = snapshot
+            return snapshot
+
+        try:
+            return self._semantic.commit_if_current(semantic, commit)
+        except SemanticError as exc:
+            raise DiagnosticError(
+                f"stale diagnostic result for {semantic.uri} at version {semantic.version}"
+            ) from exc
 
     def discard(self, uri: str) -> DiagnosticSnapshot | None:
         """Discard any cached diagnostic snapshot for *uri*, current or stale."""
-        return self._snapshots.pop(uri, None)
+        with self._lock:
+            return self._snapshots.pop(uri, None)
