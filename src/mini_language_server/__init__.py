@@ -1,5 +1,6 @@
 """mini-language-server package."""
 
+from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
 from .documents import Document, DocumentError, DocumentStore
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
 from .semantic import Reference, SemanticDatabase, SemanticError, SemanticSnapshot
@@ -9,6 +10,10 @@ from .symbols import Symbol, SymbolError, SymbolIndex, SymbolSnapshot
 from .syntax import SyntaxError, SyntaxSnapshot, SyntaxStore
 
 __all__ = [
+    "Diagnostic",
+    "DiagnosticError",
+    "DiagnosticSnapshot",
+    "DiagnosticStore",
     "Document",
     "DocumentError",
     "DocumentStore",
