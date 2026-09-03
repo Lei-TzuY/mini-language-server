@@ -1,6 +1,9 @@
+from threading import Event, Thread, current_thread
+
 import pytest
 
 from mini_language_server.documents import DocumentError, DocumentStore
+from mini_language_server.source import SourceText
 
 
 def test_open_stores_initial_snapshot() -> None:
@@ -174,3 +177,127 @@ def test_duplicate_open_is_rejected_without_replacing_snapshot() -> None:
         store.open(uri="file:///a.nova", language_id="nova", version=2, text="second")
 
     assert store.get("file:///a.nova").text == "first"
+
+
+def test_concurrent_changes_cannot_publish_lower_version_after_higher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = DocumentStore()
+    uri = "file:///race.nova"
+    store.open(uri=uri, language_id="nova", version=1, text="abc")
+    slow_entered = Event()
+    release_slow = Event()
+    fast_started = Event()
+    original = SourceText.span_from_range
+
+    def blocking_span(self, start, end):
+        if current_thread().name == "slow-v2":
+            slow_entered.set()
+            assert release_slow.wait(2)
+        return original(self, start, end)
+
+    monkeypatch.setattr(SourceText, "span_from_range", blocking_span)
+    errors: list[Exception] = []
+
+    def change(version: int, replacement: str) -> None:
+        try:
+            store.apply_changes(
+                uri=uri,
+                version=version,
+                changes=[
+                    {
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 1},
+                        },
+                        "text": replacement,
+                    }
+                ],
+            )
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    slow = Thread(target=change, args=(2, "2"), name="slow-v2")
+    slow.start()
+    assert slow_entered.wait(2)
+
+    def run_fast() -> None:
+        fast_started.set()
+        change(3, "3")
+
+    fast = Thread(target=run_fast, name="fast-v3")
+    fast.start()
+    assert fast_started.wait(2)
+    release_slow.set()
+    slow.join(2)
+    fast.join(2)
+
+    assert not slow.is_alive()
+    assert not fast.is_alive()
+    assert errors == []
+    current = store.get(uri)
+    assert current is not None
+    assert current.version == 3
+    assert current.text == "3bc"
+
+
+def test_close_cannot_race_with_change_and_resurrect_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = DocumentStore()
+    uri = "file:///close-race.nova"
+    store.open(uri=uri, language_id="nova", version=1, text="abc")
+    change_entered = Event()
+    release_change = Event()
+    close_started = Event()
+    original = SourceText.span_from_range
+
+    def blocking_span(self, start, end):
+        if current_thread().name == "change":
+            change_entered.set()
+            assert release_change.wait(2)
+        return original(self, start, end)
+
+    monkeypatch.setattr(SourceText, "span_from_range", blocking_span)
+    errors: list[Exception] = []
+
+    def change() -> None:
+        try:
+            store.apply_changes(
+                uri=uri,
+                version=2,
+                changes=[
+                    {
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 1},
+                        },
+                        "text": "x",
+                    }
+                ],
+            )
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    changer = Thread(target=change, name="change")
+    changer.start()
+    assert change_entered.wait(2)
+
+    def close() -> None:
+        close_started.set()
+        try:
+            store.close(uri)
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    closer = Thread(target=close, name="close")
+    closer.start()
+    assert close_started.wait(2)
+    release_change.set()
+    changer.join(2)
+    closer.join(2)
+
+    assert not changer.is_alive()
+    assert not closer.is_alive()
+    assert errors == []
+    assert store.get(uri) is None
