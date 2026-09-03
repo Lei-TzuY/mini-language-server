@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from threading import Event, Thread
+
 import pytest
 
 from mini_language_server import DocumentStore, Span
-from mini_language_server.symbols import Symbol, SymbolError, SymbolIndex
+from mini_language_server.symbols import Symbol, SymbolError, SymbolIndex, SymbolSnapshot
 from mini_language_server.syntax import SyntaxStore
 
 
@@ -109,3 +111,57 @@ def test_non_symbol_input_does_not_replace_current_snapshot() -> None:
         index.publish(parsed, [object()])  # type: ignore[list-item]
 
     assert index.get(parsed.uri) is current
+
+
+def test_syntax_republish_cannot_split_symbol_compare_and_publish() -> None:
+    _, syntax, parsed = current_syntax()
+    index = SymbolIndex(syntax)
+    publish_entered = Event()
+    release_publish = Event()
+    reparse_started = Event()
+    reparse_finished = Event()
+    errors: list[Exception] = []
+
+    class BlockingSnapshots(dict[str, SymbolSnapshot]):
+        def __setitem__(self, key: str, value: SymbolSnapshot) -> None:
+            publish_entered.set()
+            assert release_publish.wait(2)
+            super().__setitem__(key, value)
+
+    index._snapshots = BlockingSnapshots()
+
+    def publish_symbols() -> None:
+        try:
+            index.publish(parsed, [Symbol("answer", "variable", Span(4, 10))])
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    publisher = Thread(target=publish_symbols, name="symbol-publish")
+    publisher.start()
+    assert publish_entered.wait(2)
+
+    def reparse() -> None:
+        reparse_started.set()
+        try:
+            syntax.publish(parsed.document, ("module", "reparsed"))
+            reparse_finished.set()
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    reparsing = Thread(target=reparse, name="syntax-republish")
+    reparsing.start()
+    assert reparse_started.wait(2)
+    assert not reparse_finished.wait(0.05)
+
+    release_publish.set()
+    publisher.join(2)
+    reparsing.join(2)
+
+    assert not publisher.is_alive()
+    assert not reparsing.is_alive()
+    assert errors == []
+    assert reparse_finished.is_set()
+    current = syntax.get(parsed.uri)
+    assert current is not None
+    assert current is not parsed
+    assert index.get(parsed.uri) is None
