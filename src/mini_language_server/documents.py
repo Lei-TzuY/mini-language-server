@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import RLock
 from typing import Any
 
 from .source import Position, SourceError, SourceText
@@ -23,70 +24,82 @@ class Document:
 
 
 class DocumentStore:
-    """Track open document snapshots and reject stale version updates."""
+    """Track open document snapshots with atomic lifecycle and version transitions.
+
+    Readers and writers may run concurrently. Every state transition is serialized so
+    checking the current version and publishing its replacement is one atomic action.
+    This prevents a slower, lower-version change from overwriting a newer snapshot.
+    """
 
     def __init__(self) -> None:
         self._documents: dict[str, Document] = {}
+        self._lock = RLock()
 
     def __len__(self) -> int:
-        return len(self._documents)
+        with self._lock:
+            return len(self._documents)
 
     def get(self, uri: str) -> Document | None:
-        return self._documents.get(uri)
+        with self._lock:
+            return self._documents.get(uri)
 
     def open(self, *, uri: str, language_id: str, version: int, text: str) -> Document:
-        if uri in self._documents:
-            raise DocumentError(f"document already open: {uri}")
-        document = self._snapshot(uri, language_id, version, text)
-        self._documents[uri] = document
-        return document
+        with self._lock:
+            if uri in self._documents:
+                raise DocumentError(f"document already open: {uri}")
+            document = self._snapshot(uri, language_id, version, text)
+            self._documents[uri] = document
+            return document
 
     def replace(self, *, uri: str, version: int, text: str) -> Document:
-        current = self._require_newer(uri, version)
-        if not isinstance(text, str):
-            raise DocumentError("document text must be a string")
-        document = Document(uri, current.language_id, version, text)
-        self._documents[uri] = document
-        return document
+        with self._lock:
+            current = self._require_newer(uri, version)
+            if not isinstance(text, str):
+                raise DocumentError("document text must be a string")
+            document = Document(uri, current.language_id, version, text)
+            self._documents[uri] = document
+            return document
 
     def apply_changes(
         self, *, uri: str, version: int, changes: list[dict[str, Any]]
     ) -> Document:
-        """Apply LSP content changes sequentially, committing only if all are valid."""
-        current = self._require_newer(uri, version)
-        if not changes:
-            raise DocumentError("content changes must not be empty")
+        """Apply LSP content changes sequentially and commit the batch atomically."""
+        with self._lock:
+            current = self._require_newer(uri, version)
+            if not changes:
+                raise DocumentError("content changes must not be empty")
 
-        text = current.text
-        for change in changes:
-            if not isinstance(change, dict) or not isinstance(change.get("text"), str):
-                raise DocumentError("each content change must contain string text")
-            replacement = change["text"]
-            if "range" not in change:
-                text = replacement
-                continue
-            range_ = change["range"]
-            if not isinstance(range_, dict):
-                raise DocumentError("change range must be an object")
-            try:
-                source = SourceText(text)
-                span = source.span_from_range(
-                    self._parse_position(range_.get("start")),
-                    self._parse_position(range_.get("end")),
-                )
-            except SourceError as exc:
-                raise DocumentError(str(exc)) from exc
-            text = text[: span.start] + replacement + text[span.end :]
+            text = current.text
+            for change in changes:
+                if not isinstance(change, dict) or not isinstance(change.get("text"), str):
+                    raise DocumentError("each content change must contain string text")
+                replacement = change["text"]
+                if "range" not in change:
+                    text = replacement
+                    continue
+                range_ = change["range"]
+                if not isinstance(range_, dict):
+                    raise DocumentError("change range must be an object")
+                try:
+                    source = SourceText(text)
+                    span = source.span_from_range(
+                        self._parse_position(range_.get("start")),
+                        self._parse_position(range_.get("end")),
+                    )
+                except SourceError as exc:
+                    raise DocumentError(str(exc)) from exc
+                text = text[: span.start] + replacement + text[span.end :]
 
-        document = Document(uri, current.language_id, version, text)
-        self._documents[uri] = document
-        return document
+            document = Document(uri, current.language_id, version, text)
+            self._documents[uri] = document
+            return document
 
     def close(self, uri: str) -> Document:
-        try:
-            return self._documents.pop(uri)
-        except KeyError as exc:
-            raise DocumentError(f"document is not open: {uri}") from exc
+        with self._lock:
+            try:
+                return self._documents.pop(uri)
+            except KeyError as exc:
+                raise DocumentError(f"document is not open: {uri}") from exc
 
     def _require_newer(self, uri: str, version: int) -> Document:
         current = self._documents.get(uri)
