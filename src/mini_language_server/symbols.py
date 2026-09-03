@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from threading import RLock
+from typing import TypeVar
 
 from .source import Span
 from .syntax import SyntaxError, SyntaxSnapshot, SyntaxStore
@@ -55,6 +56,9 @@ class SymbolSnapshot:
         return tuple(symbol for symbol in self.symbols if symbol.name == name)
 
 
+_T = TypeVar("_T")
+
+
 class SymbolIndex:
     """Publish symbol results only for the exact current syntax snapshot.
 
@@ -62,7 +66,9 @@ class SymbolIndex:
     :class:`SyntaxSnapshot` used for extraction and publication succeeds only while
     that exact syntax object remains current. Publication uses the syntax store's
     compare-and-commit boundary so a syntax transition cannot slip between the
-    identity check and the symbol-cache write.
+    identity check and the symbol-cache write. Derived semantic caches can use
+    :meth:`commit_if_current` to extend the same guarantee to one exact symbol
+    snapshot.
     """
 
     def __init__(self, syntax: SyntaxStore) -> None:
@@ -78,6 +84,31 @@ class SymbolIndex:
             if syntax is None or snapshot is None or snapshot.syntax is not syntax:
                 return None
             return snapshot
+
+    def commit_if_current(
+        self, symbols: SymbolSnapshot, commit: Callable[[], _T]
+    ) -> _T:
+        """Run *commit* atomically while *symbols* remains the current snapshot."""
+        if not isinstance(symbols, SymbolSnapshot):
+            raise SymbolError("current snapshot guard requires a SymbolSnapshot")
+        if not callable(commit):
+            raise SymbolError("snapshot commit must be callable")
+
+        def guarded_commit() -> _T:
+            with self._lock:
+                current = self._snapshots.get(symbols.uri)
+                if current is not symbols:
+                    raise SymbolError(
+                        f"stale symbol snapshot for {symbols.uri} at version {symbols.version}"
+                    )
+                return commit()
+
+        try:
+            return self._syntax.commit_if_current(symbols.syntax, guarded_commit)
+        except SyntaxError as exc:
+            raise SymbolError(
+                f"stale symbol snapshot for {symbols.uri} at version {symbols.version}"
+            ) from exc
 
     def publish(
         self, syntax: SyntaxSnapshot, symbols: Iterable[Symbol]
