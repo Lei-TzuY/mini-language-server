@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from enum import Enum, auto
 from typing import Any
 
+from .cancellation import RequestCancelled, RequestError, RequestTracker, StaleRequest
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticStore
 from .documents import DocumentError, DocumentStore
 from .protocol import JsonRpcError
@@ -33,6 +34,7 @@ class LanguageServer:
         self.symbols = SymbolIndex(self.syntax)
         self.semantics = SemanticDatabase(self.symbols)
         self.diagnostics = DiagnosticStore(self.semantics)
+        self.requests = RequestTracker(self.documents)
         self._notifications: list[dict[str, Any]] = []
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
@@ -92,6 +94,10 @@ class LanguageServer:
         if method == "initialized":
             return None
 
+        if not is_request and method == "$/cancelRequest":
+            self._handle_cancel_request(message.get("params"))
+            return None
+
         if not is_request and method.startswith("textDocument/"):
             self._handle_document_notification(method, message.get("params"))
             return None
@@ -132,6 +138,17 @@ class LanguageServer:
         notifications = self._notifications
         self._notifications = []
         return notifications
+
+    def _handle_cancel_request(self, params: Any) -> None:
+        """Apply an LSP cancellation notification to the matching active request."""
+        if not isinstance(params, dict) or "id" not in params:
+            return
+        request_id = params["id"]
+        if not isinstance(request_id, str | int) or isinstance(request_id, bool):
+            return
+        if isinstance(request_id, str) and not request_id:
+            return
+        self.requests.cancel(request_id)
 
     def _handle_document_notification(self, method: str, params: Any) -> None:
         if not isinstance(params, dict):
@@ -174,43 +191,57 @@ class LanguageServer:
     def _handle_semantic_request(
         self, method: str, request_id: Any, params: Any
     ) -> dict[str, Any]:
-        parsed = self._semantic_query(params)
-        if parsed is None:
+        context = self._start_document_request(request_id, params)
+        if context is None:
             return self._error(request_id, -32602, "Invalid params")
 
-        semantics, offset, source = parsed
-        if semantics is None:
-            empty_result = None if method == "textDocument/definition" else []
-            return self._result(request_id, empty_result)
-
-        target = semantics.definition_at(offset)
-        if target is None:
-            empty_result = None if method == "textDocument/definition" else []
-            return self._result(request_id, empty_result)
-
-        if method == "textDocument/definition":
-            return self._result(
-                request_id,
-                self._location(semantics.uri, source, target.span),
-            )
-
-        assert isinstance(params, dict)
-        context = params.get("context")
-        include_declaration = False
-        if context is not None:
-            if not isinstance(context, dict) or not isinstance(
-                context.get("includeDeclaration"), bool
-            ):
+        try:
+            parsed = self._semantic_query(params)
+            if parsed is None:
                 return self._error(request_id, -32602, "Invalid params")
-            include_declaration = context["includeDeclaration"]
 
-        locations = [
-            self._location(semantics.uri, source, span)
-            for span in semantics.references_to(
+            self.requests.checkpoint(context)
+            semantics, offset, source = parsed
+            if semantics is None:
+                empty_result = None if method == "textDocument/definition" else []
+                return self._result(request_id, empty_result)
+
+            target = semantics.definition_at(offset)
+            self.requests.checkpoint(context)
+            if target is None:
+                empty_result = None if method == "textDocument/definition" else []
+                return self._result(request_id, empty_result)
+
+            if method == "textDocument/definition":
+                return self._result(
+                    request_id,
+                    self._location(semantics.uri, source, target.span),
+                )
+
+            assert isinstance(params, dict)
+            context_params = params.get("context")
+            include_declaration = False
+            if context_params is not None:
+                if not isinstance(context_params, dict) or not isinstance(
+                    context_params.get("includeDeclaration"), bool
+                ):
+                    return self._error(request_id, -32602, "Invalid params")
+                include_declaration = context_params["includeDeclaration"]
+
+            spans = semantics.references_to(
                 target, include_declaration=include_declaration
             )
-        ]
-        return self._result(request_id, locations)
+            self.requests.checkpoint(context)
+            locations = [
+                self._location(semantics.uri, source, span) for span in spans
+            ]
+            return self._result(request_id, locations)
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
 
     def _handle_rename_request(self, request_id: Any, params: Any) -> dict[str, Any]:
         if not isinstance(params, dict):
@@ -219,30 +250,66 @@ class LanguageServer:
         if not isinstance(new_name, str) or not new_name:
             return self._error(request_id, -32602, "Invalid params")
 
-        parsed = self._semantic_query(params)
-        if parsed is None:
+        context = self._start_document_request(request_id, params)
+        if context is None:
             return self._error(request_id, -32602, "Invalid params")
 
-        semantics, offset, source = parsed
-        if semantics is None:
-            return self._result(request_id, None)
+        try:
+            parsed = self._semantic_query(params)
+            if parsed is None:
+                return self._error(request_id, -32602, "Invalid params")
 
-        target = semantics.definition_at(offset)
-        if target is None:
-            return self._result(request_id, None)
+            self.requests.checkpoint(context)
+            semantics, offset, source = parsed
+            if semantics is None:
+                return self._result(request_id, None)
 
-        spans = semantics.references_to(target, include_declaration=True)
-        previous_end = -1
-        for span in spans:
-            if span.start < previous_end:
-                return self._error(request_id, -32603, "Unsafe overlapping rename edits")
-            previous_end = span.end
+            target = semantics.definition_at(offset)
+            self.requests.checkpoint(context)
+            if target is None:
+                return self._result(request_id, None)
 
-        edits = [
-            {"range": self._range(source, span), "newText": new_name}
-            for span in spans
-        ]
-        return self._result(request_id, {"changes": {semantics.uri: edits}})
+            spans = semantics.references_to(target, include_declaration=True)
+            self.requests.checkpoint(context)
+            previous_end = -1
+            for span in spans:
+                if span.start < previous_end:
+                    return self._error(request_id, -32603, "Unsafe overlapping rename edits")
+                previous_end = span.end
+
+            edits = [
+                {"range": self._range(source, span), "newText": new_name}
+                for span in spans
+            ]
+            self.requests.checkpoint(context)
+            return self._result(request_id, {"changes": {semantics.uri: edits}})
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _start_document_request(self, request_id: Any, params: Any):
+        uri = self._document_uri(params)
+        if uri is None:
+            return None
+        try:
+            return self.requests.start(request_id, uri=uri)
+        except RequestError:
+            return None
+
+    @staticmethod
+    def _document_uri(params: Any) -> str | None:
+        if not isinstance(params, dict):
+            return None
+        text_document = params.get("textDocument")
+        if not isinstance(text_document, dict):
+            return None
+        uri = text_document.get("uri")
+        if not isinstance(uri, str) or not uri:
+            return None
+        return uri
 
     def _semantic_query(
         self, params: Any
