@@ -113,3 +113,78 @@ def test_same_version_semantic_replacement_suppresses_stale_response(
         }
     ]
     assert len(server.requests) == 0
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "textDocument/definition",
+        "textDocument/references",
+        "textDocument/rename",
+    ],
+)
+def test_document_change_suppresses_stale_empty_semantic_response(
+    method: str, monkeypatch
+) -> None:
+    server = LanguageServer()
+    server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+    uri = "file:///workspace/empty.nova"
+    server.handle(
+        notification(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "nova",
+                    "version": 1,
+                    "text": "foo foo",
+                }
+            },
+        )
+    )
+
+    entered = Event()
+    release = Event()
+    responses: list[dict[str, Any] | None] = []
+    original = server.requests.checkpoint
+    calls = 0
+
+    def blocked_checkpoint(context):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            entered.set()
+            assert release.wait(timeout=5)
+        return original(context)
+
+    monkeypatch.setattr(server.requests, "checkpoint", blocked_checkpoint)
+    thread = Thread(
+        target=lambda: responses.append(
+            server.handle(request(method, 42, params_for(method, uri)))
+        )
+    )
+    thread.start()
+    assert entered.wait(timeout=5)
+
+    server.handle(
+        notification(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": "bar"}],
+            },
+        )
+    )
+
+    release.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert responses == [
+        {
+            "jsonrpc": "2.0",
+            "id": 42,
+            "error": {"code": -32801, "message": "Content modified"},
+        }
+    ]
+    assert len(server.requests) == 0
