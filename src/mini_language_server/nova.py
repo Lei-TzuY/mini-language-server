@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .diagnostics import Diagnostic
 from .documents import Document
 from .semantic import Reference, SemanticError, SemanticSnapshot
 from .server import LanguageServer
@@ -31,7 +32,8 @@ class NovaFunctionAdapter:
 
     This adapter intentionally owns a bounded subset: named ``fn`` declarations and
     identifier calls. Calls resolve only when exactly one declaration with that name
-    exists, so ambiguous duplicate declarations never produce an unsafe reference.
+    exists. Duplicate declarations, unresolved calls, and calls made ambiguous by
+    duplicate declarations are surfaced through the generic diagnostic pipeline.
     """
 
     language_id = "nova"
@@ -51,7 +53,7 @@ class NovaFunctionAdapter:
         return NovaFunctionSyntax(declarations=declarations, calls=calls)
 
     def publish(self, server: LanguageServer, document: Document) -> SemanticSnapshot:
-        """Publish syntax, symbols, and semantics against one exact document object."""
+        """Publish one exact Nova snapshot chain and its deterministic diagnostics."""
         parsed = self.parse(document.text)
         syntax = server.syntax.publish(document, parsed)
         symbols = server.symbols.publish(
@@ -63,12 +65,48 @@ class NovaFunctionAdapter:
         for symbol in symbols.symbols:
             by_name.setdefault(symbol.name, []).append(symbol)
 
-        references = []
+        references: list[Reference] = []
+        diagnostics: list[Diagnostic] = []
+
+        for name, candidates in sorted(by_name.items()):
+            if len(candidates) <= 1:
+                continue
+            for candidate in candidates:
+                diagnostics.append(
+                    Diagnostic(
+                        candidate.span,
+                        f"duplicate function declaration '{name}'",
+                        code="nova.duplicate-function",
+                        source="nova",
+                    )
+                )
+
         for name, span in parsed.calls:
             candidates = by_name.get(name, [])
             if len(candidates) == 1:
                 references.append(Reference(span, candidates[0]))
-        return server.semantics.publish(symbols, references)
+            elif not candidates:
+                diagnostics.append(
+                    Diagnostic(
+                        span,
+                        f"unresolved function '{name}'",
+                        code="nova.unresolved-function",
+                        source="nova",
+                    )
+                )
+            else:
+                diagnostics.append(
+                    Diagnostic(
+                        span,
+                        f"ambiguous function call '{name}'",
+                        code="nova.ambiguous-function",
+                        source="nova",
+                    )
+                )
+
+        semantic = server.semantics.publish(symbols, references)
+        server.publish_diagnostics(semantic, diagnostics)
+        return semantic
 
 
 class NovaLanguageServer(LanguageServer):
