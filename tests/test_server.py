@@ -33,6 +33,7 @@ def test_initialize_transitions_server_to_running() -> None:
         "definitionProvider": True,
         "referencesProvider": True,
         "renameProvider": True,
+        "hoverProvider": True,
     }
     assert server.state is ServerState.RUNNING
 
