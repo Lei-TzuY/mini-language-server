@@ -70,6 +70,7 @@ class LanguageServer:
                         "definitionProvider": True,
                         "referencesProvider": True,
                         "renameProvider": True,
+                        "hoverProvider": True,
                     },
                     "serverInfo": {"name": "mini-language-server", "version": "0.1.0"},
                 },
@@ -102,7 +103,11 @@ class LanguageServer:
             self._handle_document_notification(method, message.get("params"))
             return None
 
-        if is_request and method in {"textDocument/definition", "textDocument/references"}:
+        if is_request and method in {
+            "textDocument/definition",
+            "textDocument/references",
+            "textDocument/hover",
+        }:
             return self._handle_semantic_request(method, request_id, message.get("params"))
 
         if is_request and method == "textDocument/rename":
@@ -211,18 +216,29 @@ class LanguageServer:
             self.requests.checkpoint(context)
             semantics, offset, source = parsed
             if semantics is None:
-                empty_result = None if method == "textDocument/definition" else []
+                empty_result = [] if method == "textDocument/references" else None
                 self.requests.checkpoint(context)
                 return self._result(request_id, empty_result)
 
             target = semantics.definition_at(offset)
             self.requests.checkpoint(context)
             if target is None:
-                empty_result = None if method == "textDocument/definition" else []
+                empty_result = [] if method == "textDocument/references" else None
                 return self._current_semantic_result(semantics, request_id, empty_result)
 
             if method == "textDocument/definition":
                 result = self._location(semantics.uri, source, target.span)
+                self.requests.checkpoint(context)
+                return self._current_semantic_result(semantics, request_id, result)
+
+            if method == "textDocument/hover":
+                result = {
+                    "contents": {
+                        "kind": "plaintext",
+                        "value": f"{target.kind} {target.name}",
+                    },
+                    "range": self._range(source, target.span),
+                }
                 self.requests.checkpoint(context)
                 return self._current_semantic_result(semantics, request_id, result)
 
