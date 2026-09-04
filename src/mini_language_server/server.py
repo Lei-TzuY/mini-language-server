@@ -10,7 +10,7 @@ from .cancellation import RequestCancelled, RequestError, RequestTracker, StaleR
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticStore
 from .documents import DocumentError, DocumentStore
 from .protocol import JsonRpcError
-from .semantic import SemanticDatabase, SemanticSnapshot
+from .semantic import SemanticDatabase, SemanticError, SemanticSnapshot
 from .source import Position, SourceError, SourceText, Span
 from .symbols import SymbolIndex
 from .syntax import SyntaxStore
@@ -218,13 +218,12 @@ class LanguageServer:
             self.requests.checkpoint(context)
             if target is None:
                 empty_result = None if method == "textDocument/definition" else []
-                return self._result(request_id, empty_result)
+                return self._current_semantic_result(semantics, request_id, empty_result)
 
             if method == "textDocument/definition":
-                return self._result(
-                    request_id,
-                    self._location(semantics.uri, source, target.span),
-                )
+                result = self._location(semantics.uri, source, target.span)
+                self.requests.checkpoint(context)
+                return self._current_semantic_result(semantics, request_id, result)
 
             assert isinstance(params, dict)
             context_params = params.get("context")
@@ -243,7 +242,8 @@ class LanguageServer:
             locations = [
                 self._location(semantics.uri, source, span) for span in spans
             ]
-            return self._result(request_id, locations)
+            self.requests.checkpoint(context)
+            return self._current_semantic_result(semantics, request_id, locations)
         except RequestCancelled:
             return self._error(request_id, -32800, "Request cancelled")
         except StaleRequest:
@@ -275,7 +275,7 @@ class LanguageServer:
             target = semantics.definition_at(offset)
             self.requests.checkpoint(context)
             if target is None:
-                return self._result(request_id, None)
+                return self._current_semantic_result(semantics, request_id, None)
 
             spans = semantics.references_to(target, include_declaration=True)
             self.requests.checkpoint(context)
@@ -290,13 +290,25 @@ class LanguageServer:
                 for span in spans
             ]
             self.requests.checkpoint(context)
-            return self._result(request_id, {"changes": {semantics.uri: edits}})
+            result = {"changes": {semantics.uri: edits}}
+            return self._current_semantic_result(semantics, request_id, result)
         except RequestCancelled:
             return self._error(request_id, -32800, "Request cancelled")
         except StaleRequest:
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
+
+    def _current_semantic_result(
+        self, semantics: SemanticSnapshot, request_id: Any, result: Any
+    ) -> dict[str, Any]:
+        """Publish a response only while its exact semantic snapshot remains current."""
+        try:
+            return self.semantics.commit_if_current(
+                semantics, lambda: self._result(request_id, result)
+            )
+        except SemanticError:
+            return self._error(request_id, -32801, "Content modified")
 
     def _start_document_request(self, request_id: Any, params: Any):
         uri = self._document_uri(params)
