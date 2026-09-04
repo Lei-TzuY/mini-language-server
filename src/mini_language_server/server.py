@@ -212,6 +212,7 @@ class LanguageServer:
             semantics, offset, source = parsed
             if semantics is None:
                 empty_result = None if method == "textDocument/definition" else []
+                self.requests.checkpoint(context)
                 return self._result(request_id, empty_result)
 
             target = semantics.definition_at(offset)
@@ -270,6 +271,7 @@ class LanguageServer:
             self.requests.checkpoint(context)
             semantics, offset, source = parsed
             if semantics is None:
+                self.requests.checkpoint(context)
                 return self._result(request_id, None)
 
             target = semantics.definition_at(offset)
