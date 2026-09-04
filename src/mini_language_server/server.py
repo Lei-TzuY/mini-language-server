@@ -62,16 +62,19 @@ class LanguageServer:
             if not is_request:
                 return None
             self.state = ServerState.RUNNING
+            capabilities: dict[str, Any] = {
+                "textDocumentSync": 2,
+                "definitionProvider": True,
+                "referencesProvider": True,
+                "renameProvider": True,
+                "hoverProvider": True,
+            }
+            if self._client_supports_completion(message.get("params")):
+                capabilities["completionProvider"] = {"resolveProvider": False}
             return self._result(
                 request_id,
                 {
-                    "capabilities": {
-                        "textDocumentSync": 2,
-                        "definitionProvider": True,
-                        "referencesProvider": True,
-                        "renameProvider": True,
-                        "hoverProvider": True,
-                    },
+                    "capabilities": capabilities,
                     "serverInfo": {"name": "mini-language-server", "version": "0.1.0"},
                 },
             )
@@ -107,6 +110,7 @@ class LanguageServer:
             "textDocument/definition",
             "textDocument/references",
             "textDocument/hover",
+            "textDocument/completion",
         }:
             return self._handle_semantic_request(method, request_id, message.get("params"))
 
@@ -216,9 +220,28 @@ class LanguageServer:
             self.requests.checkpoint(context)
             semantics, offset, source = parsed
             if semantics is None:
-                empty_result = [] if method == "textDocument/references" else None
+                empty_result = (
+                    []
+                    if method in {"textDocument/references", "textDocument/completion"}
+                    else None
+                )
                 self.requests.checkpoint(context)
                 return self._result(request_id, empty_result)
+
+            if method == "textDocument/completion":
+                items: list[dict[str, str]] = []
+                seen: set[tuple[str, str]] = set()
+                for symbol in sorted(
+                    semantics.symbols.symbols,
+                    key=lambda item: (item.name, item.kind, item.span.start, item.span.end),
+                ):
+                    key = (symbol.name, symbol.kind)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    items.append({"label": symbol.name, "detail": symbol.kind})
+                self.requests.checkpoint(context)
+                return self._current_semantic_result(semantics, request_id, items)
 
             target = semantics.definition_at(offset)
             self.requests.checkpoint(context)
@@ -348,6 +371,18 @@ class LanguageServer:
         if not isinstance(uri, str) or not uri:
             return None
         return uri
+
+    @staticmethod
+    def _client_supports_completion(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        text_document = capabilities.get("textDocument")
+        if not isinstance(text_document, dict):
+            return False
+        return isinstance(text_document.get("completion"), dict)
 
     def _semantic_query(
         self, params: Any
