@@ -5,8 +5,14 @@ from typing import Any
 from mini_language_server.nova import NovaLanguageServer
 
 
-def request(method: str, request_id: int, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    message: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
+def request(
+    method: str, request_id: int, params: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    message: dict[str, Any] = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+    }
     if params is not None:
         message["params"] = params
     return message
@@ -16,7 +22,9 @@ def notification(method: str, params: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialize(server: NovaLanguageServer, *, code_action: bool = True) -> dict[str, Any]:
+def initialize(
+    server: NovaLanguageServer, *, code_action: bool = True
+) -> dict[str, Any]:
     text_document: dict[str, Any] = {}
     if code_action:
         text_document["codeAction"] = {}
@@ -43,7 +51,14 @@ def open_nova(server: NovaLanguageServer, uri: str, version: int, text: str) -> 
     )
 
 
-def code_action(server: NovaLanguageServer, uri: str, request_id: int, line: int, start: int, end: int) -> dict[str, Any]:
+def code_action(
+    server: NovaLanguageServer,
+    uri: str,
+    request_id: int,
+    line: int,
+    start: int,
+    end: int,
+) -> dict[str, Any]:
     result = server.handle(
         request(
             "textDocument/codeAction",
@@ -126,11 +141,21 @@ def test_did_change_replaces_quick_fix_with_current_diagnostic() -> None:
     )
 
     result = code_action(server, uri, 3, 0, 12, 20)
-    assert [action["title"] for action in result["result"]] == ["Create function 'new_call'"]
+    assert [action["title"] for action in result["result"]] == [
+        "Create function 'new_call'"
+    ]
 
 
 class ReplacingNovaServer(NovaLanguageServer):
-    def _nova_code_actions(self, uri, document, source, diagnostics, start_offset, end_offset):
+    def _nova_code_actions(
+        self,
+        uri,
+        document,
+        source,
+        diagnostics,
+        start_offset,
+        end_offset,
+    ):
         actions = super()._nova_code_actions(
             uri, document, source, diagnostics, start_offset, end_offset
         )
@@ -160,10 +185,14 @@ def test_close_reopen_uses_new_diagnostic_identity() -> None:
     old = server.diagnostics.get(uri)
     assert old is not None
 
-    server.handle(notification("textDocument/didClose", {"textDocument": {"uri": uri}}))
+    server.handle(
+        notification("textDocument/didClose", {"textDocument": {"uri": uri}})
+    )
     open_nova(server, uri, 1, "fn main() { second() }\n")
     current = server.diagnostics.get(uri)
     assert current is not None and current is not old
 
     result = code_action(server, uri, 5, 0, 12, 18)
-    assert [action["title"] for action in result["result"]] == ["Create function 'second'"]
+    assert [action["title"] for action in result["result"]] == [
+        "Create function 'second'"
+    ]
