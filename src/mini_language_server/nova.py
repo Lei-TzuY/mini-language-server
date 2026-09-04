@@ -168,9 +168,15 @@ class NovaLanguageServer(LanguageServer):
                 return self._error(request_id, -32602, "Invalid params")
             only = action_context.get("only")
             if only is not None:
-                if not isinstance(only, list) or not all(isinstance(item, str) for item in only):
+                valid_only = isinstance(only, list) and all(
+                    isinstance(item, str) for item in only
+                )
+                if not valid_only:
                     return self._error(request_id, -32602, "Invalid params")
-                if not any(item == "quickfix" or item.startswith("quickfix.") for item in only):
+                supports_quickfix = any(
+                    item == "quickfix" or item.startswith("quickfix.") for item in only
+                )
+                if not supports_quickfix:
                     self.requests.checkpoint(context)
                     return self._result(request_id, [])
 
@@ -231,11 +237,13 @@ class NovaLanguageServer(LanguageServer):
         for diagnostic in diagnostics:
             if diagnostic.code != "nova.unresolved-function":
                 continue
-            overlaps = (
-                diagnostic.span.start <= start_offset <= diagnostic.span.end
-                if start_offset == end_offset
-                else diagnostic.span.start < end_offset and start_offset < diagnostic.span.end
-            )
+            if start_offset == end_offset:
+                overlaps = diagnostic.span.start <= start_offset <= diagnostic.span.end
+            else:
+                overlaps = (
+                    diagnostic.span.start < end_offset
+                    and start_offset < diagnostic.span.end
+                )
             if not overlaps:
                 continue
             name = document.text[diagnostic.span.start : diagnostic.span.end]
