@@ -11,6 +11,7 @@ from .diagnostics import Diagnostic, DiagnosticError, DiagnosticStore
 from .documents import DocumentError, DocumentStore
 from .protocol import JsonRpcError
 from .semantic import SemanticDatabase, SemanticError, SemanticSnapshot
+from .semantic_tokens import TOKEN_TYPES, encode_semantic_tokens
 from .source import Position, SourceError, SourceText, Span
 from .symbols import SymbolIndex
 from .syntax import SyntaxStore
@@ -69,8 +70,14 @@ class LanguageServer:
                 "renameProvider": True,
                 "hoverProvider": True,
             }
-            if self._client_supports_completion(message.get("params")):
+            params = message.get("params")
+            if self._client_supports_completion(params):
                 capabilities["completionProvider"] = {"resolveProvider": False}
+            if self._client_supports_semantic_tokens(params):
+                capabilities["semanticTokensProvider"] = {
+                    "legend": {"tokenTypes": list(TOKEN_TYPES), "tokenModifiers": []},
+                    "full": True,
+                }
             return self._result(
                 request_id,
                 {
@@ -113,6 +120,9 @@ class LanguageServer:
             "textDocument/completion",
         }:
             return self._handle_semantic_request(method, request_id, message.get("params"))
+
+        if is_request and method == "textDocument/semanticTokens/full":
+            return self._handle_semantic_tokens_request(request_id, message.get("params"))
 
         if is_request and method == "textDocument/rename":
             return self._handle_rename_request(request_id, message.get("params"))
@@ -291,6 +301,35 @@ class LanguageServer:
         finally:
             self.requests.finish(context)
 
+    def _handle_semantic_tokens_request(self, request_id: Any, params: Any) -> dict[str, Any]:
+        context = self._start_document_request(request_id, params)
+        if context is None:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            uri = self._document_uri(params)
+            assert uri is not None
+            self.requests.checkpoint(context)
+            document = self.documents.get(uri)
+            if document is None:
+                return self._error(request_id, -32602, "Invalid params")
+            semantics = self.semantics.get(uri)
+            if semantics is None or semantics.symbols.syntax.document is not document:
+                self.requests.checkpoint(context)
+                return self._result(request_id, {"data": []})
+
+            data = encode_semantic_tokens(semantics.symbols)
+            self.requests.checkpoint(context)
+            return self._current_semantic_result(
+                semantics, request_id, {"data": data}
+            )
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
     def _handle_rename_request(self, request_id: Any, params: Any) -> dict[str, Any]:
         if not isinstance(params, dict):
             return self._error(request_id, -32602, "Invalid params")
@@ -383,6 +422,25 @@ class LanguageServer:
         if not isinstance(text_document, dict):
             return False
         return isinstance(text_document.get("completion"), dict)
+
+    @staticmethod
+    def _client_supports_semantic_tokens(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        text_document = capabilities.get("textDocument")
+        if not isinstance(text_document, dict):
+            return False
+        semantic_tokens = text_document.get("semanticTokens")
+        if not isinstance(semantic_tokens, dict):
+            return False
+        requests = semantic_tokens.get("requests")
+        if not isinstance(requests, dict):
+            return False
+        full = requests.get("full")
+        return full is True or isinstance(full, dict)
 
     def _semantic_query(
         self, params: Any
