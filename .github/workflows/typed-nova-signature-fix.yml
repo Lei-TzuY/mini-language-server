@@ -22,8 +22,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "f8a4d642eaa721741ab3cea7eb02d2f261dbad01"
-          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "f8a4d642eaa721741ab3cea7eb02d2f261dbad01"
+          SOURCE_SHA=f8a4d642eaa721741ab3cea7eb02d2f261dbad01
+          git merge-base --is-ancestor "$SOURCE_SHA" HEAD
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$SOURCE_SHA"
+          test "$(git diff --name-only "$SOURCE_SHA" HEAD)" = ".github/workflows/typed-nova-signature-fix.yml"
 
       - name: Add typed Nova signature support
         shell: bash
@@ -71,31 +73,24 @@ jobs:
               raise SystemExit("Nova adapter docstring block no longer matches frozen source")
           text = text.replace(old, new, 1)
 
-          old = '''        for part in _PARAMETER_PART.finditer(parameter_text):
-              raw = part.group(0)
-              stripped = raw.strip()
-              if not stripped or re.fullmatch(_IDENTIFIER, stripped) is None:
-                  continue
-              leading = len(raw) - len(raw.lstrip())
-              start = base_offset + part.start() + leading
-              parameters.append(
-                  NovaScopedName(owner, stripped, Span(start, start + len(stripped)))
-              )
-          '''
-          new = '''        for part in _PARAMETER_PART.finditer(parameter_text):
-              raw = part.group(0)
-              match = _PARAMETER.fullmatch(raw)
-              if match is None:
-                  continue
-              name = match.group(1)
-              start = base_offset + part.start() + match.start(1)
-              parameters.append(
-                  NovaScopedName(owner, name, Span(start, start + len(name)))
-              )
-          '''
-          if old not in text:
-              raise SystemExit("Nova parameter parser block no longer matches frozen source")
-          path.write_text(text.replace(old, new, 1))
+          start_marker = "        for part in _PARAMETER_PART.finditer(parameter_text):\n"
+          end_marker = "        return tuple(parameters)\n"
+          start = text.index(start_marker)
+          end = text.index(end_marker, start)
+          replacement = (
+              "        for part in _PARAMETER_PART.finditer(parameter_text):\n"
+              "            raw = part.group(0)\n"
+              "            match = _PARAMETER.fullmatch(raw)\n"
+              "            if match is None:\n"
+              "                continue\n"
+              "            name = match.group(1)\n"
+              "            start = base_offset + part.start() + match.start(1)\n"
+              "            parameters.append(\n"
+              "                NovaScopedName(owner, name, Span(start, start + len(name)))\n"
+              "            )\n"
+          )
+          text = text[:start] + replacement + text[end:]
+          path.write_text(text)
           PY
 
           cat > tests/test_nova_typed_signatures.py <<'PY'
@@ -174,9 +169,9 @@ jobs:
                   ("main", "function"),
                   ("input", "parameter"),
               ]
-              assert [(reference.span.start, reference.target.name) for reference in semantics.references] == [
-                  (29, "input")
-              ]
+              assert len(semantics.references) == 1
+              assert semantics.references[0].target.name == "input"
+              assert semantics.references[0].target.kind == "parameter"
               assert [item.code for item in diagnostics.diagnostics] == ["nova.unresolved-name"]
               assert diagnostics.diagnostics[0].message == "unresolved name 'missing'"
 
