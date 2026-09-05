@@ -39,6 +39,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 )
                 if workspace_result is not None:
                     return workspace_result
+            if method == "textDocument/rename":
+                workspace_result = self._handle_workspace_rename(
+                    message.get("id"), message.get("params")
+                )
+                if workspace_result is not None:
+                    return workspace_result
 
         result = super().handle(message)
         if method == "initialize" and result is not None and "result" in result:
@@ -70,15 +76,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         except WorkspaceIndexError:
             return
 
-    def _handle_workspace_navigation(
-        self, method: str, request_id: Any, params: Any
-    ) -> dict[str, Any] | None:
-        """Resolve Nova functions across exact current workspace snapshots.
-
-        Returning ``None`` delegates non-Nova/local-only targets to the generic server.
-        A Nova function name becomes workspace-addressable only when exactly one indexed
-        function declaration owns that name, so ambiguous workspaces never guess.
-        """
+    def _workspace_function_query(self, params: Any):
         parsed = self._semantic_query(params)
         if parsed is None:
             return None
@@ -90,18 +88,28 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return None
 
         target = semantics.definition_at(offset)
-        name: str | None = None
         if target is not None:
             if target.kind != "function":
                 return None
-            name = target.name
-        else:
-            for call_name, span in tree.calls:
-                if span.start <= offset < span.end:
-                    name = call_name
-                    break
-        if name is None:
+            return semantics, target.name
+        for call_name, span in tree.calls:
+            if span.start <= offset < span.end:
+                return semantics, call_name
+        return None
+
+    def _handle_workspace_navigation(
+        self, method: str, request_id: Any, params: Any
+    ) -> dict[str, Any] | None:
+        """Resolve Nova functions across exact current workspace snapshots.
+
+        Returning ``None`` delegates non-Nova/local-only targets to the generic server.
+        A Nova function name becomes workspace-addressable only when exactly one indexed
+        function declaration owns that name, so ambiguous workspaces never guess.
+        """
+        query = self._workspace_function_query(params)
+        if query is None:
             return None
+        semantics, name = query
 
         declarations = tuple(
             declaration
@@ -165,6 +173,92 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
                     snapshots, lambda: self._result(request_id, result)
+                )
+            except WorkspaceIndexError:
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _handle_workspace_rename(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any] | None:
+        if not isinstance(params, dict):
+            return self._error(request_id, -32602, "Invalid params")
+        new_name = params.get("newName")
+        if not isinstance(new_name, str) or not new_name:
+            return self._error(request_id, -32602, "Invalid params")
+
+        query = self._workspace_function_query(params)
+        if query is None:
+            return None
+        semantics, name = query
+        declarations = tuple(
+            declaration
+            for declaration in self.workspace_symbols.declarations(name)
+            if declaration.symbol.kind == "function"
+        )
+        snapshots = self.workspace_symbols.snapshots()
+        try:
+            context = self.requests.start(request_id, uri=semantics.uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            if len(declarations) != 1:
+                try:
+                    return self.workspace_symbols.commit_snapshots_if_current(
+                        snapshots, lambda: self._result(request_id, None)
+                    )
+                except WorkspaceIndexError:
+                    return self._error(request_id, -32801, "Content modified")
+
+            declaration = declarations[0]
+            edits_by_uri: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+            declaration_source = SourceText(
+                declaration.snapshot.symbols.syntax.document.text
+            )
+            edits_by_uri.setdefault(declaration.uri, []).append(
+                (
+                    declaration.symbol.span.start,
+                    {
+                        "range": self._range(
+                            declaration_source, declaration.symbol.span
+                        ),
+                        "newText": new_name,
+                    },
+                )
+            )
+
+            for snapshot in snapshots:
+                snapshot_tree = snapshot.symbols.syntax.tree
+                if not isinstance(snapshot_tree, NovaFunctionSyntax):
+                    continue
+                source = SourceText(snapshot.symbols.syntax.document.text)
+                for call_name, span in snapshot_tree.calls:
+                    if call_name != name:
+                        continue
+                    edits_by_uri.setdefault(snapshot.uri, []).append(
+                        (
+                            span.start,
+                            {"range": self._range(source, span), "newText": new_name},
+                        )
+                    )
+
+            changes: dict[str, list[dict[str, Any]]] = {}
+            for uri in sorted(edits_by_uri):
+                ordered = sorted(edits_by_uri[uri], key=lambda item: item[0])
+                changes[uri] = [edit for _, edit in ordered]
+
+            self.requests.checkpoint(context)
+            try:
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots,
+                    lambda: self._result(request_id, {"changes": changes}),
                 )
             except WorkspaceIndexError:
                 return self._error(request_id, -32801, "Content modified")
