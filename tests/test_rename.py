@@ -63,10 +63,59 @@ def rename_params(uri: str, *, new_name: object = "bar") -> dict:
     }
 
 
-def test_initialize_advertises_rename_provider() -> None:
+def test_initialize_advertises_prepare_rename_provider() -> None:
     response = LanguageServer().handle(request("initialize"))
     assert response is not None
-    assert response["result"]["capabilities"]["renameProvider"] is True
+    assert response["result"]["capabilities"]["renameProvider"] == {
+        "prepareProvider": True
+    }
+
+
+def test_prepare_rename_returns_utf16_range_and_placeholder() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "let 😀foo = 1\nfoo foo\n")
+    publish_semantics(server, uri)
+
+    response = server.handle(
+        request(
+            "textDocument/prepareRename",
+            params={
+                "textDocument": {"uri": uri},
+                "position": {"line": 1, "character": 1},
+            },
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "range": {
+                "start": {"line": 0, "character": 6},
+                "end": {"line": 0, "character": 9},
+            },
+            "placeholder": "foo",
+        },
+    }
+
+
+def test_prepare_rename_missing_symbol_returns_null() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "let foo = 1\n")
+
+    response = server.handle(
+        request(
+            "textDocument/prepareRename",
+            params={
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": 0},
+            },
+        )
+    )
+
+    assert response == {"jsonrpc": "2.0", "id": 1, "result": None}
 
 
 def test_rename_returns_deterministic_utf16_workspace_edits() -> None:
@@ -179,6 +228,28 @@ def test_document_change_suppresses_stale_rename_result() -> None:
     )
 
     assert response == {"jsonrpc": "2.0", "id": 1, "result": None}
+
+
+def test_prepare_rename_rejects_invalid_utf16_position() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "😀foo")
+
+    response = server.handle(
+        request(
+            "textDocument/prepareRename",
+            params={
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": 1},
+            },
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {"code": -32602, "message": "Invalid params"},
+    }
 
 
 def test_rename_rejects_invalid_utf16_position() -> None:
