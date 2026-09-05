@@ -5,8 +5,8 @@ from __future__ import annotations
 from contextlib import suppress
 from typing import Any
 
-from .cancellation import RequestCancelled, RequestError
-from .nova import NovaLanguageServer
+from .cancellation import RequestCancelled, RequestError, StaleRequest
+from .nova import NovaFunctionSyntax, NovaLanguageServer
 from .server import ServerState
 from .source import SourceText
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
@@ -20,7 +20,7 @@ _SYMBOL_KINDS = {
 
 
 class WorkspaceNovaLanguageServer(NovaLanguageServer):
-    """Nova server with deterministic, version-safe ``workspace/symbol`` support."""
+    """Nova server with deterministic, version-safe workspace tooling."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -28,12 +28,17 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
-        if (
-            method == "workspace/symbol"
-            and "id" in message
-            and self.state is ServerState.RUNNING
-        ):
-            return self._handle_workspace_symbol(message.get("id"), message.get("params"))
+        if "id" in message and self.state is ServerState.RUNNING:
+            if method == "workspace/symbol":
+                return self._handle_workspace_symbol(
+                    message.get("id"), message.get("params")
+                )
+            if method in {"textDocument/definition", "textDocument/references"}:
+                workspace_result = self._handle_workspace_navigation(
+                    method, message.get("id"), message.get("params")
+                )
+                if workspace_result is not None:
+                    return workspace_result
 
         result = super().handle(message)
         if method == "initialize" and result is not None and "result" in result:
@@ -64,6 +69,123 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             self.workspace_symbols.replace(current, expected=previous)
         except WorkspaceIndexError:
             return
+
+    def _handle_workspace_navigation(
+        self, method: str, request_id: Any, params: Any
+    ) -> dict[str, Any] | None:
+        """Resolve Nova functions across exact current workspace snapshots.
+
+        Returning ``None`` delegates non-Nova/local-only targets to the generic server.
+        A Nova function name becomes workspace-addressable only when exactly one indexed
+        function declaration owns that name, so ambiguous workspaces never guess.
+        """
+        parsed = self._semantic_query(params)
+        if parsed is None:
+            return None
+        semantics, offset, _ = parsed
+        if semantics is None:
+            return None
+        tree = semantics.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return None
+
+        target = semantics.definition_at(offset)
+        name: str | None = None
+        if target is not None:
+            if target.kind != "function":
+                return None
+            name = target.name
+        else:
+            for call_name, span in tree.calls:
+                if span.start <= offset < span.end:
+                    name = call_name
+                    break
+        if name is None:
+            return None
+
+        declarations = tuple(
+            declaration
+            for declaration in self.workspace_symbols.declarations(name)
+            if declaration.symbol.kind == "function"
+        )
+        snapshots = self.workspace_symbols.snapshots()
+        try:
+            context = self.requests.start(request_id, uri=semantics.uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            if len(declarations) != 1:
+                result: Any = [] if method == "textDocument/references" else None
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots, lambda: self._result(request_id, result)
+                )
+
+            declaration = declarations[0]
+            if method == "textDocument/definition":
+                source = SourceText(declaration.snapshot.symbols.syntax.document.text)
+                result = self._location(
+                    declaration.uri, source, declaration.symbol.span
+                )
+            else:
+                include_declaration = self._include_declaration(params)
+                if include_declaration is None:
+                    return self._error(request_id, -32602, "Invalid params")
+                locations: list[tuple[str, int, dict[str, Any]]] = []
+                if include_declaration:
+                    source = SourceText(declaration.snapshot.symbols.syntax.document.text)
+                    locations.append(
+                        (
+                            declaration.uri,
+                            declaration.symbol.span.start,
+                            self._location(
+                                declaration.uri, source, declaration.symbol.span
+                            ),
+                        )
+                    )
+                for snapshot in snapshots:
+                    snapshot_tree = snapshot.symbols.syntax.tree
+                    if not isinstance(snapshot_tree, NovaFunctionSyntax):
+                        continue
+                    source = SourceText(snapshot.symbols.syntax.document.text)
+                    for call_name, span in snapshot_tree.calls:
+                        if call_name == name:
+                            locations.append(
+                                (
+                                    snapshot.uri,
+                                    span.start,
+                                    self._location(snapshot.uri, source, span),
+                                )
+                            )
+                locations.sort(key=lambda item: (item[0], item[1]))
+                result = [location for _, _, location in locations]
+
+            self.requests.checkpoint(context)
+            try:
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots, lambda: self._result(request_id, result)
+                )
+            except WorkspaceIndexError:
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    @staticmethod
+    def _include_declaration(params: Any) -> bool | None:
+        if not isinstance(params, dict):
+            return None
+        context = params.get("context")
+        if context is None:
+            return False
+        if not isinstance(context, dict):
+            return None
+        include = context.get("includeDeclaration")
+        return include if isinstance(include, bool) else None
 
     def _handle_workspace_symbol(self, request_id: Any, params: Any) -> dict[str, Any]:
         if not isinstance(params, dict) or not isinstance(params.get("query"), str):
