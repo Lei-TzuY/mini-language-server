@@ -21,6 +21,7 @@ _CALL = re.compile(rf"\b({_IDENTIFIER})\s*(?=\()")
 _IDENTIFIER_MATCH = re.compile(rf"\b({_IDENTIFIER})\b")
 _PARAMETER_PART = re.compile(r"[^,]+")
 _LOCAL_DECLARATION = re.compile(rf"\blet\s+({_IDENTIFIER})\b")
+_KEYWORDS = frozenset({"fn", "let"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +43,7 @@ class NovaFunctionSyntax:
     parameter_references: tuple[NovaScopedName, ...] = ()
     locals: tuple[NovaScopedName, ...] = ()
     local_references: tuple[NovaScopedName, ...] = ()
+    unresolved_names: tuple[NovaScopedName, ...] = ()
 
 
 class NovaFunctionAdapter:
@@ -52,7 +54,8 @@ class NovaFunctionAdapter:
     resolve only inside the owning function body. A local takes precedence after its
     declaration when exactly one preceding local with that name exists; otherwise a
     unique parameter remains visible. Function calls resolve only when exactly one
-    function declaration with that name exists.
+    function declaration with that name exists. Bare identifiers that cannot resolve
+    to a visible parameter or local are published as deterministic diagnostics.
     """
 
     language_id = "nova"
@@ -94,6 +97,7 @@ class NovaFunctionAdapter:
         parameter_references: list[NovaScopedName] = []
         locals_: list[NovaScopedName] = []
         local_references: list[NovaScopedName] = []
+        unresolved_names: list[NovaScopedName] = []
         declaration_spans: set[Span] = set()
 
         matches = tuple(_FUNCTION_DECLARATION.finditer(text))
@@ -142,7 +146,12 @@ class NovaFunctionAdapter:
                     body_start + identifier.start(1),
                     body_start + identifier.end(1),
                 )
-                if span in call_spans or span in local_declaration_spans:
+                if (
+                    name in _KEYWORDS
+                    or span in call_spans
+                    or span in declaration_spans
+                    or span in local_declaration_spans
+                ):
                     continue
 
                 preceding_locals = [
@@ -159,6 +168,8 @@ class NovaFunctionAdapter:
                 candidates = parameters_by_name.get(name, [])
                 if len(candidates) == 1:
                     parameter_references.append(NovaScopedName(owner, name, span))
+                elif not candidates:
+                    unresolved_names.append(NovaScopedName(owner, name, span))
 
         calls = tuple(
             (match.group(1), Span(match.start(1), match.end(1)))
@@ -172,6 +183,7 @@ class NovaFunctionAdapter:
             parameter_references=tuple(parameter_references),
             locals=tuple(locals_),
             local_references=tuple(local_references),
+            unresolved_names=tuple(unresolved_names),
         )
 
     def publish(self, server: LanguageServer, document: Document) -> SemanticSnapshot:
@@ -273,6 +285,16 @@ class NovaFunctionAdapter:
             ]
             if len(candidates) == 1:
                 references.append(Reference(reference.span, candidates[0]))
+
+        for unresolved in parsed.unresolved_names:
+            diagnostics.append(
+                Diagnostic(
+                    unresolved.span,
+                    f"unresolved name '{unresolved.name}'",
+                    code="nova.unresolved-name",
+                    source="nova",
+                )
+            )
 
         for name, span in parsed.calls:
             candidates = functions_by_name.get(name, [])
