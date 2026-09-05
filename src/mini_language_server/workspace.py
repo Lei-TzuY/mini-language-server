@@ -48,6 +48,11 @@ class WorkspaceSymbolIndex:
         with self._lock:
             return self._snapshots.get(uri)
 
+    def snapshots(self) -> tuple[SemanticSnapshot, ...]:
+        """Return the exact indexed snapshots in deterministic URI order."""
+        with self._lock:
+            return tuple(self._snapshots[uri] for uri in sorted(self._snapshots))
+
     def replace(
         self,
         snapshot: SemanticSnapshot,
@@ -102,9 +107,19 @@ class WorkspaceSymbolIndex:
         callback: Callable[[], _T],
     ) -> _T:
         """Publish a derived workspace result only while every parent is exact-current."""
+        return self.commit_snapshots_if_current(
+            tuple(declaration.snapshot for declaration in declarations), callback
+        )
+
+    def commit_snapshots_if_current(
+        self,
+        snapshots: tuple[SemanticSnapshot, ...],
+        callback: Callable[[], _T],
+    ) -> _T:
+        """Publish only while every exact semantic parent remains workspace-current."""
         with self._lock:
-            for declaration in declarations:
-                if self._snapshots.get(declaration.uri) is not declaration.snapshot:
+            for snapshot in snapshots:
+                if self._snapshots.get(snapshot.uri) is not snapshot:
                     raise WorkspaceIndexError("workspace snapshot was replaced")
             return callback()
 
