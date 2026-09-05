@@ -8,6 +8,9 @@ from .cancellation import RequestCancelled, StaleRequest
 from .document_symbols import NovaProductLanguageServer as _NovaProductLanguageServer
 from .server import ServerState
 
+_DOCUMENT_HIGHLIGHT_READ = 2
+_DOCUMENT_HIGHLIGHT_WRITE = 3
+
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Product server extended with generic exact-snapshot document highlights."""
@@ -70,7 +73,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
             spans = semantics.references_to(target, include_declaration=True)
             highlights = [
-                {"range": self._range(source, span), "kind": 1} for span in spans
+                {
+                    "range": self._range(source, span),
+                    "kind": (
+                        _DOCUMENT_HIGHLIGHT_WRITE
+                        if span == target.span
+                        else _DOCUMENT_HIGHLIGHT_READ
+                    ),
+                }
+                for span in spans
             ]
             self.requests.checkpoint(context)
             return self._current_semantic_result(semantics, request_id, highlights)

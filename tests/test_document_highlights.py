@@ -81,7 +81,7 @@ def test_document_highlight_capability_is_negotiated() -> None:
     assert "documentHighlightProvider" not in unsupported_response["result"]["capabilities"]
 
 
-def test_document_highlights_include_declaration_and_references_deterministically() -> None:
+def test_document_highlights_classify_declaration_and_references_deterministically() -> None:
     server = NovaProductLanguageServer()
     initialize(server)
     uri = "file:///workspace/main.nova"
@@ -100,21 +100,21 @@ def test_document_highlights_include_declaration_and_references_deterministicall
                 "start": {"line": 0, "character": 3},
                 "end": {"line": 0, "character": 9},
             },
-            "kind": 1,
+            "kind": 3,
         },
         {
             "range": {
                 "start": {"line": 1, "character": 12},
                 "end": {"line": 1, "character": 18},
             },
-            "kind": 1,
+            "kind": 2,
         },
         {
             "range": {
                 "start": {"line": 1, "character": 22},
                 "end": {"line": 1, "character": 28},
             },
-            "kind": 1,
+            "kind": 2,
         },
     ]
 
@@ -158,14 +158,14 @@ def test_document_highlights_follow_did_change() -> None:
                 "start": {"line": 0, "character": 3},
                 "end": {"line": 0, "character": 8},
             },
-            "kind": 1,
+            "kind": 3,
         },
         {
             "range": {
                 "start": {"line": 1, "character": 12},
                 "end": {"line": 1, "character": 17},
             },
-            "kind": 1,
+            "kind": 2,
         },
     ]
 
@@ -182,9 +182,12 @@ def test_document_highlights_follow_close_reopen() -> None:
 
     response = highlights(server, uri, 1, 13)
     assert response is not None
-    assert response["result"][0]["range"] == {
-        "start": {"line": 0, "character": 3},
-        "end": {"line": 0, "character": 8},
+    assert response["result"][0] == {
+        "range": {
+            "start": {"line": 0, "character": 3},
+            "end": {"line": 0, "character": 8},
+        },
+        "kind": 3,
     }
 
 
