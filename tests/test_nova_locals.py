@@ -4,6 +4,7 @@ from threading import Event, Thread
 from typing import Any
 
 from mini_language_server.nova import NovaFunctionAdapter, NovaLanguageServer
+from mini_language_server.semantic import Reference
 
 
 def request(method: str, request_id: int, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -289,9 +290,17 @@ def test_same_version_local_semantic_replacement_suppresses_stale_response(monke
     thread.start()
     assert entered.wait(timeout=5)
 
-    document = server.documents.get(uri)
-    assert document is not None and document.version == 1
-    server.nova_adapter.publish(server, document)
+    current = server.semantics.get(uri)
+    syntax = server.syntax.get(uri)
+    assert current is not None and syntax is not None
+    assert current.version == 1
+    symbols = server.symbols.publish(syntax, current.symbols.symbols)
+    symbols_by_span = {symbol.span: symbol for symbol in symbols.symbols}
+    references = [
+        Reference(reference.span, symbols_by_span[reference.target.span])
+        for reference in current.references
+    ]
+    server.semantics.publish(symbols, references)
 
     release.set()
     thread.join(timeout=5)
