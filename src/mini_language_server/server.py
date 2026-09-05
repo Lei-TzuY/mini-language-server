@@ -67,7 +67,7 @@ class LanguageServer:
                 "textDocumentSync": 2,
                 "definitionProvider": True,
                 "referencesProvider": True,
-                "renameProvider": True,
+                "renameProvider": {"prepareProvider": True},
                 "hoverProvider": True,
             }
             params = message.get("params")
@@ -123,6 +123,9 @@ class LanguageServer:
 
         if is_request and method == "textDocument/semanticTokens/full":
             return self._handle_semantic_tokens_request(request_id, message.get("params"))
+
+        if is_request and method == "textDocument/prepareRename":
+            return self._handle_prepare_rename_request(request_id, message.get("params"))
 
         if is_request and method == "textDocument/rename":
             return self._handle_rename_request(request_id, message.get("params"))
@@ -323,6 +326,40 @@ class LanguageServer:
             return self._current_semantic_result(
                 semantics, request_id, {"data": data}
             )
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _handle_prepare_rename_request(self, request_id: Any, params: Any) -> dict[str, Any]:
+        context = self._start_document_request(request_id, params)
+        if context is None:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            parsed = self._semantic_query(params)
+            if parsed is None:
+                return self._error(request_id, -32602, "Invalid params")
+
+            self.requests.checkpoint(context)
+            semantics, offset, source = parsed
+            if semantics is None:
+                self.requests.checkpoint(context)
+                return self._result(request_id, None)
+
+            target = semantics.definition_at(offset)
+            self.requests.checkpoint(context)
+            if target is None:
+                return self._current_semantic_result(semantics, request_id, None)
+
+            result = {
+                "range": self._range(source, target.span),
+                "placeholder": target.name,
+            }
+            self.requests.checkpoint(context)
+            return self._current_semantic_result(semantics, request_id, result)
         except RequestCancelled:
             return self._error(request_id, -32800, "Request cancelled")
         except StaleRequest:
