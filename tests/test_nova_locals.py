@@ -82,7 +82,11 @@ def test_local_uses_drive_navigation_hover_completion_rename_and_tokens() -> Non
         ("input", "parameter"),
         ("value", "variable"),
     ]
-    assert [(reference.span.start, reference.target.kind) for reference in semantics.references] == [
+    actual_references = [
+        (reference.span.start, reference.target.kind)
+        for reference in semantics.references
+    ]
+    assert actual_references == [
         (17, "parameter"),
         (35, "parameter"),
         (41, "variable"),
