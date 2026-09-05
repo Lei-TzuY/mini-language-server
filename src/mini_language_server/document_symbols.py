@@ -53,11 +53,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return self._handle_document_symbol(message.get("id"), message.get("params"))
 
         result = super().handle(message)
-        if method == "initialize" and result is not None and "result" in result:
-            if self._client_supports_document_symbols(message.get("params")):
-                capabilities = result["result"].get("capabilities")
-                if isinstance(capabilities, dict):
-                    capabilities["documentSymbolProvider"] = True
+        if (
+            method == "initialize"
+            and result is not None
+            and "result" in result
+            and self._client_supports_document_symbols(message.get("params"))
+        ):
+            capabilities = result["result"].get("capabilities")
+            if isinstance(capabilities, dict):
+                capabilities["documentSymbolProvider"] = True
         return result
 
     @staticmethod
