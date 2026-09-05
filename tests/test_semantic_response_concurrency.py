@@ -71,6 +71,7 @@ def replace_semantics_without_document_change(server: LanguageServer, uri: str) 
         "textDocument/definition",
         "textDocument/references",
         "textDocument/rename",
+        "textDocument/prepareRename",
         "textDocument/hover",
     ],
 )
@@ -122,6 +123,7 @@ def test_same_version_semantic_replacement_suppresses_stale_response(
         "textDocument/definition",
         "textDocument/references",
         "textDocument/rename",
+        "textDocument/prepareRename",
         "textDocument/hover",
     ],
 )
