@@ -26,6 +26,7 @@ LSP / JSON-RPC lifecycle
 - hover, completion, semantic tokens, document symbols, workspace symbol search, and negotiated signature help
 - executable Nova adapter semantics for functions, typed parameters, locals, scoped references, and deterministic unresolved/duplicate diagnostics
 - exact-workspace Nova call diagnostics, including unresolved/ambiguous functions and argument-count mismatches against the current unique declaration
+- negotiated Nova quick fixes for unresolved functions, unresolved local names, and argument-count mismatches, all gated on exact current snapshots
 - push diagnostics with stale-notification suppression
 - request cancellation and stale-document rejection
 - deterministic concurrency regressions for same-version snapshot replacement, close/reopen, and out-of-order publication
