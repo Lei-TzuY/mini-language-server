@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
+from .diagnostics import Diagnostic
 from .nova import NovaFunctionSyntax
 from .server import ServerState
 from .workspace import WorkspaceIndexError
@@ -12,7 +13,7 @@ from .workspace_lsp import WorkspaceNovaLanguageServer
 
 
 class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
-    """Workspace Nova server with negotiated, version-safe signature help."""
+    """Workspace Nova server with negotiated, version-safe product semantics."""
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -33,6 +34,108 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
                         "triggerCharacters": ["(", ","],
                     }
         return result
+
+    def _publish_workspace_diagnostics(self) -> None:
+        """Publish exact-workspace Nova call resolution and argument-count diagnostics."""
+        snapshots = self.workspace_symbols.snapshots()
+        planned: list[tuple[Any, tuple[Diagnostic, ...]]] = []
+        for snapshot in snapshots:
+            tree = snapshot.symbols.syntax.tree
+            if not isinstance(tree, NovaFunctionSyntax):
+                continue
+            current = self.diagnostics.get(snapshot.uri)
+            if current is None or current.semantic is not snapshot:
+                continue
+            diagnostics = [
+                diagnostic
+                for diagnostic in current.diagnostics
+                if diagnostic.code
+                not in {
+                    "nova.unresolved-function",
+                    "nova.ambiguous-function",
+                    "nova.argument-count",
+                }
+            ]
+            text = snapshot.symbols.syntax.document.text
+            for name, span in tree.calls:
+                declarations = tuple(
+                    declaration
+                    for declaration in self.workspace_symbols.declarations(name)
+                    if declaration.symbol.kind == "function"
+                )
+                if len(declarations) == 0:
+                    diagnostics.append(
+                        Diagnostic(
+                            span,
+                            f"unresolved function '{name}'",
+                            code="nova.unresolved-function",
+                            source="nova",
+                        )
+                    )
+                elif len(declarations) > 1:
+                    diagnostics.append(
+                        Diagnostic(
+                            span,
+                            f"ambiguous function call '{name}'",
+                            code="nova.ambiguous-function",
+                            source="nova",
+                        )
+                    )
+                else:
+                    expected = self._declaration_parameter_count(declarations[0])
+                    actual = self._call_argument_count(text, span.end)
+                    if actual is not None and actual != expected:
+                        diagnostics.append(
+                            Diagnostic(
+                                span,
+                                (
+                                    f"function '{name}' expects {expected} "
+                                    f"argument(s) but got {actual}"
+                                ),
+                                code="nova.argument-count",
+                                source="nova",
+                            )
+                        )
+            planned.append((snapshot, tuple(diagnostics)))
+
+        def publish() -> None:
+            for snapshot, diagnostics in planned:
+                self.publish_diagnostics(snapshot, diagnostics)
+
+        try:
+            self.workspace_symbols.commit_snapshots_if_current(snapshots, publish)
+        except WorkspaceIndexError:
+            return
+
+    @staticmethod
+    def _declaration_parameter_count(declaration: Any) -> int:
+        tree = declaration.snapshot.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return 0
+        owner = declaration.symbol.span
+        return sum(1 for parameter in tree.parameters if parameter.owner == owner)
+
+    @classmethod
+    def _call_argument_count(cls, text: str, name_end: int) -> int | None:
+        opening = text.find("(", name_end)
+        if opening < 0 or text[name_end:opening].strip():
+            return None
+        closing = cls._matching_paren(text, opening)
+        if closing is None:
+            return None
+        body = text[opening + 1 : closing]
+        if not body.strip():
+            return 0
+        count = 1
+        depth = 0
+        for character in body:
+            if character == "(":
+                depth += 1
+            elif character == ")" and depth:
+                depth -= 1
+            elif character == "," and depth == 0:
+                count += 1
+        return count
 
     def _handle_signature_help(self, request_id: Any, params: Any) -> dict[str, Any]:
         parsed = self._semantic_query(params)
