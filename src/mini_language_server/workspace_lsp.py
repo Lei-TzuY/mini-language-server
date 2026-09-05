@@ -6,6 +6,7 @@ from contextlib import suppress
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
+from .diagnostics import Diagnostic
 from .nova import NovaFunctionSyntax, NovaLanguageServer
 from .server import ServerState
 from .source import SourceText
@@ -83,6 +84,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if previous is not None:
                 with suppress(WorkspaceIndexError):
                     self.workspace_symbols.remove(uri, expected=previous)
+            self._publish_workspace_diagnostics()
             return
         if method not in {"textDocument/didOpen", "textDocument/didChange"}:
             return
@@ -91,6 +93,59 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return
         try:
             self.workspace_symbols.replace(current, expected=previous)
+        except WorkspaceIndexError:
+            return
+        self._publish_workspace_diagnostics()
+
+    def _publish_workspace_diagnostics(self) -> None:
+        """Reconcile Nova call diagnostics against one exact workspace snapshot set."""
+        snapshots = self.workspace_symbols.snapshots()
+        planned: list[tuple[Any, tuple[Diagnostic, ...]]] = []
+        for snapshot in snapshots:
+            tree = snapshot.symbols.syntax.tree
+            if not isinstance(tree, NovaFunctionSyntax):
+                continue
+            current = self.diagnostics.get(snapshot.uri)
+            if current is None or current.semantic is not snapshot:
+                continue
+            diagnostics = [
+                diagnostic
+                for diagnostic in current.diagnostics
+                if diagnostic.code
+                not in {"nova.unresolved-function", "nova.ambiguous-function"}
+            ]
+            for name, span in tree.calls:
+                declarations = tuple(
+                    declaration
+                    for declaration in self.workspace_symbols.declarations(name)
+                    if declaration.symbol.kind == "function"
+                )
+                if len(declarations) == 0:
+                    diagnostics.append(
+                        Diagnostic(
+                            span,
+                            f"unresolved function '{name}'",
+                            code="nova.unresolved-function",
+                            source="nova",
+                        )
+                    )
+                elif len(declarations) > 1:
+                    diagnostics.append(
+                        Diagnostic(
+                            span,
+                            f"ambiguous function call '{name}'",
+                            code="nova.ambiguous-function",
+                            source="nova",
+                        )
+                    )
+            planned.append((snapshot, tuple(diagnostics)))
+
+        def publish() -> None:
+            for snapshot, diagnostics in planned:
+                self.publish_diagnostics(snapshot, diagnostics)
+
+        try:
+            self.workspace_symbols.commit_snapshots_if_current(snapshots, publish)
         except WorkspaceIndexError:
             return
 
@@ -176,7 +231,6 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(tree, NovaFunctionSyntax):
             return None
 
-        # Preserve the generic single-document hover for locally resolved symbols.
         if semantics.definition_at(offset) is not None:
             return None
 
@@ -326,7 +380,6 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(tree, NovaFunctionSyntax):
             return None
 
-        # Preserve generic prepareRename for symbols already resolved in this document.
         if semantics.definition_at(offset) is not None:
             return None
 
