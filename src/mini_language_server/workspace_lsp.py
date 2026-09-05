@@ -6,6 +6,7 @@ from typing import Any
 
 from .cancellation import RequestCancelled, RequestError
 from .nova import NovaLanguageServer
+from .server import ServerState
 from .source import SourceText
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
 
@@ -26,7 +27,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
-        if method == "workspace/symbol" and "id" in message:
+        if (
+            method == "workspace/symbol"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
             return self._handle_workspace_symbol(message.get("id"), message.get("params"))
 
         result = super().handle(message)
