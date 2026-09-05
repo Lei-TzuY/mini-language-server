@@ -51,6 +51,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 )
                 if workspace_result is not None:
                     return workspace_result
+            if method == "textDocument/prepareRename":
+                workspace_result = self._handle_workspace_prepare_rename(
+                    message.get("id"), message.get("params")
+                )
+                if workspace_result is not None:
+                    return workspace_result
             if method == "textDocument/rename":
                 workspace_result = self._handle_workspace_rename(
                     message.get("id"), message.get("params")
@@ -293,6 +299,67 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 locations.sort(key=lambda item: (item[0], item[1]))
                 result = [location for _, _, location in locations]
 
+            self.requests.checkpoint(context)
+            try:
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots, lambda: self._result(request_id, result)
+                )
+            except WorkspaceIndexError:
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _handle_workspace_prepare_rename(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any] | None:
+        parsed = self._semantic_query(params)
+        if parsed is None:
+            return None
+        semantics, offset, source = parsed
+        if semantics is None:
+            return None
+        tree = semantics.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return None
+
+        # Preserve generic prepareRename for symbols already resolved in this document.
+        if semantics.definition_at(offset) is not None:
+            return None
+
+        call = next(
+            (
+                (call_name, span)
+                for call_name, span in tree.calls
+                if span.start <= offset < span.end
+            ),
+            None,
+        )
+        if call is None:
+            return None
+        name, call_span = call
+        declarations = tuple(
+            declaration
+            for declaration in self.workspace_symbols.declarations(name)
+            if declaration.symbol.kind == "function"
+        )
+        snapshots = self.workspace_symbols.snapshots()
+        try:
+            context = self.requests.start(request_id, uri=semantics.uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            result: Any = None
+            if len(declarations) == 1:
+                result = {
+                    "range": self._range(source, call_span),
+                    "placeholder": name,
+                }
             self.requests.checkpoint(context)
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
