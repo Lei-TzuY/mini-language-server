@@ -58,13 +58,13 @@ def test_adapter_parses_scoped_locals_and_parameter_shadowing() -> None:
 
     assert [(item.owner.start, item.name, item.span.start) for item in parsed.locals] == [
         (3, "value", 27),
-        (3, "input", 47),
+        (3, "input", 51),
     ]
     assert [item.span.start for item in parsed.parameter_references] == [17, 35]
     assert [(item.name, item.span.start) for item in parsed.local_references] == [
         ("value", 41),
-        ("value", 55),
-        ("input", 61),
+        ("value", 59),
+        ("input", 65),
     ]
 
 
@@ -276,7 +276,7 @@ def test_same_version_local_semantic_replacement_suppresses_stale_response(monke
                     41,
                     {
                         "textDocument": {"uri": uri},
-                        "position": {"line": 0, "character": 31},
+                        "position": {"line": 0, "character": 27},
                     },
                 )
             )
