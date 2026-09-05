@@ -5,8 +5,16 @@ from typing import Any
 from mini_language_server.workspace_lsp import WorkspaceNovaLanguageServer
 
 
-def request(method: str, request_id: int, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    message: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
+def request(
+    method: str,
+    request_id: int,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    message: dict[str, Any] = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+    }
     if params is not None:
         message["params"] = params
     return message
@@ -18,7 +26,8 @@ def notification(method: str, params: dict[str, Any]) -> dict[str, Any]:
 
 def initialized_server() -> WorkspaceNovaLanguageServer:
     server = WorkspaceNovaLanguageServer()
-    assert server.handle(request("initialize", 1, {"capabilities": {}})) is not None
+    result = server.handle(request("initialize", 1, {"capabilities": {}}))
+    assert result is not None
     return server
 
 
@@ -103,7 +112,9 @@ def test_close_and_reopen_rebind_workspace_diagnostics_to_current_snapshots() ->
     open_nova(server, library, "fn target() {}\n")
     assert latest_codes(server, caller) == []
 
-    server.handle(notification("textDocument/didClose", {"textDocument": {"uri": library}}))
+    server.handle(
+        notification("textDocument/didClose", {"textDocument": {"uri": library}})
+    )
     assert latest_codes(server, caller) == ["nova.unresolved-function"]
 
     open_nova(server, library, "fn target() {}\n")
