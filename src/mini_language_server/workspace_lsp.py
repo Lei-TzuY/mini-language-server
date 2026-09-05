@@ -39,6 +39,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 )
                 if workspace_result is not None:
                     return workspace_result
+            if method == "textDocument/hover":
+                workspace_result = self._handle_workspace_hover(
+                    message.get("id"), message.get("params")
+                )
+                if workspace_result is not None:
+                    return workspace_result
             if method in {"textDocument/definition", "textDocument/references"}:
                 workspace_result = self._handle_workspace_navigation(
                     method, message.get("id"), message.get("params")
@@ -137,6 +143,70 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 {"label": name, "detail": kind}
                 for name, kind in sorted(items, key=lambda item: (item[0], item[1]))
             ]
+            self.requests.checkpoint(context)
+            try:
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots, lambda: self._result(request_id, result)
+                )
+            except WorkspaceIndexError:
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _handle_workspace_hover(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any] | None:
+        parsed = self._semantic_query(params)
+        if parsed is None:
+            return None
+        semantics, offset, source = parsed
+        if semantics is None:
+            return None
+        tree = semantics.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return None
+
+        # Preserve the generic single-document hover for locally resolved symbols.
+        if semantics.definition_at(offset) is not None:
+            return None
+
+        call = next(
+            (
+                (call_name, span)
+                for call_name, span in tree.calls
+                if span.start <= offset < span.end
+            ),
+            None,
+        )
+        if call is None:
+            return None
+        name, call_span = call
+        declarations = tuple(
+            declaration
+            for declaration in self.workspace_symbols.declarations(name)
+            if declaration.symbol.kind == "function"
+        )
+        snapshots = self.workspace_symbols.snapshots()
+        try:
+            context = self.requests.start(request_id, uri=semantics.uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            result: Any = None
+            if len(declarations) == 1:
+                result = {
+                    "contents": {
+                        "kind": "plaintext",
+                        "value": f"function {name}",
+                    },
+                    "range": self._range(source, call_span),
+                }
             self.requests.checkpoint(context)
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
