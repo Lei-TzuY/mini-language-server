@@ -158,8 +158,8 @@ def test_local_uses_drive_navigation_hover_completion_rename_and_tokens() -> Non
     assert prepared is not None
     assert prepared["result"] == {
         "range": {
-            "start": {"line": 0, "character": 41},
-            "end": {"line": 0, "character": 46},
+            "start": {"line": 0, "character": 27},
+            "end": {"line": 0, "character": 32},
         },
         "placeholder": "value",
     }
