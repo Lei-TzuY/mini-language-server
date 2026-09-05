@@ -22,7 +22,7 @@ LSP / JSON-RPC lifecycle
 - source positions/spans with LSP coordinate conversion
 - version-bound syntax, symbol, semantic, diagnostic, and workspace snapshots
 - compare-and-commit publication guards across the derived-cache chain
-- definition, references, document highlights, prepareRename, and rename, including uniquely resolved cross-file Nova functions
+- definition, references, document highlights, linked editing ranges, prepareRename, and rename, including uniquely resolved cross-file Nova functions
 - hover, completion, semantic tokens, document symbols, workspace symbol search, and negotiated signature help
 - executable Nova adapter semantics for functions, typed parameters, locals, scoped references, and deterministic unresolved/duplicate diagnostics
 - exact-workspace Nova call diagnostics, including unresolved/ambiguous functions and argument-count mismatches against the current unique declaration
