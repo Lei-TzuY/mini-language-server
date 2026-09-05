@@ -16,10 +16,16 @@ from .symbols import Symbol, SymbolError
 from .syntax import SyntaxError
 
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
-_FUNCTION_DECLARATION = re.compile(rf"\bfn\s+({_IDENTIFIER})\s*\(([^)]*)\)\s*\{{")
+_SIMPLE_TYPE_REF = rf"(?:{_IDENTIFIER}|!)"
+_FUNCTION_DECLARATION = re.compile(
+    rf"\bfn\s+({_IDENTIFIER})\s*\(([^)]*)\)\s*(?:->\s*{_SIMPLE_TYPE_REF}\s*)?\{{"
+)
 _CALL = re.compile(rf"\b({_IDENTIFIER})\s*(?=\()")
 _IDENTIFIER_MATCH = re.compile(rf"\b({_IDENTIFIER})\b")
 _PARAMETER_PART = re.compile(r"[^,]+")
+_PARAMETER = re.compile(
+    rf"^\s*({_IDENTIFIER})(?:\s*:\s*{_SIMPLE_TYPE_REF})?\s*$"
+)
 _LOCAL_DECLARATION = re.compile(rf"\blet\s+({_IDENTIFIER})\b")
 _KEYWORDS = frozenset({"fn", "let"})
 
@@ -49,8 +55,10 @@ class NovaFunctionSyntax:
 class NovaFunctionAdapter:
     """Analyze a bounded executable Nova subset without leaking rules into core stores.
 
-    The adapter owns named ``fn`` declarations, identifier calls, simple identifier
-    parameters, and function-scoped ``let`` variables. Parameter and local references
+    The adapter owns named ``fn`` declarations, identifier calls, bare legacy or
+    Nova-style typed parameters with simple identifier/never surface types, optional
+    explicit simple return types, and function-scoped ``let`` variables. Parameter and
+    local references
     resolve only inside the owning function body. A local takes precedence after its
     declaration when exactly one preceding local with that name exists; otherwise a
     unique parameter remains visible. Function calls resolve only when exactly one
@@ -80,13 +88,13 @@ class NovaFunctionAdapter:
         parameters: list[NovaScopedName] = []
         for part in _PARAMETER_PART.finditer(parameter_text):
             raw = part.group(0)
-            stripped = raw.strip()
-            if not stripped or re.fullmatch(_IDENTIFIER, stripped) is None:
+            match = _PARAMETER.fullmatch(raw)
+            if match is None:
                 continue
-            leading = len(raw) - len(raw.lstrip())
-            start = base_offset + part.start() + leading
+            name = match.group(1)
+            start = base_offset + part.start() + match.start(1)
             parameters.append(
-                NovaScopedName(owner, stripped, Span(start, start + len(stripped)))
+                NovaScopedName(owner, name, Span(start, start + len(name)))
             )
         return tuple(parameters)
 
