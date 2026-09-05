@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from mini_language_server.workspace import WorkspaceIndexError
 from mini_language_server.workspace_lsp import WorkspaceNovaLanguageServer
 
@@ -12,7 +14,9 @@ def notify(method: str, params: dict) -> dict:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialize(server: WorkspaceNovaLanguageServer, *, workspace_symbol: bool = True) -> dict:
+def initialize(
+    server: WorkspaceNovaLanguageServer, *, workspace_symbol: bool = True
+) -> dict:
     workspace = {"symbol": {}} if workspace_symbol else {}
     result = server.handle(
         request("initialize", 1, {"capabilities": {"workspace": workspace}})
@@ -45,7 +49,7 @@ def test_workspace_symbol_capability_is_negotiated() -> None:
     assert "workspaceSymbolProvider" not in disabled["result"]["capabilities"]
 
 
-def test_workspace_symbol_search_spans_open_nova_documents_deterministically() -> None:
+def test_workspace_symbol_search_is_deterministic_across_open_nova_documents() -> None:
     server = WorkspaceNovaLanguageServer()
     initialize(server)
     open_nova(server, "file:///workspace/z.nova", "fn Zebra() {}\n")
@@ -61,7 +65,7 @@ def test_workspace_symbol_search_spans_open_nova_documents_deterministically() -
     assert all(item["kind"] == 12 for item in result["result"])
 
 
-def test_workspace_symbol_replacement_and_close_remove_superseded_contributions() -> None:
+def test_workspace_replacement_and_close_remove_superseded_contributions() -> None:
     server = WorkspaceNovaLanguageServer()
     initialize(server)
     uri = "file:///workspace/main.nova"
@@ -79,14 +83,15 @@ def test_workspace_symbol_replacement_and_close_remove_superseded_contributions(
     old = server.handle(request("workspace/symbol", 2, {"query": "old"}))
     current = server.handle(request("workspace/symbol", 3, {"query": "current"}))
     assert old is not None and old["result"] == []
-    assert current is not None and [item["name"] for item in current["result"]] == ["current"]
+    assert current is not None
+    assert [item["name"] for item in current["result"]] == ["current"]
 
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
     closed = server.handle(request("workspace/symbol", 4, {"query": "current"}))
     assert closed is not None and closed["result"] == []
 
 
-def test_workspace_symbol_suppresses_same_version_replacement_before_publication() -> None:
+def test_workspace_symbol_suppresses_same_version_replacement() -> None:
     server = WorkspaceNovaLanguageServer()
     initialize(server)
     uri = "file:///workspace/main.nova"
@@ -124,9 +129,5 @@ def test_workspace_index_commit_rejects_superseded_parent() -> None:
     replacement = server.nova_adapter.publish(server, document)
     server.workspace_symbols.replace(replacement, expected=original)
 
-    try:
+    with pytest.raises(WorkspaceIndexError, match="replaced"):
         server.workspace_symbols.commit_if_current(declarations, lambda: None)
-    except WorkspaceIndexError:
-        pass
-    else:
-        raise AssertionError("superseded workspace result was published")
