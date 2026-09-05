@@ -20,6 +20,7 @@ _FUNCTION_DECLARATION = re.compile(rf"\bfn\s+({_IDENTIFIER})\s*\(([^)]*)\)\s*\{{
 _CALL = re.compile(rf"\b({_IDENTIFIER})\s*(?=\()")
 _IDENTIFIER_MATCH = re.compile(rf"\b({_IDENTIFIER})\b")
 _PARAMETER_PART = re.compile(r"[^,]+")
+_LOCAL_DECLARATION = re.compile(rf"\blet\s+({_IDENTIFIER})\b")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,21 +34,25 @@ class NovaScopedName:
 
 @dataclass(frozen=True, slots=True)
 class NovaFunctionSyntax:
-    """Immutable syntax payload for Nova functions, calls, and parameters."""
+    """Immutable syntax payload for Nova functions, calls, parameters, and locals."""
 
     declarations: tuple[tuple[str, Span], ...]
     calls: tuple[tuple[str, Span], ...]
     parameters: tuple[NovaScopedName, ...] = ()
     parameter_references: tuple[NovaScopedName, ...] = ()
+    locals: tuple[NovaScopedName, ...] = ()
+    local_references: tuple[NovaScopedName, ...] = ()
 
 
 class NovaFunctionAdapter:
     """Analyze a bounded executable Nova subset without leaking rules into core stores.
 
-    The adapter owns named ``fn`` declarations, identifier calls, and simple identifier
-    parameters. Parameter references resolve only inside the owning function body and
-    only when that parameter name is unique in the function. Function calls resolve
-    only when exactly one function declaration with that name exists.
+    The adapter owns named ``fn`` declarations, identifier calls, simple identifier
+    parameters, and function-scoped ``let`` variables. Parameter and local references
+    resolve only inside the owning function body. A local takes precedence after its
+    declaration when exactly one preceding local with that name exists; otherwise a
+    unique parameter remains visible. Function calls resolve only when exactly one
+    function declaration with that name exists.
     """
 
     language_id = "nova"
@@ -77,7 +82,9 @@ class NovaFunctionAdapter:
                 continue
             leading = len(raw) - len(raw.lstrip())
             start = base_offset + part.start() + leading
-            parameters.append(NovaScopedName(owner, stripped, Span(start, start + len(stripped))))
+            parameters.append(
+                NovaScopedName(owner, stripped, Span(start, start + len(stripped)))
+            )
         return tuple(parameters)
 
     @classmethod
@@ -85,6 +92,8 @@ class NovaFunctionAdapter:
         declarations: list[tuple[str, Span]] = []
         parameters: list[NovaScopedName] = []
         parameter_references: list[NovaScopedName] = []
+        locals_: list[NovaScopedName] = []
+        local_references: list[NovaScopedName] = []
         declaration_spans: set[Span] = set()
 
         matches = tuple(_FUNCTION_DECLARATION.finditer(text))
@@ -99,9 +108,9 @@ class NovaFunctionAdapter:
 
             scoped_parameters = cls._parameters(match.group(2), match.start(2), owner)
             parameters.extend(scoped_parameters)
-            by_name: dict[str, list[NovaScopedName]] = {}
+            parameters_by_name: dict[str, list[NovaScopedName]] = {}
             for parameter in scoped_parameters:
-                by_name.setdefault(parameter.name, []).append(parameter)
+                parameters_by_name.setdefault(parameter.name, []).append(parameter)
 
             opening_brace = match.end() - 1
             closing_brace = cls._matching_brace(text, opening_brace)
@@ -109,15 +118,47 @@ class NovaFunctionAdapter:
                 continue
             body_start = opening_brace + 1
             body = text[body_start:closing_brace]
+
+            scoped_locals = tuple(
+                NovaScopedName(
+                    owner,
+                    local.group(1),
+                    Span(
+                        body_start + local.start(1),
+                        body_start + local.end(1),
+                    ),
+                )
+                for local in _LOCAL_DECLARATION.finditer(body)
+            )
+            locals_.extend(scoped_locals)
+            local_declaration_spans = {item.span for item in scoped_locals}
+            locals_by_name: dict[str, list[NovaScopedName]] = {}
+            for local in scoped_locals:
+                locals_by_name.setdefault(local.name, []).append(local)
+
             for identifier in _IDENTIFIER_MATCH.finditer(body):
                 name = identifier.group(1)
-                candidates = by_name.get(name, [])
-                if len(candidates) != 1:
+                span = Span(
+                    body_start + identifier.start(1),
+                    body_start + identifier.end(1),
+                )
+                if span in call_spans or span in local_declaration_spans:
                     continue
-                span = Span(body_start + identifier.start(1), body_start + identifier.end(1))
-                if span in call_spans:
+
+                preceding_locals = [
+                    local
+                    for local in locals_by_name.get(name, [])
+                    if local.span.end <= span.start
+                ]
+                if len(preceding_locals) == 1:
+                    local_references.append(NovaScopedName(owner, name, span))
                     continue
-                parameter_references.append(NovaScopedName(owner, name, span))
+                if len(preceding_locals) > 1:
+                    continue
+
+                candidates = parameters_by_name.get(name, [])
+                if len(candidates) == 1:
+                    parameter_references.append(NovaScopedName(owner, name, span))
 
         calls = tuple(
             (match.group(1), Span(match.start(1), match.end(1)))
@@ -129,6 +170,8 @@ class NovaFunctionAdapter:
             calls=calls,
             parameters=tuple(parameters),
             parameter_references=tuple(parameter_references),
+            locals=tuple(locals_),
+            local_references=tuple(local_references),
         )
 
     def publish(self, server: LanguageServer, document: Document) -> SemanticSnapshot:
@@ -146,6 +189,10 @@ class NovaFunctionAdapter:
                     Symbol(parameter.name, "parameter", parameter.span)
                     for parameter in parsed.parameters
                 ),
+                *(
+                    Symbol(local.name, "variable", local.span)
+                    for local in parsed.locals
+                ),
             ),
         )
 
@@ -160,6 +207,12 @@ class NovaFunctionAdapter:
             symbol = symbols_by_span[parameter.span]
             key = (parameter.owner.start, parameter.name)
             parameters_by_scope.setdefault(key, []).append(symbol)
+
+        locals_by_scope: dict[tuple[int, str], list[Symbol]] = {}
+        for local in parsed.locals:
+            symbol = symbols_by_span[local.span]
+            key = (local.owner.start, local.name)
+            locals_by_scope.setdefault(key, []).append(symbol)
 
         references: list[Reference] = []
         diagnostics: list[Diagnostic] = []
@@ -190,8 +243,34 @@ class NovaFunctionAdapter:
                     )
                 )
 
+        for (_, name), candidates in sorted(locals_by_scope.items()):
+            if len(candidates) <= 1:
+                continue
+            for candidate in candidates:
+                diagnostics.append(
+                    Diagnostic(
+                        candidate.span,
+                        f"duplicate local variable '{name}'",
+                        code="nova.duplicate-variable",
+                        source="nova",
+                    )
+                )
+
         for reference in parsed.parameter_references:
-            candidates = parameters_by_scope.get((reference.owner.start, reference.name), [])
+            candidates = parameters_by_scope.get(
+                (reference.owner.start, reference.name), []
+            )
+            if len(candidates) == 1:
+                references.append(Reference(reference.span, candidates[0]))
+
+        for reference in parsed.local_references:
+            candidates = [
+                candidate
+                for candidate in locals_by_scope.get(
+                    (reference.owner.start, reference.name), []
+                )
+                if candidate.span.end <= reference.span.start
+            ]
             if len(candidates) == 1:
                 references.append(Reference(reference.span, candidates[0]))
 
@@ -351,7 +430,10 @@ class NovaLanguageServer(LanguageServer):
             if start_offset == end_offset:
                 overlaps = diagnostic.span.start <= start_offset <= diagnostic.span.end
             else:
-                overlaps = diagnostic.span.start < end_offset and start_offset < diagnostic.span.end
+                overlaps = (
+                    diagnostic.span.start < end_offset
+                    and start_offset < diagnostic.span.end
+                )
             if not overlaps:
                 continue
             name = document.text[diagnostic.span.start : diagnostic.span.end]
