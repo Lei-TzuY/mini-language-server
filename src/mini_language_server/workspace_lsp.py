@@ -33,6 +33,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 return self._handle_workspace_symbol(
                     message.get("id"), message.get("params")
                 )
+            if method == "textDocument/completion":
+                workspace_result = self._handle_workspace_completion(
+                    message.get("id"), message.get("params")
+                )
+                if workspace_result is not None:
+                    return workspace_result
             if method in {"textDocument/definition", "textDocument/references"}:
                 workspace_result = self._handle_workspace_navigation(
                     method, message.get("id"), message.get("params")
@@ -96,6 +102,54 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if span.start <= offset < span.end:
                 return semantics, call_name
         return None
+
+    def _handle_workspace_completion(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any] | None:
+        parsed = self._semantic_query(params)
+        if parsed is None:
+            return None
+        semantics, _, _ = parsed
+        if semantics is None or not isinstance(
+            semantics.symbols.syntax.tree, NovaFunctionSyntax
+        ):
+            return None
+
+        snapshots = self.workspace_symbols.snapshots()
+        try:
+            context = self.requests.start(request_id, uri=semantics.uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            items: set[tuple[str, str]] = {
+                (symbol.name, symbol.kind) for symbol in semantics.symbols.symbols
+            }
+            for snapshot in snapshots:
+                if not isinstance(snapshot.symbols.syntax.tree, NovaFunctionSyntax):
+                    continue
+                for symbol in snapshot.symbols.symbols:
+                    if symbol.kind == "function":
+                        items.add((symbol.name, symbol.kind))
+
+            result = [
+                {"label": name, "detail": kind}
+                for name, kind in sorted(items, key=lambda item: (item[0], item[1]))
+            ]
+            self.requests.checkpoint(context)
+            try:
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots, lambda: self._result(request_id, result)
+                )
+            except WorkspaceIndexError:
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
 
     def _handle_workspace_navigation(
         self, method: str, request_id: Any, params: Any
