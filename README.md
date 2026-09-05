@@ -23,7 +23,7 @@ LSP / JSON-RPC lifecycle
 - version-bound syntax, symbol, semantic, diagnostic, and workspace snapshots
 - compare-and-commit publication guards across the derived-cache chain
 - definition, references, document highlights, linked editing ranges, prepareRename, and rename, including uniquely resolved cross-file Nova functions
-- hover, completion, semantic tokens, document symbols, workspace symbol search, and negotiated signature help
+- hover, completion, semantic tokens, document symbols, workspace symbol search, negotiated signature help, and negotiated Nova parameter inlay hints
 - executable Nova adapter semantics for functions, typed parameters, locals, scoped references, and deterministic unresolved/duplicate diagnostics
 - exact-workspace Nova call diagnostics, including unresolved/ambiguous functions and argument-count mismatches against the current unique declaration
 - negotiated Nova quick fixes for unresolved functions, unresolved local names, and argument-count mismatches, all gated on exact current snapshots
@@ -34,7 +34,7 @@ LSP / JSON-RPC lifecycle
 
 ## Checkpoint scope
 
-The generic tooling substrate remains language-independent. Nova-specific parsing, name-resolution rules, typed function metadata, cross-file product behavior, and diagnostics stay in the Nova adapter/product composition instead of leaking into the generic stores and query layer.
+The generic tooling substrate remains language-independent. Nova-specific parsing, name-resolution rules, typed function metadata, cross-file product behavior, diagnostics, and parameter inlay hints stay in the Nova adapter/product composition instead of leaking into the generic stores and query layer.
 
 The project is still intentionally bounded rather than a complete production LSP or full Nova compiler front end. New slices should add executable semantics or protocol behavior with exact-snapshot regressions, not empty handlers, adapters, or scaffolding.
 
