@@ -56,14 +56,14 @@ def test_adapter_parses_scoped_parameters_and_body_references() -> None:
     )
     assert [(item.owner.start, item.name, item.span.start) for item in parsed.parameters] == [
         (3, "value", 9),
-        (27, "value", 34),
+        (29, "value", 36),
     ]
     assert [
         (item.owner.start, item.name, item.span.start)
         for item in parsed.parameter_references
     ] == [
-        (3, "value", 17),
-        (27, "value", 42),
+        (3, "value", 18),
+        (29, "value", 45),
     ]
 
 
