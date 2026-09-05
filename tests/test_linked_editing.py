@@ -66,7 +66,8 @@ def linked_ranges(
 
 def test_linked_editing_capability_is_negotiated() -> None:
     supported = NovaProductLanguageServer()
-    assert initialize(supported)["result"]["capabilities"]["linkedEditingRangeProvider"] is True
+    response = initialize(supported)
+    assert response["result"]["capabilities"]["linkedEditingRangeProvider"] is True
 
     unsupported = NovaProductLanguageServer()
     response = initialize(unsupported, supported=False)
@@ -125,7 +126,9 @@ def test_linked_editing_follows_change_and_close_reopen() -> None:
             "textDocument/didChange",
             {
                 "textDocument": {"uri": uri, "version": 2},
-                "contentChanges": [{"text": "fn fresh() {}\nfn main() { fresh() }\n"}],
+                "contentChanges": [
+                    {"text": "fn fresh() {}\nfn main() { fresh() }\n"}
+                ],
             },
         )
     )
@@ -133,14 +136,18 @@ def test_linked_editing_follows_change_and_close_reopen() -> None:
     assert changed is not None
     assert changed["result"]["ranges"][0]["end"]["character"] == 8
 
-    server.handle(notification("textDocument/didClose", {"textDocument": {"uri": uri}}))
+    server.handle(
+        notification("textDocument/didClose", {"textDocument": {"uri": uri}})
+    )
     open_document(server, uri, "fn newer() {}\nfn main() { newer() }\n")
     reopened = linked_ranges(server, uri, 1, 13)
     assert reopened is not None
     assert reopened["result"]["ranges"][0]["end"]["character"] == 8
 
 
-def test_linked_editing_rejects_same_version_semantic_replacement(monkeypatch: Any) -> None:
+def test_linked_editing_rejects_same_version_semantic_replacement(
+    monkeypatch: Any,
+) -> None:
     server = NovaProductLanguageServer()
     initialize(server)
     uri = "file:///workspace/main.nova"
