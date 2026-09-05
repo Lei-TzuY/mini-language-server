@@ -8,6 +8,7 @@ from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
 from .nova import NovaFunctionSyntax
 from .server import ServerState
+from .source import Span
 from .workspace import WorkspaceIndexError
 from .workspace_lsp import WorkspaceNovaLanguageServer
 
@@ -117,6 +118,15 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
 
     @classmethod
     def _call_argument_count(cls, text: str, name_end: int) -> int | None:
+        parsed = cls._call_arguments(text, name_end)
+        if parsed is None:
+            return None
+        return len(parsed[2])
+
+    @classmethod
+    def _call_arguments(
+        cls, text: str, name_end: int
+    ) -> tuple[int, int, tuple[str, ...]] | None:
         opening = text.find("(", name_end)
         if opening < 0 or text[name_end:opening].strip():
             return None
@@ -125,17 +135,89 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
             return None
         body = text[opening + 1 : closing]
         if not body.strip():
-            return 0
-        count = 1
+            return opening, closing, ()
+
+        arguments: list[str] = []
         depth = 0
-        for character in body:
+        start = 0
+        for index, character in enumerate(body):
             if character == "(":
                 depth += 1
             elif character == ")" and depth:
                 depth -= 1
             elif character == "," and depth == 0:
-                count += 1
-        return count
+                arguments.append(body[start:index].strip())
+                start = index + 1
+        arguments.append(body[start:].strip())
+        return opening, closing, tuple(arguments)
+
+    def _nova_code_actions(
+        self,
+        uri: str,
+        document: Any,
+        source: Any,
+        diagnostics: tuple[Diagnostic, ...],
+        start_offset: int,
+        end_offset: int,
+    ) -> list[dict[str, Any]]:
+        actions = super()._nova_code_actions(
+            uri, document, source, diagnostics, start_offset, end_offset
+        )
+        snapshots = self.workspace_symbols.snapshots()
+        if not any(snapshot.uri == uri for snapshot in snapshots):
+            return actions
+
+        for diagnostic in diagnostics:
+            if diagnostic.code != "nova.argument-count":
+                continue
+            if start_offset == end_offset:
+                overlaps = diagnostic.span.start <= start_offset <= diagnostic.span.end
+            else:
+                overlaps = (
+                    diagnostic.span.start < end_offset
+                    and start_offset < diagnostic.span.end
+                )
+            if not overlaps:
+                continue
+
+            name = document.text[diagnostic.span.start : diagnostic.span.end]
+            declarations = tuple(
+                declaration
+                for declaration in self.workspace_symbols.declarations(name)
+                if declaration.symbol.kind == "function"
+            )
+            if len(declarations) != 1:
+                continue
+            expected = self._declaration_parameter_count(declarations[0])
+            parsed = self._call_arguments(document.text, diagnostic.span.end)
+            if parsed is None:
+                continue
+            opening, closing, arguments = parsed
+            if len(arguments) == expected:
+                continue
+
+            replacement = list(arguments[:expected])
+            replacement.extend("0" for _ in range(expected - len(replacement)))
+            actions.append(
+                {
+                    "title": f"Adjust '{name}' to {expected} argument(s)",
+                    "kind": "quickfix",
+                    "diagnostics": [self._diagnostic(source, diagnostic)],
+                    "edit": {
+                        "changes": {
+                            uri: [
+                                {
+                                    "range": self._range(
+                                        source, Span(opening + 1, closing)
+                                    ),
+                                    "newText": ", ".join(replacement),
+                                }
+                            ]
+                        }
+                    },
+                }
+            )
+        return actions
 
     def _handle_signature_help(self, request_id: Any, params: Any) -> dict[str, Any]:
         parsed = self._semantic_query(params)
