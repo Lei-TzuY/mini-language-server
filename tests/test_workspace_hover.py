@@ -39,14 +39,21 @@ def open_nova(server: WorkspaceNovaLanguageServer, uri: str, text: str) -> None:
     )
 
 
-def hover(server: WorkspaceNovaLanguageServer, uri: str, request_id: int = 2) -> dict:
+def hover(
+    server: WorkspaceNovaLanguageServer,
+    uri: str,
+    request_id: int = 2,
+    *,
+    line: int = 0,
+    character: int = 15,
+) -> dict:
     result = server.handle(
         request(
             "textDocument/hover",
             request_id,
             {
                 "textDocument": {"uri": uri},
-                "position": {"line": 0, "character": 15},
+                "position": {"line": line, "character": character},
             },
         )
     )
@@ -54,18 +61,55 @@ def hover(server: WorkspaceNovaLanguageServer, uri: str, request_id: int = 2) ->
     return result
 
 
-def test_workspace_hover_resolves_unique_cross_file_function() -> None:
+def test_workspace_hover_resolves_unique_cross_file_function_signature() -> None:
     server = WorkspaceNovaLanguageServer()
     initialize(server)
     main_uri = "file:///workspace/main.nova"
-    open_nova(server, "file:///workspace/library.nova", "fn target() {}\n")
+    open_nova(
+        server,
+        "file:///workspace/library.nova",
+        "fn target(value: Int) -> Int { value }\n",
+    )
     open_nova(server, main_uri, "fn caller() { target() }\n")
 
     assert hover(server, main_uri)["result"] == {
-        "contents": {"kind": "plaintext", "value": "function target"},
+        "contents": {
+            "kind": "plaintext",
+            "value": "fn target(value: Int) -> Int",
+        },
         "range": {
             "start": {"line": 0, "character": 14},
             "end": {"line": 0, "character": 20},
+        },
+    }
+
+
+def test_workspace_hover_uses_signature_for_same_file_declaration_and_call() -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        "fn target(value: Int) -> Int { value }\nfn caller() { target() }\n",
+    )
+
+    expected = {
+        "kind": "plaintext",
+        "value": "fn target(value: Int) -> Int",
+    }
+    assert hover(server, uri, character=4)["result"] == {
+        "contents": expected,
+        "range": {
+            "start": {"line": 0, "character": 3},
+            "end": {"line": 0, "character": 9},
+        },
+    }
+    assert hover(server, uri, 3, line=1, character=15)["result"] == {
+        "contents": expected,
+        "range": {
+            "start": {"line": 1, "character": 14},
+            "end": {"line": 1, "character": 20},
         },
     }
 
@@ -81,31 +125,41 @@ def test_workspace_hover_does_not_guess_ambiguous_function() -> None:
     assert hover(server, main_uri)["result"] is None
 
 
-def test_workspace_hover_tracks_change_and_close_reopen() -> None:
+def test_workspace_hover_tracks_signature_change_and_close_reopen() -> None:
     server = WorkspaceNovaLanguageServer()
     initialize(server)
     library_uri = "file:///workspace/library.nova"
     main_uri = "file:///workspace/main.nova"
-    open_nova(server, library_uri, "fn target() {}\n")
+    open_nova(server, library_uri, "fn target(value: Int) -> Int { value }\n")
     open_nova(server, main_uri, "fn caller() { target() }\n")
-    assert hover(server, main_uri)["result"] is not None
+    assert hover(server, main_uri)["result"]["contents"]["value"] == (
+        "fn target(value: Int) -> Int"
+    )
 
     server.handle(
         notify(
             "textDocument/didChange",
             {
                 "textDocument": {"uri": library_uri, "version": 2},
-                "contentChanges": [{"text": "fn other() {}\n"}],
+                "contentChanges": [
+                    {"text": "fn target(value: String) -> String { value }\n"}
+                ],
             },
         )
     )
-    assert hover(server, main_uri, 3)["result"] is None
+    assert hover(server, main_uri, 3)["result"]["contents"]["value"] == (
+        "fn target(value: String) -> String"
+    )
 
     server.handle(
         notify("textDocument/didClose", {"textDocument": {"uri": library_uri}})
     )
-    open_nova(server, library_uri, "fn target() {}\n")
-    assert hover(server, main_uri, 4)["result"] is not None
+    assert hover(server, main_uri, 4)["result"] is None
+
+    open_nova(server, library_uri, "fn target(flag: Bool) -> Bool { flag }\n")
+    assert hover(server, main_uri, 5)["result"]["contents"]["value"] == (
+        "fn target(flag: Bool) -> Bool"
+    )
 
 
 def test_workspace_hover_suppresses_same_version_replacement() -> None:
@@ -113,7 +167,7 @@ def test_workspace_hover_suppresses_same_version_replacement() -> None:
     initialize(server)
     library_uri = "file:///workspace/library.nova"
     main_uri = "file:///workspace/main.nova"
-    open_nova(server, library_uri, "fn target() {}\n")
+    open_nova(server, library_uri, "fn target(value: Int) -> Int { value }\n")
     open_nova(server, main_uri, "fn caller() { target() }\n")
     original = server.workspace_symbols.get(library_uri)
     assert original is not None
