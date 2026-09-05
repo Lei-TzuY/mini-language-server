@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import RLock
+from typing import TypeVar
 
 from .semantic import Reference, SemanticSnapshot
 from .symbols import Symbol
@@ -25,6 +27,9 @@ class WorkspaceReference:
     uri: str
     snapshot: SemanticSnapshot
     reference: Reference
+
+
+_T = TypeVar("_T")
 
 
 class WorkspaceSymbolIndex:
@@ -73,17 +78,35 @@ class WorkspaceSymbolIndex:
                 for symbol in snapshot.symbols.symbols
                 if symbol.name == name
             ]
-        return tuple(
-            sorted(
-                items,
-                key=lambda item: (
-                    item.uri,
-                    item.symbol.span.start,
-                    item.symbol.span.end,
-                    item.symbol.kind,
-                ),
-            )
-        )
+        return self._sort_declarations(items)
+
+    def search(self, query: str) -> tuple[WorkspaceDeclaration, ...]:
+        """Return deterministic case-insensitive declaration matches.
+
+        The empty query intentionally returns every indexed declaration, matching the
+        LSP workspace-symbol convention used by clients for broad symbol palettes.
+        """
+        needle = query.casefold()
+        with self._lock:
+            items = [
+                WorkspaceDeclaration(uri, snapshot, symbol)
+                for uri, snapshot in self._snapshots.items()
+                for symbol in snapshot.symbols.symbols
+                if needle in symbol.name.casefold()
+            ]
+        return self._sort_declarations(items)
+
+    def commit_if_current(
+        self,
+        declarations: tuple[WorkspaceDeclaration, ...],
+        callback: Callable[[], _T],
+    ) -> _T:
+        """Publish a derived workspace result only while every parent is exact-current."""
+        with self._lock:
+            for declaration in declarations:
+                if self._snapshots.get(declaration.uri) is not declaration.snapshot:
+                    raise WorkspaceIndexError("workspace snapshot was replaced")
+            return callback()
 
     def references(self, name: str) -> tuple[WorkspaceReference, ...]:
         with self._lock:
@@ -100,6 +123,23 @@ class WorkspaceSymbolIndex:
                     item.uri,
                     item.reference.span.start,
                     item.reference.span.end,
+                ),
+            )
+        )
+
+    @staticmethod
+    def _sort_declarations(
+        items: list[WorkspaceDeclaration],
+    ) -> tuple[WorkspaceDeclaration, ...]:
+        return tuple(
+            sorted(
+                items,
+                key=lambda item: (
+                    item.uri,
+                    item.symbol.span.start,
+                    item.symbol.span.end,
+                    item.symbol.kind,
+                    item.symbol.name,
                 ),
             )
         )
