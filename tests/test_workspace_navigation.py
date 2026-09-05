@@ -32,12 +32,17 @@ def open_nova(server: WorkspaceNovaLanguageServer, uri: str, text: str) -> None:
     )
 
 
-def definition(server: WorkspaceNovaLanguageServer, uri: str, request_id: int = 2) -> dict:
+def definition(
+    server: WorkspaceNovaLanguageServer, uri: str, request_id: int = 2
+) -> dict:
     result = server.handle(
         request(
             "textDocument/definition",
             request_id,
-            {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 16}},
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": 16},
+            },
         )
     )
     assert result is not None
@@ -68,10 +73,11 @@ def test_unique_workspace_function_supports_cross_file_definition_and_references
         )
     )
     assert references is not None
-    assert [(item["uri"], item["range"]["start"]["character"]) for item in references["result"]] == [
-        (declaration_uri, 3),
-        (caller_uri, 14),
+    actual = [
+        (item["uri"], item["range"]["start"]["character"])
+        for item in references["result"]
     ]
+    assert actual == [(declaration_uri, 3), (caller_uri, 14)]
 
 
 def test_workspace_navigation_refuses_ambiguous_function_names() -> None:
@@ -117,7 +123,9 @@ def test_workspace_navigation_tracks_change_close_and_reopen() -> None:
     )
     assert definition(server, caller_uri, 3)["result"] is None
 
-    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": declaration_uri}}))
+    server.handle(
+        notify("textDocument/didClose", {"textDocument": {"uri": declaration_uri}})
+    )
     open_nova(server, declaration_uri, "fn target() {}\n")
     assert definition(server, caller_uri, 4)["result"] is not None
 
