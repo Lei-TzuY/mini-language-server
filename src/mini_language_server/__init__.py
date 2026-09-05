@@ -8,8 +8,8 @@ from .cancellation import (
     StaleRequest,
 )
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
-from .document_highlights import NovaProductLanguageServer
 from .documents import Document, DocumentError, DocumentStore
+from .linked_editing import NovaProductLanguageServer
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
 from .semantic import Reference, SemanticDatabase, SemanticError, SemanticSnapshot
 from .server import LanguageServer, ServerState
