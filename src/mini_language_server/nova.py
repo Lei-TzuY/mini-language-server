@@ -66,7 +66,9 @@ class NovaFunctionAdapter:
         return None
 
     @staticmethod
-    def _parameters(parameter_text: str, base_offset: int, owner: Span) -> tuple[NovaScopedName, ...]:
+    def _parameters(
+        parameter_text: str, base_offset: int, owner: Span
+    ) -> tuple[NovaScopedName, ...]:
         parameters: list[NovaScopedName] = []
         for part in _PARAMETER_PART.finditer(parameter_text):
             raw = part.group(0)
@@ -136,24 +138,16 @@ class NovaFunctionAdapter:
         symbols = server.symbols.publish(
             syntax,
             (
-                Symbol(name, "function", span)
-                for name, span in parsed.declarations
+                *(
+                    Symbol(name, "function", span)
+                    for name, span in parsed.declarations
+                ),
+                *(
+                    Symbol(parameter.name, "parameter", parameter.span)
+                    for parameter in parsed.parameters
+                ),
             ),
         )
-        if parsed.parameters:
-            symbols = server.symbols.publish(
-                syntax,
-                (
-                    *(
-                        Symbol(name, "function", span)
-                        for name, span in parsed.declarations
-                    ),
-                    *(
-                        Symbol(parameter.name, "parameter", parameter.span)
-                        for parameter in parsed.parameters
-                    ),
-                ),
-            )
 
         functions_by_name: dict[str, list[Symbol]] = {}
         symbols_by_span = {symbol.span: symbol for symbol in symbols.symbols}
@@ -164,7 +158,8 @@ class NovaFunctionAdapter:
         parameters_by_scope: dict[tuple[int, str], list[Symbol]] = {}
         for parameter in parsed.parameters:
             symbol = symbols_by_span[parameter.span]
-            parameters_by_scope.setdefault((parameter.owner.start, parameter.name), []).append(symbol)
+            key = (parameter.owner.start, parameter.name)
+            parameters_by_scope.setdefault(key, []).append(symbol)
 
         references: list[Reference] = []
         diagnostics: list[Diagnostic] = []
@@ -182,8 +177,7 @@ class NovaFunctionAdapter:
                     )
                 )
 
-        for (owner_start, name), candidates in sorted(parameters_by_scope.items()):
-            del owner_start
+        for (_, name), candidates in sorted(parameters_by_scope.items()):
             if len(candidates) <= 1:
                 continue
             for candidate in candidates:
