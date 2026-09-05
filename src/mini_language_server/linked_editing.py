@@ -47,7 +47,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return False
         return isinstance(text_document.get("linkedEditingRange"), dict)
 
-    def _handle_linked_editing_range(self, request_id: Any, params: Any) -> dict[str, Any]:
+    def _handle_linked_editing_range(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any]:
         context = self._start_document_request(request_id, params)
         if context is None:
             return self._error(request_id, -32602, "Invalid params")
