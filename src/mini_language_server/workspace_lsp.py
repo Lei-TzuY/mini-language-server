@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError
@@ -51,10 +52,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return
         if method == "textDocument/didClose":
             if previous is not None:
-                try:
+                with suppress(WorkspaceIndexError):
                     self.workspace_symbols.remove(uri, expected=previous)
-                except WorkspaceIndexError:
-                    pass
             return
         if method not in {"textDocument/didOpen", "textDocument/didChange"}:
             return
