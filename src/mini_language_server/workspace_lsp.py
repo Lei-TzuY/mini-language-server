@@ -218,6 +218,20 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         finally:
             self.requests.finish(context)
 
+    @staticmethod
+    def _function_signature(declaration: Any) -> str:
+        """Return the exact bounded Nova function header owning a declaration."""
+        text = declaration.snapshot.symbols.syntax.document.text
+        span = declaration.symbol.span
+        start = text.rfind("fn", 0, span.start)
+        if start < 0 or text[start + 2 : span.start].strip():
+            return f"function {declaration.symbol.name}"
+        opening = text.find("{", span.end)
+        if opening < 0:
+            return f"function {declaration.symbol.name}"
+        signature = text[start:opening].strip()
+        return signature or f"function {declaration.symbol.name}"
+
     def _handle_workspace_hover(
         self, request_id: Any, params: Any
     ) -> dict[str, Any] | None:
@@ -231,7 +245,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(tree, NovaFunctionSyntax):
             return None
 
-        if semantics.definition_at(offset) is not None:
+        target = semantics.definition_at(offset)
+        if target is not None and target.kind != "function":
             return None
 
         call = next(
@@ -242,9 +257,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             ),
             None,
         )
-        if call is None:
+        if target is not None:
+            name = target.name
+            hover_span = call[1] if call is not None else target.span
+        elif call is not None:
+            name, hover_span = call
+        else:
             return None
-        name, call_span = call
+
         declarations = tuple(
             declaration
             for declaration in self.workspace_symbols.declarations(name)
@@ -263,9 +283,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 result = {
                     "contents": {
                         "kind": "plaintext",
-                        "value": f"function {name}",
+                        "value": self._function_signature(declarations[0]),
                     },
-                    "range": self._range(source, call_span),
+                    "range": self._range(source, hover_span),
                 }
             self.requests.checkpoint(context)
             try:
