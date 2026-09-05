@@ -16,42 +16,118 @@ from .symbols import Symbol, SymbolError
 from .syntax import SyntaxError
 
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
-_FUNCTION_DECLARATION = re.compile(rf"\bfn\s+({_IDENTIFIER})\s*(?=\()")
+_FUNCTION_DECLARATION = re.compile(rf"\bfn\s+({_IDENTIFIER})\s*\(([^)]*)\)\s*\{{")
 _CALL = re.compile(rf"\b({_IDENTIFIER})\s*(?=\()")
+_IDENTIFIER_MATCH = re.compile(rf"\b({_IDENTIFIER})\b")
+_PARAMETER_PART = re.compile(r"[^,]+")
+
+
+@dataclass(frozen=True, slots=True)
+class NovaScopedName:
+    """A Nova name anchored to one exact function declaration span."""
+
+    owner: Span
+    name: str
+    span: Span
 
 
 @dataclass(frozen=True, slots=True)
 class NovaFunctionSyntax:
-    """Minimal immutable syntax payload for function declarations and calls."""
+    """Immutable syntax payload for Nova functions, calls, and parameters."""
 
     declarations: tuple[tuple[str, Span], ...]
     calls: tuple[tuple[str, Span], ...]
+    parameters: tuple[NovaScopedName, ...] = ()
+    parameter_references: tuple[NovaScopedName, ...] = ()
 
 
 class NovaFunctionAdapter:
-    """Analyze the first serious Nova slice without leaking Nova rules into core stores.
+    """Analyze a bounded executable Nova subset without leaking rules into core stores.
 
-    This adapter intentionally owns a bounded subset: named ``fn`` declarations and
-    identifier calls. Calls resolve only when exactly one declaration with that name
-    exists. Duplicate declarations, unresolved calls, and calls made ambiguous by
-    duplicate declarations are surfaced through the generic diagnostic pipeline.
+    The adapter owns named ``fn`` declarations, identifier calls, and simple identifier
+    parameters. Parameter references resolve only inside the owning function body and
+    only when that parameter name is unique in the function. Function calls resolve
+    only when exactly one function declaration with that name exists.
     """
 
     language_id = "nova"
 
     @staticmethod
-    def parse(text: str) -> NovaFunctionSyntax:
-        declarations = tuple(
-            (match.group(1), Span(match.start(1), match.end(1)))
-            for match in _FUNCTION_DECLARATION.finditer(text)
-        )
-        declaration_spans = {span for _, span in declarations}
+    def _matching_brace(text: str, opening: int) -> int | None:
+        depth = 0
+        for offset in range(opening, len(text)):
+            character = text[offset]
+            if character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+                if depth == 0:
+                    return offset
+        return None
+
+    @staticmethod
+    def _parameters(parameter_text: str, base_offset: int, owner: Span) -> tuple[NovaScopedName, ...]:
+        parameters: list[NovaScopedName] = []
+        for part in _PARAMETER_PART.finditer(parameter_text):
+            raw = part.group(0)
+            stripped = raw.strip()
+            if not stripped or re.fullmatch(_IDENTIFIER, stripped) is None:
+                continue
+            leading = len(raw) - len(raw.lstrip())
+            start = base_offset + part.start() + leading
+            parameters.append(NovaScopedName(owner, stripped, Span(start, start + len(stripped))))
+        return tuple(parameters)
+
+    @classmethod
+    def parse(cls, text: str) -> NovaFunctionSyntax:
+        declarations: list[tuple[str, Span]] = []
+        parameters: list[NovaScopedName] = []
+        parameter_references: list[NovaScopedName] = []
+        declaration_spans: set[Span] = set()
+
+        matches = tuple(_FUNCTION_DECLARATION.finditer(text))
+        call_spans = {
+            Span(match.start(1), match.end(1)) for match in _CALL.finditer(text)
+        }
+
+        for match in matches:
+            owner = Span(match.start(1), match.end(1))
+            declarations.append((match.group(1), owner))
+            declaration_spans.add(owner)
+
+            scoped_parameters = cls._parameters(match.group(2), match.start(2), owner)
+            parameters.extend(scoped_parameters)
+            by_name: dict[str, list[NovaScopedName]] = {}
+            for parameter in scoped_parameters:
+                by_name.setdefault(parameter.name, []).append(parameter)
+
+            opening_brace = match.end() - 1
+            closing_brace = cls._matching_brace(text, opening_brace)
+            if closing_brace is None:
+                continue
+            body_start = opening_brace + 1
+            body = text[body_start:closing_brace]
+            for identifier in _IDENTIFIER_MATCH.finditer(body):
+                name = identifier.group(1)
+                candidates = by_name.get(name, [])
+                if len(candidates) != 1:
+                    continue
+                span = Span(body_start + identifier.start(1), body_start + identifier.end(1))
+                if span in call_spans:
+                    continue
+                parameter_references.append(NovaScopedName(owner, name, span))
+
         calls = tuple(
             (match.group(1), Span(match.start(1), match.end(1)))
             for match in _CALL.finditer(text)
             if Span(match.start(1), match.end(1)) not in declaration_spans
         )
-        return NovaFunctionSyntax(declarations=declarations, calls=calls)
+        return NovaFunctionSyntax(
+            declarations=tuple(declarations),
+            calls=calls,
+            parameters=tuple(parameters),
+            parameter_references=tuple(parameter_references),
+        )
 
     def publish(self, server: LanguageServer, document: Document) -> SemanticSnapshot:
         """Publish one exact Nova snapshot chain and its deterministic diagnostics."""
@@ -59,17 +135,41 @@ class NovaFunctionAdapter:
         syntax = server.syntax.publish(document, parsed)
         symbols = server.symbols.publish(
             syntax,
-            (Symbol(name, "function", span) for name, span in parsed.declarations),
+            (
+                Symbol(name, "function", span)
+                for name, span in parsed.declarations
+            ),
         )
+        if parsed.parameters:
+            symbols = server.symbols.publish(
+                syntax,
+                (
+                    *(
+                        Symbol(name, "function", span)
+                        for name, span in parsed.declarations
+                    ),
+                    *(
+                        Symbol(parameter.name, "parameter", parameter.span)
+                        for parameter in parsed.parameters
+                    ),
+                ),
+            )
 
-        by_name: dict[str, list[Symbol]] = {}
+        functions_by_name: dict[str, list[Symbol]] = {}
+        symbols_by_span = {symbol.span: symbol for symbol in symbols.symbols}
         for symbol in symbols.symbols:
-            by_name.setdefault(symbol.name, []).append(symbol)
+            if symbol.kind == "function":
+                functions_by_name.setdefault(symbol.name, []).append(symbol)
+
+        parameters_by_scope: dict[tuple[int, str], list[Symbol]] = {}
+        for parameter in parsed.parameters:
+            symbol = symbols_by_span[parameter.span]
+            parameters_by_scope.setdefault((parameter.owner.start, parameter.name), []).append(symbol)
 
         references: list[Reference] = []
         diagnostics: list[Diagnostic] = []
 
-        for name, candidates in sorted(by_name.items()):
+        for name, candidates in sorted(functions_by_name.items()):
             if len(candidates) <= 1:
                 continue
             for candidate in candidates:
@@ -82,8 +182,27 @@ class NovaFunctionAdapter:
                     )
                 )
 
+        for (owner_start, name), candidates in sorted(parameters_by_scope.items()):
+            del owner_start
+            if len(candidates) <= 1:
+                continue
+            for candidate in candidates:
+                diagnostics.append(
+                    Diagnostic(
+                        candidate.span,
+                        f"duplicate parameter '{name}'",
+                        code="nova.duplicate-parameter",
+                        source="nova",
+                    )
+                )
+
+        for reference in parsed.parameter_references:
+            candidates = parameters_by_scope.get((reference.owner.start, reference.name), [])
+            if len(candidates) == 1:
+                references.append(Reference(reference.span, candidates[0]))
+
         for name, span in parsed.calls:
-            candidates = by_name.get(name, [])
+            candidates = functions_by_name.get(name, [])
             if len(candidates) == 1:
                 references.append(Reference(span, candidates[0]))
             elif not candidates:
@@ -148,8 +267,6 @@ class NovaLanguageServer(LanguageServer):
         try:
             self.nova_adapter.publish(self, document)
         except (SyntaxError, SymbolError, SemanticError):
-            # A concurrent document/snapshot replacement won the publication race.
-            # The generic stores already reject every stale parent identity.
             return
 
     def _handle_nova_code_action(self, request_id: Any, params: Any) -> dict[str, Any]:
@@ -240,10 +357,7 @@ class NovaLanguageServer(LanguageServer):
             if start_offset == end_offset:
                 overlaps = diagnostic.span.start <= start_offset <= diagnostic.span.end
             else:
-                overlaps = (
-                    diagnostic.span.start < end_offset
-                    and start_offset < diagnostic.span.end
-                )
+                overlaps = diagnostic.span.start < end_offset and start_offset < diagnostic.span.end
             if not overlaps:
                 continue
             name = document.text[diagnostic.span.start : diagnostic.span.end]
