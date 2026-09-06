@@ -31,9 +31,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if len(references) != 1:
             return None
         target = references[0].target
+        return self._parameter_type(snapshot, target)
+
+    @staticmethod
+    def _parameter_type(snapshot: Any, target: Any) -> str | None:
+        """Return the explicit type of one exact Nova parameter declaration."""
         if target.kind != "parameter":
             return None
-
+        text = snapshot.symbols.syntax.document.text
         match = _PARAMETER_TYPE_SUFFIX.match(text, target.span.end)
         if match is None:
             return None
