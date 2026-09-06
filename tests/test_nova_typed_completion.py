@@ -38,13 +38,25 @@ def open_nova(
 
 
 def completion_response(
-    server: NovaProductLanguageServer, uri: str, request_id: int
+    server: NovaProductLanguageServer,
+    uri: str,
+    request_id: int,
+    *,
+    character: int | None = None,
 ) -> dict[str, Any]:
+    if character is None:
+        document = server.documents.get(uri)
+        assert document is not None
+        character = document.text.rfind("}")
+        assert character >= 0
     result = server.handle(
         request(
             "textDocument/completion",
             request_id,
-            {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 0}},
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": character},
+            },
         )
     )
     assert result is not None
@@ -52,9 +64,13 @@ def completion_response(
 
 
 def complete(
-    server: NovaProductLanguageServer, uri: str, request_id: int
+    server: NovaProductLanguageServer,
+    uri: str,
+    request_id: int,
+    *,
+    character: int | None = None,
 ) -> dict[str, str]:
-    result = completion_response(server, uri, request_id)
+    result = completion_response(server, uri, request_id, character=character)
     return {item["label"]: item["detail"] for item in result["result"]}
 
 
@@ -74,6 +90,27 @@ def test_completion_exposes_bounded_parameter_literal_and_alias_types() -> None:
     assert details["count"] == "variable: Int"
     assert details["alias"] == "variable: String"
     assert details["main"] == "function"
+
+
+def test_completion_respects_function_scope_and_local_declaration_order() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn first(left: Int) { let hidden = 1 hidden } "
+        "fn second(right: String) { let visible = right visible let later = 1 }\n"
+    )
+    open_nova(server, uri, 1, text)
+    cursor = text.index(" let later")
+
+    details = complete(server, uri, 2, character=cursor)
+    assert details["right"] == "parameter: String"
+    assert details["visible"] == "variable: String"
+    assert "left" not in details
+    assert "hidden" not in details
+    assert "later" not in details
+    assert details["first"] == "function"
+    assert details["second"] == "function"
 
 
 def test_completion_recomputes_types_after_change_and_keeps_unknown_fallback() -> None:
