@@ -73,7 +73,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _handle_workspace_completion(
         self, request_id: Any, params: Any
     ) -> dict[str, Any] | None:
-        """Expose only cursor-visible Nova names with bounded type details."""
+        """Expose cursor-visible Nova names with bounded type/signature details."""
         parsed = self._semantic_query(params)
         if parsed is None:
             return super()._handle_workspace_completion(request_id, params)
@@ -118,6 +118,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 for symbol in snapshot.symbols.symbols:
                     if symbol.kind == "function":
                         items.setdefault((symbol.name, symbol.kind), symbol.kind)
+
+            for name, kind in tuple(items):
+                if kind != "function":
+                    continue
+                declarations = tuple(
+                    declaration
+                    for declaration in self.workspace_symbols.declarations(name)
+                    if declaration.symbol.kind == "function"
+                )
+                if len(declarations) == 1:
+                    items[(name, kind)] = self._function_signature(declarations[0])
 
             result = [
                 {"label": name, "detail": items[(name, kind)]}

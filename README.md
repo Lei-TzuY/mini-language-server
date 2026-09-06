@@ -26,6 +26,7 @@ LSP / JSON-RPC lifecycle
 - hover, lexical-scope-aware completion, semantic tokens (full, range, and negotiated full/delta), document symbols, workspace symbol search, negotiated signature help, and negotiated Nova parameter inlay hints
 - executable Nova adapter semantics for functions, typed parameters, locals, scoped references, and deterministic unresolved/duplicate diagnostics
 - exact Nova hover type information for explicitly typed parameters, literal-initialized locals, and exact-reference local aliases when bounded type knowledge is available
+- exact-workspace Nova completion details for bounded parameter/local types and uniquely resolved same-file or cross-file function signatures; ambiguous function names remain conservative
 - exact-workspace Nova call diagnostics, including unresolved/ambiguous functions, argument-count mismatches, and bounded argument-type checks for Int, String, and Bool literals plus exact semantic references to explicitly typed parameters, literal-initialized locals, and local aliases whose initializer resolves through the same exact semantic snapshot
 - literal-aware Nova call parsing so quoted commas, parentheses, and escaped quotes do not corrupt argument boundaries
 - negotiated Nova quick fixes for unresolved functions, unresolved local names, argument-count mismatches, and argument-type mismatches, all gated on exact current diagnostic and workspace snapshots
