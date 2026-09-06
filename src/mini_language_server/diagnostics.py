@@ -64,16 +64,7 @@ _T = TypeVar("_T")
 
 
 class DiagnosticStore:
-    """Publish diagnostics only for the exact current semantic snapshot.
-
-    Diagnostic computation may race with semantic recomputation, reparsing, document
-    updates, close/reopen cycles, or other concurrent work. Publication therefore
-    requires the exact :class:`SemanticSnapshot` used for computation to remain
-    current. Publication uses the semantic database's compare-and-commit boundary so
-    semantic replacement cannot slip between the identity check and diagnostic-cache
-    write. Downstream publication can use :meth:`commit_if_current` to extend the same
-    guarantee through protocol notification emission without coupling the core to LSP.
-    """
+    """Publish diagnostics only for the exact current semantic snapshot."""
 
     def __init__(self, semantic: SemanticDatabase) -> None:
         self._semantic = semantic
@@ -114,6 +105,43 @@ class DiagnosticStore:
             raise DiagnosticError(
                 f"stale diagnostic snapshot for {snapshot.uri} at version {snapshot.version}"
             ) from exc
+
+    def commit_all_if_current(
+        self,
+        snapshots: Iterable[DiagnosticSnapshot],
+        commit: Callable[[], _T],
+    ) -> _T:
+        """Run *commit* while every supplied diagnostic snapshot remains exact-current."""
+        materialized = tuple(snapshots)
+        if not callable(commit):
+            raise DiagnosticError("snapshot commit must be callable")
+        if any(not isinstance(snapshot, DiagnosticSnapshot) for snapshot in materialized):
+            raise DiagnosticError("snapshot set guard requires DiagnosticSnapshot values")
+        uris = tuple(snapshot.uri for snapshot in materialized)
+        if len(set(uris)) != len(uris):
+            raise DiagnosticError("snapshot set guard requires unique diagnostic URIs")
+
+        def guard_at(index: int) -> _T:
+            if index == len(materialized):
+                with self._lock:
+                    for snapshot in materialized:
+                        if self._snapshots.get(snapshot.uri) is not snapshot:
+                            raise DiagnosticError(
+                                "stale diagnostic snapshot for "
+                                f"{snapshot.uri} at version {snapshot.version}"
+                            )
+                    return commit()
+            snapshot = materialized[index]
+            try:
+                return self._semantic.commit_if_current(
+                    snapshot.semantic, lambda: guard_at(index + 1)
+                )
+            except SemanticError as exc:
+                raise DiagnosticError(
+                    f"stale diagnostic snapshot for {snapshot.uri} at version {snapshot.version}"
+                ) from exc
+
+        return guard_at(0)
 
     def publish(
         self, semantic: SemanticSnapshot, diagnostics: Iterable[Diagnostic]
