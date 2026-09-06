@@ -89,7 +89,7 @@ def test_completion_exposes_bounded_parameter_literal_and_alias_types() -> None:
     assert details["input"] == "parameter: String"
     assert details["count"] == "variable: Int"
     assert details["alias"] == "variable: String"
-    assert details["main"] == "function"
+    assert details["main"] == "fn main(input: String)"
 
 
 def test_completion_respects_function_scope_and_local_declaration_order() -> None:
@@ -109,8 +109,8 @@ def test_completion_respects_function_scope_and_local_declaration_order() -> Non
     assert "left" not in details
     assert "hidden" not in details
     assert "later" not in details
-    assert details["first"] == "function"
-    assert details["second"] == "function"
+    assert details["first"] == "fn first(left: Int)"
+    assert details["second"] == "fn second(right: String)"
 
 
 def test_completion_recomputes_types_after_change_and_keeps_unknown_fallback() -> None:
