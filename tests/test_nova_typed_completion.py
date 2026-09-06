@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from threading import Event, Thread
 from typing import Any
 
 from mini_language_server import NovaProductLanguageServer
@@ -36,9 +37,9 @@ def open_nova(
     )
 
 
-def complete(
+def completion_response(
     server: NovaProductLanguageServer, uri: str, request_id: int
-) -> dict[str, str]:
+) -> dict[str, Any]:
     result = server.handle(
         request(
             "textDocument/completion",
@@ -47,6 +48,13 @@ def complete(
         )
     )
     assert result is not None
+    return result
+
+
+def complete(
+    server: NovaProductLanguageServer, uri: str, request_id: int
+) -> dict[str, str]:
+    result = completion_response(server, uri, request_id)
     return {item["label"]: item["detail"] for item in result["result"]}
 
 
@@ -97,3 +105,68 @@ def test_completion_close_reopen_does_not_reuse_old_type() -> None:
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
     open_nova(server, uri, 1, "fn main(input) { input }\n")
     assert complete(server, uri, 3)["input"] == "parameter"
+
+
+def test_same_version_semantic_replacement_suppresses_stale_typed_completion() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, 1, "fn main(input: String) { input }\n")
+    original = server.workspace_symbols.get(uri)
+    assert original is not None
+
+    real_commit = server.workspace_symbols.commit_snapshots_if_current
+
+    def replace_then_commit(snapshots, callback):
+        document = server.documents.get(uri)
+        assert document is not None
+        replacement = server.nova_adapter.publish(server, document)
+        server.workspace_symbols.replace(replacement, expected=original)
+        return real_commit(snapshots, callback)
+
+    server.workspace_symbols.commit_snapshots_if_current = replace_then_commit  # type: ignore[method-assign]
+    assert completion_response(server, uri, 41) == {
+        "jsonrpc": "2.0",
+        "id": 41,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+
+def test_typed_completion_honors_cancellation_checkpoint() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, 1, "fn main(input: String) { input }\n")
+
+    entered = Event()
+    release = Event()
+    responses: list[dict[str, Any] | None] = []
+    original = server.requests.checkpoint
+    blocked = False
+
+    def blocked_checkpoint(context):
+        nonlocal blocked
+        if not blocked:
+            blocked = True
+            entered.set()
+            assert release.wait(timeout=5)
+        return original(context)
+
+    server.requests.checkpoint = blocked_checkpoint  # type: ignore[method-assign]
+    thread = Thread(
+        target=lambda: responses.append(completion_response(server, uri, 42))
+    )
+    thread.start()
+    assert entered.wait(timeout=5)
+    server.handle(notify("$/cancelRequest", {"id": 42}))
+    release.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert responses == [
+        {
+            "jsonrpc": "2.0",
+            "id": 42,
+            "error": {"code": -32800, "message": "Request cancelled"},
+        }
+    ]
