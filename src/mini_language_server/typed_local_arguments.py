@@ -11,6 +11,7 @@ from .typed_parameter_arguments import NovaProductLanguageServer as _NovaProduct
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _LOCAL_INITIALIZER_SUFFIX = re.compile(
     r'\s*=\s*(?P<value>\d+|true\b|false\b|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z0-9_]*)'
+    r"\s*(?=\}|let\b|[A-Za-z_][A-Za-z0-9_]*\s*\(|$)"
 )
 
 
@@ -28,7 +29,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return None
         return self._local_type(snapshot, target, frozenset())
 
-    def _local_type(self, snapshot: Any, target: Any, seen: frozenset[tuple[int, int]]) -> str | None:
+    def _local_type(
+        self,
+        snapshot: Any,
+        target: Any,
+        seen: frozenset[tuple[int, int]],
+    ) -> str | None:
         """Infer only literal or exact-reference local initializer types."""
         identity = (target.span.start, target.span.end)
         if identity in seen:
