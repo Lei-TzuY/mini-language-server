@@ -175,9 +175,7 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
                 segment_start = index + 1
         bounds.append(cls._trimmed_bounds(body, segment_start, len(body)))
         return opening, closing, tuple(
-            (body_start + start, body_start + end)
-            for start, end in bounds
-            if start != end
+            (body_start + start, body_start + end) for start, end in bounds
         )
 
     @staticmethod
@@ -206,7 +204,9 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
         if parsed is None:
             return None
         opening, closing, bounds = parsed
-        return opening, closing, tuple(Span(start, end) for start, end in bounds)
+        return opening, closing, tuple(
+            Span(start, end) for start, end in bounds if start != end
+        )
 
     @staticmethod
     def _matching_paren(text: str, opening: int) -> int | None:
