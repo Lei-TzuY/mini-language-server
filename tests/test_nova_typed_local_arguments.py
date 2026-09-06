@@ -21,7 +21,14 @@ def open_nova(server: NovaProductLanguageServer, uri: str, text: str) -> None:
     server.handle(
         notify(
             "textDocument/didOpen",
-            {"textDocument": {"uri": uri, "languageId": "nova", "version": 1, "text": text}},
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "nova",
+                    "version": 1,
+                    "text": text,
+                }
+            },
         )
     )
 
@@ -40,33 +47,36 @@ def latest_codes(server: NovaProductLanguageServer, uri: str) -> list[str]:
 def test_literal_initialized_local_reports_argument_type_mismatch() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    open_nova(server, uri, 'fn target(value: Int) {} fn caller() { let value = "text" target(value) }\n')
+    text = 'fn target(value: Int) {} fn caller() { let value = "text" target(value) }\n'
+    open_nova(server, uri, text)
     assert latest_codes(server, uri) == ["nova.argument-type"]
 
 
 def test_matching_and_nonliteral_local_initializers_are_bounded() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    open_nova(
-        server,
-        uri,
-        "fn target(value: Int) {} fn caller(source: String) { let good = 1 target(good) let unknown = source target(unknown) }\n",
+    text = (
+        "fn target(value: Int) {} fn caller(source: String) { "
+        "let good = 1 target(good) let unknown = source target(unknown) }\n"
     )
+    open_nova(server, uri, text)
     assert latest_codes(server, uri) == []
 
 
 def test_local_initializer_change_recomputes_argument_type() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    open_nova(server, uri, 'fn target(value: Int) {} fn caller() { let value = "text" target(value) }\n')
+    text = 'fn target(value: Int) {} fn caller() { let value = "text" target(value) }\n'
+    open_nova(server, uri, text)
     assert latest_codes(server, uri) == ["nova.argument-type"]
 
+    changed_text = "fn target(value: Int) {} fn caller() { let value = 1 target(value) }\n"
     server.handle(
         notify(
             "textDocument/didChange",
             {
                 "textDocument": {"uri": uri, "version": 2},
-                "contentChanges": [{"text": "fn target(value: Int) {} fn caller() { let value = 1 target(value) }\n"}],
+                "contentChanges": [{"text": changed_text}],
             },
         )
     )
@@ -76,8 +86,10 @@ def test_local_initializer_change_recomputes_argument_type() -> None:
 def test_close_reopen_rebinds_local_initializer_type() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    open_nova(server, uri, 'fn target(value: Int) {} fn caller() { let value = "text" target(value) }\n')
+    text = 'fn target(value: Int) {} fn caller() { let value = "text" target(value) }\n'
+    open_nova(server, uri, text)
     assert latest_codes(server, uri) == ["nova.argument-type"]
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
-    open_nova(server, uri, "fn target(value: Int) {} fn caller() { let value = 1 target(value) }\n")
+    reopened_text = "fn target(value: Int) {} fn caller() { let value = 1 target(value) }\n"
+    open_nova(server, uri, reopened_text)
     assert latest_codes(server, uri) == []
