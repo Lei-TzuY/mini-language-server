@@ -61,7 +61,11 @@ def test_folding_ranges_cover_complete_multiline_nova_functions_deterministicall
     open_document(
         server,
         uri,
-        "fn first() {\n  let value = 1\n}\nfn inline() {}\nfn second() {\n  first()\n  inline()\n}\n",
+        (
+            "fn first() {\n  let value = 1\n}\n"
+            "fn inline() {}\n"
+            "fn second() {\n  first()\n  inline()\n}\n"
+        ),
     )
 
     assert folding_ranges(server, uri) == {
