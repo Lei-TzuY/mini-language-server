@@ -7,7 +7,11 @@ from mini_language_server import NovaProductLanguageServer
 from mini_language_server.semantic import Reference
 
 
-def request(method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
+def request(
+    method: str,
+    request_id: int,
+    params: dict[str, Any],
+) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
 
 
@@ -17,7 +21,8 @@ def notify(method: str, params: dict[str, Any]) -> dict[str, Any]:
 
 def initialized_server() -> NovaProductLanguageServer:
     server = NovaProductLanguageServer()
-    assert server.handle(request("initialize", 1, {"capabilities": {}})) is not None
+    result = server.handle(request("initialize", 1, {"capabilities": {}}))
+    assert result is not None
     return server
 
 
@@ -37,7 +42,13 @@ def open_nova(server: NovaProductLanguageServer, uri: str, text: str) -> None:
     )
 
 
-def hover(server: NovaProductLanguageServer, uri: str, text: str, token: str, request_id: int) -> dict[str, Any]:
+def hover(
+    server: NovaProductLanguageServer,
+    uri: str,
+    text: str,
+    token: str,
+    request_id: int,
+) -> dict[str, Any]:
     offset = text.rindex(token)
     result = server.handle(
         request(
@@ -80,16 +91,20 @@ def test_typed_parameter_and_alias_local_hover_expose_bounded_types() -> None:
 def test_literal_local_hover_and_unknown_expression_fallback_are_deterministic() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    text = "fn main(source) { let flag = true flag let unknown = source + 1 unknown }\n"
+    text = (
+        "fn main(source) { let flag = true flag "
+        "let unknown = source + 1 unknown }\n"
+    )
     open_nova(server, uri, text)
 
+    second_flag = text.index("flag", text.index("flag") + 1)
     flag = server.handle(
         request(
             "textDocument/hover",
             2,
             {
                 "textDocument": {"uri": uri},
-                "position": {"line": 0, "character": text.index("flag", text.index("flag") + 1)},
+                "position": {"line": 0, "character": second_flag},
             },
         )
     )
@@ -105,7 +120,8 @@ def test_typed_local_hover_recomputes_after_change_and_close_reopen() -> None:
     uri = "file:///workspace/main.nova"
     first = 'fn main() { let value = "text" value }\n'
     open_nova(server, uri, first)
-    assert hover(server, uri, first, "value", 2)["result"]["contents"]["value"] == "variable value: String"
+    first_hover = hover(server, uri, first, "value", 2)
+    assert first_hover["result"]["contents"]["value"] == "variable value: String"
 
     second = "fn main() { let value = 1 value }\n"
     server.handle(
@@ -117,15 +133,19 @@ def test_typed_local_hover_recomputes_after_change_and_close_reopen() -> None:
             },
         )
     )
-    assert hover(server, uri, second, "value", 3)["result"]["contents"]["value"] == "variable value: Int"
+    second_hover = hover(server, uri, second, "value", 3)
+    assert second_hover["result"]["contents"]["value"] == "variable value: Int"
 
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
     third = "fn main() { let value = false value }\n"
     open_nova(server, uri, third)
-    assert hover(server, uri, third, "value", 4)["result"]["contents"]["value"] == "variable value: Bool"
+    third_hover = hover(server, uri, third, "value", 4)
+    assert third_hover["result"]["contents"]["value"] == "variable value: Bool"
 
 
-def test_same_version_semantic_replacement_suppresses_stale_typed_hover(monkeypatch) -> None:
+def test_same_version_semantic_replacement_suppresses_stale_typed_hover(
+    monkeypatch,
+) -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
     text = "fn main() { let value = 1 value }\n"
@@ -142,7 +162,9 @@ def test_same_version_semantic_replacement_suppresses_stale_typed_hover(monkeypa
         return original(semantic, commit)
 
     monkeypatch.setattr(server.semantics, "commit_if_current", blocked_commit)
-    thread = Thread(target=lambda: responses.append(hover(server, uri, text, "value", 41)))
+    thread = Thread(
+        target=lambda: responses.append(hover(server, uri, text, "value", 41))
+    )
     thread.start()
     assert entered.wait(timeout=5)
 
