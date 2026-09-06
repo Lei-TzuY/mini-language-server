@@ -49,48 +49,52 @@ def latest_codes(server: NovaProductLanguageServer, uri: str) -> list[str]:
     return [item["code"] for item in latest_diagnostics(server, uri)]
 
 
-def test_same_file_integer_literal_reports_explicit_parameter_type_mismatch() -> None:
+def test_typed_parameter_forwarding_reports_exact_argument_type_mismatch() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    open_nova(
-        server,
-        uri,
-        "fn target(value: String) {} fn caller() { target(1) }\n",
-    )
+    text = "fn target(value: Int) {} fn caller(value: String) { target(value) }\n"
+    open_nova(server, uri, text)
 
     diagnostics = latest_diagnostics(server, uri)
-    mismatch = [item for item in diagnostics if item["code"] == "nova.argument-type"]
-    assert len(mismatch) == 1
-    assert mismatch[0]["message"] == (
-        "argument 1 to 'target' has type 'Int'; expected 'String'"
+    mismatches = [item for item in diagnostics if item["code"] == "nova.argument-type"]
+    assert len(mismatches) == 1
+    assert mismatches[0]["message"] == (
+        "argument 1 to 'target' has type 'String'; expected 'Int'"
     )
-    assert mismatch[0]["range"]["start"] == {"line": 0, "character": 49}
-    assert mismatch[0]["range"]["end"] == {"line": 0, "character": 50}
+    argument_start = text.rindex("value")
+    assert mismatches[0]["range"]["start"] == {
+        "line": 0,
+        "character": argument_start,
+    }
+    assert mismatches[0]["range"]["end"] == {
+        "line": 0,
+        "character": argument_start + len("value"),
+    }
 
 
-def test_int_untyped_and_non_literal_arguments_are_not_guessed() -> None:
+def test_matching_or_untyped_parameter_arguments_are_not_guessed() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
     open_nova(
         server,
         uri,
         (
-            "fn int_target(value: Int) {} "
-            "fn untyped(value) {} "
-            "fn caller(value) { int_target(1) untyped(1) int_target(value) }\n"
+            "fn target(value: Int) {} "
+            "fn matching(value: Int) { target(value) } "
+            "fn unknown(value) { target(value) }\n"
         ),
     )
 
     assert latest_codes(server, uri) == []
 
 
-def test_cross_file_type_diagnostic_tracks_exact_provider_signature() -> None:
+def test_cross_file_expected_signature_checks_forwarded_parameter_type() -> None:
     server = initialized_server()
     library = "file:///workspace/library.nova"
     caller = "file:///workspace/caller.nova"
-    open_nova(server, library, "fn target(value: String) {}\n")
+    open_nova(server, library, "fn target(value: Int) {}\n")
     server.drain_notifications()
-    open_nova(server, caller, "fn caller() { target(1) }\n")
+    open_nova(server, caller, "fn caller(value: String) { target(value) }\n")
     assert latest_codes(server, caller) == ["nova.argument-type"]
 
     server.handle(
@@ -98,62 +102,71 @@ def test_cross_file_type_diagnostic_tracks_exact_provider_signature() -> None:
             "textDocument/didChange",
             {
                 "textDocument": {"uri": library, "version": 2},
-                "contentChanges": [{"text": "fn target(value: Int) {}\n"}],
+                "contentChanges": [{"text": "fn target(value: String) {}\n"}],
             },
         )
     )
     assert latest_codes(server, caller) == []
 
 
-def test_arity_mismatch_precedes_type_checking() -> None:
+def test_caller_parameter_change_recomputes_forwarded_argument_type() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
     open_nova(
         server,
         uri,
-        "fn target(value: String) {} fn caller() { target(1, 2) }\n",
+        "fn target(value: Int) {} fn caller(value: String) { target(value) }\n",
     )
+    assert latest_codes(server, uri) == ["nova.argument-type"]
 
-    assert latest_codes(server, uri) == ["nova.argument-count"]
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [
+                    {
+                        "text": (
+                            "fn target(value: Int) {} "
+                            "fn caller(value: Int) { target(value) }\n"
+                        )
+                    }
+                ],
+            },
+        )
+    )
+    assert latest_codes(server, uri) == []
 
 
-def test_ambiguous_function_does_not_guess_argument_types() -> None:
+def test_close_and_reopen_rebinds_forwarded_parameter_type() -> None:
     server = initialized_server()
-    caller = "file:///workspace/caller.nova"
-    open_nova(server, "file:///workspace/a.nova", "fn target(value: String) {}\n")
-    server.drain_notifications()
-    open_nova(server, "file:///workspace/b.nova", "fn target(value: Int) {}\n")
-    server.drain_notifications()
-    open_nova(server, caller, "fn caller() { target(1) }\n")
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        "fn target(value: Int) {} fn caller(value: String) { target(value) }\n",
+    )
+    assert latest_codes(server, uri) == ["nova.argument-type"]
 
-    assert latest_codes(server, caller) == ["nova.ambiguous-function"]
+    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
+    open_nova(
+        server,
+        uri,
+        "fn target(value: Int) {} fn caller(value: Int) { target(value) }\n",
+    )
+    assert latest_codes(server, uri) == []
 
 
-def test_close_and_reopen_recompute_type_from_current_provider() -> None:
+def test_same_version_replacement_suppresses_stale_forwarded_parameter_diagnostic() -> None:
     server = initialized_server()
-    library = "file:///workspace/library.nova"
-    caller = "file:///workspace/caller.nova"
-    open_nova(server, library, "fn target(value: String) {}\n")
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        "fn target(value: Int) {} fn caller(value: String) { target(value) }\n",
+    )
     server.drain_notifications()
-    open_nova(server, caller, "fn caller() { target(1) }\n")
-    assert latest_codes(server, caller) == ["nova.argument-type"]
-
-    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": library}}))
-    assert latest_codes(server, caller) == ["nova.unresolved-function"]
-
-    open_nova(server, library, "fn target(value: Int) {}\n")
-    assert latest_codes(server, caller) == []
-
-
-def test_same_version_workspace_replacement_suppresses_stale_argument_type() -> None:
-    server = initialized_server()
-    library = "file:///workspace/library.nova"
-    caller = "file:///workspace/caller.nova"
-    open_nova(server, library, "fn target(value: String) {}\n")
-    server.drain_notifications()
-    open_nova(server, caller, "fn caller() { target(1) }\n")
-    server.drain_notifications()
-    original = server.workspace_symbols.get(caller)
+    original = server.workspace_symbols.get(uri)
     assert original is not None
 
     real_commit = server.workspace_symbols.commit_snapshots_if_current
@@ -163,7 +176,7 @@ def test_same_version_workspace_replacement_suppresses_stale_argument_type() -> 
         nonlocal replaced
         if not replaced:
             replaced = True
-            document = server.documents.get(caller)
+            document = server.documents.get(uri)
             assert document is not None
             replacement = server.nova_adapter.publish(server, document)
             server.workspace_symbols.replace(replacement, expected=original)
@@ -175,7 +188,7 @@ def test_same_version_workspace_replacement_suppresses_stale_argument_type() -> 
         item
         for item in server.drain_notifications()
         if item.get("method") == "textDocument/publishDiagnostics"
-        and item.get("params", {}).get("uri") == caller
+        and item.get("params", {}).get("uri") == uri
     ]
     assert notifications
     assert all(
