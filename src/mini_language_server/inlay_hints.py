@@ -120,6 +120,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         )
                     )
 
+            hints.extend(
+                self._additional_inlay_hints(
+                    semantics, source, start_offset=start_offset, end_offset=end_offset
+                )
+            )
             self.requests.checkpoint(context)
             result = [hint for _, hint in sorted(hints, key=lambda item: item[0])]
             try:
@@ -137,6 +142,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
+
+    def _additional_inlay_hints(
+        self,
+        semantics: Any,
+        source: SourceText,
+        *,
+        start_offset: int,
+        end_offset: int,
+    ) -> list[tuple[int, dict[str, Any]]]:
+        """Extension point for product-specific hints sharing this publication gate."""
+        return []
 
     @staticmethod
     def _declaration_parameter_names(declaration: Any) -> tuple[str, ...]:
