@@ -21,10 +21,10 @@ LSP / JSON-RPC lifecycle
 - document open/change/close with monotonic versions and incremental edits
 - source positions/spans with LSP coordinate conversion
 - version-bound syntax, symbol, semantic, diagnostic, and workspace snapshots
-- compare-and-commit publication guards across the derived-cache chain
+- compare-and-commit publication guards across the derived-cache chain, including exact open-document and diagnostic snapshot-set guards for workspace reads
 - definition, references, document highlights, linked editing ranges, prepareRename, and rename, including uniquely resolved cross-file Nova functions
 - hover, lexical-scope-aware completion, semantic tokens (full, range, and negotiated full/delta), document symbols, workspace symbol search, negotiated signature help, negotiated Nova parameter inlay hints, and exact-snapshot Nova function folding ranges
-- negotiated `textDocument/diagnostic` pull reports with deterministic result IDs, unchanged-report support, cancellation, and exact diagnostic-snapshot publication guards
+- negotiated `textDocument/diagnostic` and `workspace/diagnostic` pull reports with deterministic result IDs, unchanged-report support, cancellation, and exact diagnostic-snapshot publication guards
 - executable Nova adapter semantics for functions, typed parameters, locals, scoped references, and deterministic unresolved/duplicate diagnostics
 - exact Nova hover type information for explicitly typed parameters, literal-initialized locals, and exact-reference local aliases when bounded type knowledge is available
 - exact-workspace Nova completion details for bounded parameter/local types and uniquely resolved same-file or cross-file function signatures; ambiguous function names remain conservative
@@ -38,7 +38,7 @@ LSP / JSON-RPC lifecycle
 
 ## Checkpoint scope
 
-The generic tooling substrate remains language-independent. Nova-specific parsing, name-resolution rules, typed function metadata, cross-file product behavior, diagnostics, quick-fix policy, parameter inlay hints, function-body folding rules, literal-aware call parsing, bounded typed parameter/local propagation, and lexical completion visibility stay in the Nova adapter/product composition instead of leaking into the generic stores and query layer. Pull-diagnostic protocol composition is language-independent and reads the current exact DiagnosticSnapshot without changing Nova diagnostic policy. Semantic-token delta composition is language-independent and wraps the exact full-token publication boundary without adding Nova-specific token rules.
+The generic tooling substrate remains language-independent. Nova-specific parsing, name-resolution rules, typed function metadata, cross-file product behavior, diagnostics, quick-fix policy, parameter inlay hints, function-body folding rules, literal-aware call parsing, bounded typed parameter/local propagation, and lexical completion visibility stay in the Nova adapter/product composition instead of leaking into the generic stores and query layer. Pull-diagnostic protocol composition is language-independent and reads exact DiagnosticSnapshots without changing Nova diagnostic policy; workspace pulls additionally pin the exact open-document and diagnostic snapshot sets through generic compare-and-commit guards. Semantic-token delta composition is language-independent and wraps the exact full-token publication boundary without adding Nova-specific token rules.
 
 The project is still intentionally bounded rather than a complete production LSP or full Nova compiler front end. New slices should add executable semantics or protocol behavior with exact-snapshot regressions, not empty handlers, adapters, or scaffolding.
 

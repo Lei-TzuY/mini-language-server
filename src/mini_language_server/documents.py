@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from threading import RLock
 from typing import Any, TypeVar
@@ -47,6 +47,11 @@ class DocumentStore:
         with self._lock:
             return self._documents.get(uri)
 
+    def snapshots(self) -> tuple[Document, ...]:
+        """Return the current open snapshots in deterministic URI order."""
+        with self._lock:
+            return tuple(self._documents[uri] for uri in sorted(self._documents))
+
     def commit_if_current(self, document: Document, commit: Callable[[], _T]) -> _T:
         """Run *commit* atomically while *document* remains the current snapshot.
 
@@ -65,6 +70,29 @@ class DocumentStore:
                 raise DocumentError(
                     f"stale document snapshot for {document.uri} at version {document.version}"
                 )
+            return commit()
+
+    def commit_all_if_current(
+        self, documents: Iterable[Document], commit: Callable[[], _T]
+    ) -> _T:
+        """Run *commit* while an exact set of open document snapshots remains current."""
+        materialized = tuple(documents)
+        if not callable(commit):
+            raise DocumentError("snapshot commit must be callable")
+        if any(not isinstance(document, Document) for document in materialized):
+            raise DocumentError("snapshot set guard requires Document values")
+        uris = tuple(document.uri for document in materialized)
+        if len(set(uris)) != len(uris):
+            raise DocumentError("snapshot set guard requires unique document URIs")
+
+        with self._lock:
+            if set(self._documents) != set(uris):
+                raise DocumentError("open document set changed")
+            for document in materialized:
+                if self._documents.get(document.uri) is not document:
+                    raise DocumentError(
+                        f"stale document snapshot for {document.uri} at version {document.version}"
+                    )
             return commit()
 
     def open(self, *, uri: str, language_id: str, version: int, text: str) -> Document:
