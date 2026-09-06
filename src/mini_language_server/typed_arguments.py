@@ -101,7 +101,7 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
                 ):
                     if expected_type is None:
                         continue
-                    actual_type = self._literal_type(text[argument.start : argument.end])
+                    actual_type = self._argument_type(snapshot, argument)
                     if actual_type is None or actual_type == expected_type:
                         continue
                     diagnostics.append(
@@ -125,6 +125,11 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
             self.workspace_symbols.commit_snapshots_if_current(snapshots, publish)
         except WorkspaceIndexError:
             return
+
+    def _argument_type(self, snapshot: Any, argument: Span) -> str | None:
+        """Return the bounded actual type for one argument in an exact snapshot."""
+        text = snapshot.symbols.syntax.document.text
+        return self._literal_type(text[argument.start : argument.end])
 
     @classmethod
     def _is_literal_unresolved_name(cls, text: str, diagnostic: Diagnostic) -> bool:
