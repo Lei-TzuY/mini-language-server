@@ -5,7 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import Any
 
-from .cancellation import RequestCancelled, StaleRequest
+from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import DiagnosticError, DiagnosticSnapshot
 from .documents import Document, DocumentError
 from .folding_ranges import NovaProductLanguageServer as _NovaProductLanguageServer
@@ -24,6 +24,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             and self.state is ServerState.RUNNING
         ):
             return self._handle_pull_diagnostic(message.get("id"), message.get("params"))
+        if (
+            method == "workspace/diagnostic"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            return self._handle_workspace_diagnostic(message.get("id"), message.get("params"))
 
         result = super().handle(message)
         if (
@@ -36,7 +42,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if isinstance(capabilities, dict):
                 capabilities["diagnosticProvider"] = {
                     "interFileDependencies": False,
-                    "workspaceDiagnostics": False,
+                    "workspaceDiagnostics": True,
                 }
         return result
 
@@ -102,6 +108,70 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
+
+    def _handle_workspace_diagnostic(self, request_id: Any, params: Any) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            return self._error(request_id, -32602, "Invalid params")
+        previous = self._workspace_previous_result_ids(params.get("previousResultIds", []))
+        if previous is None:
+            return self._error(request_id, -32602, "Invalid params")
+        try:
+            context = self.requests.start(request_id)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            documents = self.documents.snapshots()
+            reports: list[dict[str, Any]] = []
+            diagnostic_snapshots: list[DiagnosticSnapshot] = []
+            for document in documents:
+                self.requests.checkpoint(context)
+                snapshot = self.diagnostics.get(document.uri)
+                if snapshot is not None:
+                    if snapshot.semantic.symbols.syntax.document is not document:
+                        return self._error(request_id, -32801, "Content modified")
+                    diagnostic_snapshots.append(snapshot)
+                    source = SourceText(document.text)
+                    items = [self._diagnostic(source, item) for item in snapshot.diagnostics]
+                else:
+                    items = []
+                result_id = self._diagnostic_result_id(document, snapshot)
+                report = self._diagnostic_report(previous.get(document.uri), result_id, items)
+                reports.append({"uri": document.uri, "version": document.version, **report})
+
+            self.requests.checkpoint(context)
+            try:
+                return self.documents.commit_all_if_current(
+                    documents,
+                    lambda: self.diagnostics.commit_all_if_current(
+                        diagnostic_snapshots,
+                        lambda: self._result(request_id, {"items": reports}),
+                    ),
+                )
+            except (DocumentError, DiagnosticError):
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        finally:
+            self.requests.finish(context)
+
+    @staticmethod
+    def _workspace_previous_result_ids(value: Any) -> dict[str, str] | None:
+        if not isinstance(value, list):
+            return None
+        previous: dict[str, str] = {}
+        for item in value:
+            if not isinstance(item, dict):
+                return None
+            uri = item.get("uri")
+            result_id = item.get("value")
+            if not isinstance(uri, str) or not uri or not isinstance(result_id, str):
+                return None
+            if uri in previous:
+                return None
+            previous[uri] = result_id
+        return previous
 
     @staticmethod
     def _diagnostic_report(
