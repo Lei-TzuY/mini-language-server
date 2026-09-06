@@ -9,9 +9,12 @@ from .diagnostics import Diagnostic
 from .inlay_hints import NovaProductLanguageServer as _NovaProductLanguageServer
 from .nova import NovaFunctionSyntax
 from .semantic_token_delta import SemanticTokenDeltaMixin
+from .source import Span
 from .workspace import WorkspaceIndexError
 
 _INTEGER_LITERAL = re.compile(r"[+-]?\d+")
+_STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"', re.DOTALL)
+_BOOLEAN_LITERALS = frozenset({"true", "false"})
 
 
 class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageServer):
@@ -131,8 +134,137 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
             result.append(type_name.strip() if separator else None)
         return tuple(result)
 
+    @classmethod
+    def _call_argument_bounds(
+        cls, text: str, name_end: int
+    ) -> tuple[int, int, tuple[tuple[int, int], ...]] | None:
+        opening = text.find("(", name_end)
+        if opening < 0 or text[name_end:opening].strip():
+            return None
+        closing = cls._matching_paren(text, opening)
+        if closing is None:
+            return None
+
+        body_start = opening + 1
+        body = text[body_start:closing]
+        if not body.strip():
+            return opening, closing, ()
+
+        bounds: list[tuple[int, int]] = []
+        depth = 0
+        quoted = False
+        escaped = False
+        segment_start = 0
+        for index, character in enumerate(body):
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    quoted = False
+                continue
+            if character == '"':
+                quoted = True
+            elif character == "(":
+                depth += 1
+            elif character == ")" and depth:
+                depth -= 1
+            elif character == "," and depth == 0:
+                bounds.append(cls._trimmed_bounds(body, segment_start, index))
+                segment_start = index + 1
+        bounds.append(cls._trimmed_bounds(body, segment_start, len(body)))
+        return opening, closing, tuple(
+            (body_start + start, body_start + end)
+            for start, end in bounds
+            if start != end
+        )
+
+    @staticmethod
+    def _trimmed_bounds(body: str, start: int, end: int) -> tuple[int, int]:
+        while start < end and body[start].isspace():
+            start += 1
+        while end > start and body[end - 1].isspace():
+            end -= 1
+        return start, end
+
+    @classmethod
+    def _call_arguments(
+        cls, text: str, name_end: int
+    ) -> tuple[int, int, tuple[str, ...]] | None:
+        parsed = cls._call_argument_bounds(text, name_end)
+        if parsed is None:
+            return None
+        opening, closing, bounds = parsed
+        return opening, closing, tuple(text[start:end] for start, end in bounds)
+
+    @classmethod
+    def _call_argument_spans(
+        cls, text: str, name_end: int
+    ) -> tuple[int, int, tuple[Span, ...]] | None:
+        parsed = cls._call_argument_bounds(text, name_end)
+        if parsed is None:
+            return None
+        opening, closing, bounds = parsed
+        return opening, closing, tuple(Span(start, end) for start, end in bounds)
+
+    @staticmethod
+    def _matching_paren(text: str, opening: int) -> int | None:
+        depth = 0
+        quoted = False
+        escaped = False
+        for index in range(opening, len(text)):
+            character = text[index]
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    quoted = False
+                continue
+            if character == '"':
+                quoted = True
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    return index
+        return None
+
+    @staticmethod
+    def _active_parameter(text: str, opening: int, offset: int) -> int:
+        parameter = 0
+        nested = 0
+        quoted = False
+        escaped = False
+        for character in text[opening + 1 : offset]:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    quoted = False
+                continue
+            if character == '"':
+                quoted = True
+            elif character == "(":
+                nested += 1
+            elif character == ")" and nested:
+                nested -= 1
+            elif character == "," and nested == 0:
+                parameter += 1
+        return parameter
+
     @staticmethod
     def _literal_type(argument: str) -> str | None:
-        if _INTEGER_LITERAL.fullmatch(argument.strip()) is not None:
+        literal = argument.strip()
+        if _INTEGER_LITERAL.fullmatch(literal) is not None:
             return "Int"
+        if _STRING_LITERAL.fullmatch(literal) is not None:
+            return "String"
+        if literal in _BOOLEAN_LITERALS:
+            return "Bool"
         return None
