@@ -1,5 +1,6 @@
 """mini-language-server package."""
 
+from .argument_type_actions import NovaProductLanguageServer
 from .cancellation import (
     RequestCancelled,
     RequestContext,
@@ -15,7 +16,6 @@ from .server import LanguageServer, ServerState
 from .source import Position, SourceError, SourceText, Span
 from .symbols import Symbol, SymbolError, SymbolIndex, SymbolSnapshot
 from .syntax import SyntaxError, SyntaxSnapshot, SyntaxStore
-from .typed_arguments import NovaProductLanguageServer
 
 __all__ = [
     "Diagnostic",
