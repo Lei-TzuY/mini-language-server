@@ -6,8 +6,10 @@ import re
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
+from .nova import NovaFunctionSyntax
 from .source import Span
 from .typed_parameter_arguments import NovaProductLanguageServer as _NovaProductLanguageServer
+from .workspace import WorkspaceIndexError
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _LOCAL_INITIALIZER_SUFFIX = re.compile(
@@ -29,6 +31,59 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if target is None or target.kind != "variable":
             return None
         return self._local_type(snapshot, target, frozenset())
+
+    def _handle_workspace_completion(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any] | None:
+        """Expose bounded parameter/local types in exact-snapshot Nova completion."""
+        parsed = self._semantic_query(params)
+        if parsed is None:
+            return super()._handle_workspace_completion(request_id, params)
+        semantics, _, _ = parsed
+        if semantics is None or not isinstance(
+            semantics.symbols.syntax.tree, NovaFunctionSyntax
+        ):
+            return super()._handle_workspace_completion(request_id, params)
+
+        snapshots = self.workspace_symbols.snapshots()
+        try:
+            context = self.requests.start(request_id, uri=semantics.uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            items: dict[tuple[str, str], str] = {}
+            for symbol in semantics.symbols.symbols:
+                symbol_type = self._symbol_type(semantics, symbol)
+                detail = symbol.kind
+                if symbol_type is not None:
+                    detail = f"{symbol.kind}: {symbol_type}"
+                items[(symbol.name, symbol.kind)] = detail
+            for snapshot in snapshots:
+                if not isinstance(snapshot.symbols.syntax.tree, NovaFunctionSyntax):
+                    continue
+                for symbol in snapshot.symbols.symbols:
+                    if symbol.kind == "function":
+                        items.setdefault((symbol.name, symbol.kind), symbol.kind)
+
+            result = [
+                {"label": name, "detail": items[(name, kind)]}
+                for name, kind in sorted(items, key=lambda item: (item[0], item[1]))
+            ]
+            self.requests.checkpoint(context)
+            try:
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots, lambda: self._result(request_id, result)
+                )
+            except WorkspaceIndexError:
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
 
     def _handle_workspace_hover(
         self, request_id: Any, params: Any
