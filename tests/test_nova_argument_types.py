@@ -77,7 +77,7 @@ def test_int_untyped_and_non_literal_arguments_are_not_guessed() -> None:
         (
             "fn int_target(value: Int) {} "
             "fn untyped(value) {} "
-            "fn caller(value: String) { int_target(1) untyped(1) int_target(value) }\n"
+            "fn caller(value) { int_target(1) untyped(1) int_target(value) }\n"
         ),
     )
 
