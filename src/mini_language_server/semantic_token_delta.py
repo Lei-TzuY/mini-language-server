@@ -71,7 +71,7 @@ class SemanticTokenDeltaMixin:
             return response
         if identity != self._semantic_token_identity(uri):
             return self._error(message.get("id"), -32801, "Content modified")
-        return self._attach_semantic_token_result(uri, response)
+        return self._attach_semantic_token_result(uri, identity, response)
 
     def _handle_semantic_token_delta(self, message: dict[str, Any]) -> dict[str, Any]:
         request_id = message.get("id")
@@ -114,7 +114,7 @@ class SemanticTokenDeltaMixin:
         return self._result(request_id, {"resultId": result_id, "edits": edits})
 
     def _attach_semantic_token_result(
-        self, uri: str, response: dict[str, Any]
+        self, uri: str, identity: tuple[Any, Any] | None, response: dict[str, Any]
     ) -> dict[str, Any]:
         result = response.get("result")
         if not isinstance(result, dict) or not isinstance(result.get("data"), list):
@@ -122,7 +122,6 @@ class SemanticTokenDeltaMixin:
         data = result["data"]
         if not all(isinstance(item, int) and not isinstance(item, bool) for item in data):
             return response
-        identity = self._semantic_token_identity(uri)
         with self._semantic_token_result_lock:
             if identity != self._semantic_token_identity(uri):
                 return self._error(response.get("id"), -32801, "Content modified")
