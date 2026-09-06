@@ -73,14 +73,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _handle_workspace_completion(
         self, request_id: Any, params: Any
     ) -> dict[str, Any] | None:
-        """Expose bounded parameter/local types in exact-snapshot Nova completion."""
+        """Expose only cursor-visible Nova names with bounded type details."""
         parsed = self._semantic_query(params)
         if parsed is None:
             return super()._handle_workspace_completion(request_id, params)
-        semantics, _, _ = parsed
-        if semantics is None or not isinstance(
-            semantics.symbols.syntax.tree, NovaFunctionSyntax
-        ):
+        semantics, offset, _ = parsed
+        tree = None if semantics is None else semantics.symbols.syntax.tree
+        if semantics is None or not isinstance(tree, NovaFunctionSyntax):
             return super()._handle_workspace_completion(request_id, params)
 
         snapshots = self.workspace_symbols.snapshots()
@@ -91,8 +90,23 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         try:
             self.requests.checkpoint(context)
+            text = semantics.symbols.syntax.document.text
+            owner = self._completion_scope_owner(text, tree, offset)
+            visible_spans: set[Span] = set()
+            if owner is not None:
+                visible_spans.update(
+                    parameter.span for parameter in tree.parameters if parameter.owner == owner
+                )
+                visible_spans.update(
+                    local.span
+                    for local in tree.locals
+                    if local.owner == owner and local.span.end <= offset
+                )
+
             items: dict[tuple[str, str], str] = {}
             for symbol in semantics.symbols.symbols:
+                if symbol.kind != "function" and symbol.span not in visible_spans:
+                    continue
                 symbol_type = self._symbol_type(semantics, symbol)
                 detail = symbol.kind
                 if symbol_type is not None:
@@ -122,6 +136,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
+
+    def _completion_scope_owner(
+        self, text: str, tree: NovaFunctionSyntax, offset: int
+    ) -> Span | None:
+        """Return the exact function owner whose body contains the cursor."""
+        for _, owner in tree.declarations:
+            opening = text.find("{", owner.end)
+            if opening < 0 or offset <= opening:
+                continue
+            closing = self.nova_adapter._matching_brace(text, opening)
+            if closing is not None and offset <= closing:
+                return owner
+        return None
 
     def _handle_workspace_hover(
         self, request_id: Any, params: Any
