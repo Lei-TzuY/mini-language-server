@@ -1,6 +1,6 @@
 """mini-language-server package."""
 
-from .argument_type_actions import NovaProductLanguageServer
+from .typed_parameter_arguments import NovaProductLanguageServer
 from .cancellation import (
     RequestCancelled,
     RequestContext,
