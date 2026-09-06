@@ -7,7 +7,7 @@ from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .nova import NovaFunctionSyntax
-from .source import Span
+from .source import SourceText, Span
 from .typed_parameter_arguments import NovaProductLanguageServer as _NovaProductLanguageServer
 from .workspace import WorkspaceIndexError
 
@@ -31,6 +31,44 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if target is None or target.kind != "variable":
             return None
         return self._local_type(snapshot, target, frozenset())
+
+    def _additional_inlay_hints(
+        self,
+        semantics: Any,
+        source: SourceText,
+        *,
+        start_offset: int,
+        end_offset: int,
+    ) -> list[tuple[int, dict[str, Any]]]:
+        """Expose bounded local types inside the shared exact-snapshot hint gate."""
+        hints = super()._additional_inlay_hints(
+            semantics,
+            source,
+            start_offset=start_offset,
+            end_offset=end_offset,
+        )
+        for symbol in semantics.symbols.symbols:
+            if symbol.kind != "variable":
+                continue
+            if not (start_offset <= symbol.span.start < end_offset):
+                continue
+            symbol_type = self._symbol_type(semantics, symbol)
+            if symbol_type is None:
+                continue
+            hints.append(
+                (
+                    symbol.span.end,
+                    {
+                        "position": self._range(
+                            source, Span(symbol.span.end, symbol.span.end)
+                        )["start"],
+                        "label": f": {symbol_type}",
+                        "kind": 1,
+                        "paddingLeft": True,
+                    },
+                )
+            )
+        return hints
 
     def _handle_workspace_completion(
         self, request_id: Any, params: Any
