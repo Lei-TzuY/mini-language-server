@@ -45,8 +45,7 @@ class SemanticTokenDeltaMixin:
             self._semantic_token_delta_enabled
             and method == "textDocument/semanticTokens/full"
         ):
-            response = super().handle(message)
-            return self._attach_semantic_token_result(message, response)
+            return self._handle_delta_capable_full(message)
 
         if (
             self._semantic_token_delta_enabled
@@ -62,6 +61,18 @@ class SemanticTokenDeltaMixin:
                     self._semantic_token_results.pop(uri, None)
         return response
 
+    def _handle_delta_capable_full(
+        self, message: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        uri = self._semantic_token_uri(message.get("params"))
+        identity = self._semantic_token_identity(uri)
+        response = super().handle(message)
+        if response is None or "error" in response or uri is None:
+            return response
+        if identity != self._semantic_token_identity(uri):
+            return self._error(message.get("id"), -32801, "Content modified")
+        return self._attach_semantic_token_result(uri, response)
+
     def _handle_semantic_token_delta(self, message: dict[str, Any]) -> dict[str, Any]:
         request_id = message.get("id")
         params = message.get("params")
@@ -72,12 +83,15 @@ class SemanticTokenDeltaMixin:
         if not isinstance(previous_result_id, str) or not previous_result_id:
             return self._error(request_id, -32602, "Invalid params")
 
+        identity = self._semantic_token_identity(uri)
         full_message = dict(message)
         full_message["method"] = "textDocument/semanticTokens/full"
         response = super().handle(full_message)
         if response is None or "error" in response:
             assert response is not None
             return response
+        if identity != self._semantic_token_identity(uri):
+            return self._error(request_id, -32801, "Content modified")
         result = response.get("result")
         if not isinstance(result, dict) or not isinstance(result.get("data"), list):
             return self._error(request_id, -32603, "Invalid semantic token result")
@@ -87,6 +101,8 @@ class SemanticTokenDeltaMixin:
 
         current = tuple(data)
         with self._semantic_token_result_lock:
+            if identity != self._semantic_token_identity(uri):
+                return self._error(request_id, -32801, "Content modified")
             previous = self._semantic_token_results.get(uri)
             result_id = self._next_semantic_token_result_id_locked()
             self._semantic_token_results[uri] = (result_id, current)
@@ -98,22 +114,27 @@ class SemanticTokenDeltaMixin:
         return self._result(request_id, {"resultId": result_id, "edits": edits})
 
     def _attach_semantic_token_result(
-        self, message: dict[str, Any], response: dict[str, Any] | None
-    ) -> dict[str, Any] | None:
-        if response is None or "error" in response:
-            return response
-        uri = self._semantic_token_uri(message.get("params"))
+        self, uri: str, response: dict[str, Any]
+    ) -> dict[str, Any]:
         result = response.get("result")
-        if uri is None or not isinstance(result, dict) or not isinstance(result.get("data"), list):
+        if not isinstance(result, dict) or not isinstance(result.get("data"), list):
             return response
         data = result["data"]
         if not all(isinstance(item, int) and not isinstance(item, bool) for item in data):
             return response
+        identity = self._semantic_token_identity(uri)
         with self._semantic_token_result_lock:
+            if identity != self._semantic_token_identity(uri):
+                return self._error(response.get("id"), -32801, "Content modified")
             result_id = self._next_semantic_token_result_id_locked()
             self._semantic_token_results[uri] = (result_id, tuple(data))
         result["resultId"] = result_id
         return response
+
+    def _semantic_token_identity(self, uri: str | None) -> tuple[Any, Any] | None:
+        if uri is None:
+            return None
+        return self.documents.get(uri), self.semantics.get(uri)
 
     def _next_semantic_token_result_id_locked(self) -> str:
         self._semantic_token_result_counter += 1
