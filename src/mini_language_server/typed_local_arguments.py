@@ -12,7 +12,7 @@ from .typed_parameter_arguments import NovaProductLanguageServer as _NovaProduct
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _LOCAL_INITIALIZER_SUFFIX = re.compile(
     r'\s*=\s*(?P<value>\d+|true\b|false\b|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z0-9_]*)'
-    r"\s*(?=\}|let\b|[A-Za-z_][A-Za-z0-9_]*\s*\(|$)"
+    r"\s*(?=\}|let\b|[A-Za-z_][A-Za-z0-9_]*(?:\s*\(|\b)|$)"
 )
 
 
