@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .source import SourceText
+from .source import SourceText, Span
 from .symbols import SymbolSnapshot
 
 TOKEN_TYPES: tuple[str, ...] = (
@@ -50,12 +50,16 @@ _KIND_ALIASES = {
 }
 
 
-def encode_semantic_tokens(symbols: SymbolSnapshot) -> list[int]:
+def encode_semantic_tokens(
+    symbols: SymbolSnapshot, *, requested_span: Span | None = None
+) -> list[int]:
     """Encode deterministic single-line symbol tokens using LSP delta encoding.
 
-    Symbols with multi-line or empty spans are omitted because LSP clients do not
-    universally support multi-line semantic tokens. Unknown symbol kinds fall back
-    to ``variable`` rather than leaking language-specific kinds into the protocol.
+    When ``requested_span`` is provided, only tokens intersecting the half-open source
+    range are emitted. Symbols with multi-line or empty spans are omitted because LSP
+    clients do not universally support multi-line semantic tokens. Unknown symbol kinds
+    fall back to ``variable`` rather than leaking language-specific kinds into the
+    protocol.
     """
     source = SourceText(symbols.syntax.document.text)
     encoded: list[int] = []
@@ -63,6 +67,11 @@ def encode_semantic_tokens(symbols: SymbolSnapshot) -> list[int]:
     previous_character = 0
 
     for symbol in symbols.symbols:
+        if requested_span is not None and (
+            symbol.span.end <= requested_span.start
+            or symbol.span.start >= requested_span.end
+        ):
+            continue
         start, end = source.range_from_span(symbol.span)
         if start.line != end.line or end.character <= start.character:
             continue

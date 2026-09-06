@@ -73,11 +73,17 @@ class LanguageServer:
             params = message.get("params")
             if self._client_supports_completion(params):
                 capabilities["completionProvider"] = {"resolveProvider": False}
-            if self._client_supports_semantic_tokens(params):
-                capabilities["semanticTokensProvider"] = {
-                    "legend": {"tokenTypes": list(TOKEN_TYPES), "tokenModifiers": []},
-                    "full": True,
+            full_semantic_tokens = self._client_supports_semantic_tokens_full(params)
+            range_semantic_tokens = self._client_supports_semantic_tokens_range(params)
+            if full_semantic_tokens or range_semantic_tokens:
+                semantic_tokens_provider: dict[str, Any] = {
+                    "legend": {"tokenTypes": list(TOKEN_TYPES), "tokenModifiers": []}
                 }
+                if full_semantic_tokens:
+                    semantic_tokens_provider["full"] = True
+                if range_semantic_tokens:
+                    semantic_tokens_provider["range"] = True
+                capabilities["semanticTokensProvider"] = semantic_tokens_provider
             return self._result(
                 request_id,
                 {
@@ -121,8 +127,13 @@ class LanguageServer:
         }:
             return self._handle_semantic_request(method, request_id, message.get("params"))
 
-        if is_request and method == "textDocument/semanticTokens/full":
-            return self._handle_semantic_tokens_request(request_id, message.get("params"))
+        if is_request and method in {
+            "textDocument/semanticTokens/full",
+            "textDocument/semanticTokens/range",
+        }:
+            return self._handle_semantic_tokens_request(
+                method, request_id, message.get("params")
+            )
 
         if is_request and method == "textDocument/prepareRename":
             return self._handle_prepare_rename_request(request_id, message.get("params"))
@@ -304,7 +315,9 @@ class LanguageServer:
         finally:
             self.requests.finish(context)
 
-    def _handle_semantic_tokens_request(self, request_id: Any, params: Any) -> dict[str, Any]:
+    def _handle_semantic_tokens_request(
+        self, method: str, request_id: Any, params: Any
+    ) -> dict[str, Any]:
         context = self._start_document_request(request_id, params)
         if context is None:
             return self._error(request_id, -32602, "Invalid params")
@@ -316,12 +329,21 @@ class LanguageServer:
             document = self.documents.get(uri)
             if document is None:
                 return self._error(request_id, -32602, "Invalid params")
+
+            requested_span = None
+            if method == "textDocument/semanticTokens/range":
+                requested_span = self._semantic_tokens_range(params, document.text)
+                if requested_span is None:
+                    return self._error(request_id, -32602, "Invalid params")
+
             semantics = self.semantics.get(uri)
             if semantics is None or semantics.symbols.syntax.document is not document:
                 self.requests.checkpoint(context)
                 return self._result(request_id, {"data": []})
 
-            data = encode_semantic_tokens(semantics.symbols)
+            data = encode_semantic_tokens(
+                semantics.symbols, requested_span=requested_span
+            )
             self.requests.checkpoint(context)
             return self._current_semantic_result(
                 semantics, request_id, {"data": data}
@@ -461,23 +483,53 @@ class LanguageServer:
         return isinstance(text_document.get("completion"), dict)
 
     @staticmethod
-    def _client_supports_semantic_tokens(params: Any) -> bool:
+    def _semantic_tokens_requests(params: Any) -> dict[str, Any] | None:
         if not isinstance(params, dict):
-            return False
+            return None
         capabilities = params.get("capabilities")
         if not isinstance(capabilities, dict):
-            return False
+            return None
         text_document = capabilities.get("textDocument")
         if not isinstance(text_document, dict):
-            return False
+            return None
         semantic_tokens = text_document.get("semanticTokens")
         if not isinstance(semantic_tokens, dict):
-            return False
+            return None
         requests = semantic_tokens.get("requests")
-        if not isinstance(requests, dict):
+        return requests if isinstance(requests, dict) else None
+
+    @classmethod
+    def _client_supports_semantic_tokens_full(cls, params: Any) -> bool:
+        requests = cls._semantic_tokens_requests(params)
+        if requests is None:
             return False
         full = requests.get("full")
         return full is True or isinstance(full, dict)
+
+    @classmethod
+    def _client_supports_semantic_tokens_range(cls, params: Any) -> bool:
+        requests = cls._semantic_tokens_requests(params)
+        return requests is not None and requests.get("range") is True
+
+    @staticmethod
+    def _semantic_tokens_range(params: Any, text: str) -> Span | None:
+        if not isinstance(params, dict):
+            return None
+        range_params = params.get("range")
+        if not isinstance(range_params, dict):
+            return None
+        start = range_params.get("start")
+        end = range_params.get("end")
+        if not isinstance(start, dict) or not isinstance(end, dict):
+            return None
+        try:
+            source = SourceText(text)
+            return source.span_from_range(
+                Position(line=start.get("line"), character=start.get("character")),
+                Position(line=end.get("line"), character=end.get("character")),
+            )
+        except SourceError:
+            return None
 
     def _semantic_query(
         self, params: Any
