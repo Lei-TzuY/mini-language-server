@@ -31,6 +31,7 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
             current = self.diagnostics.get(snapshot.uri)
             if current is None or current.semantic is not snapshot:
                 continue
+            text = snapshot.symbols.syntax.document.text
             diagnostics = [
                 diagnostic
                 for diagnostic in current.diagnostics
@@ -41,8 +42,8 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
                     "nova.argument-count",
                     "nova.argument-type",
                 }
+                and not self._is_literal_unresolved_name(text, diagnostic)
             ]
-            text = snapshot.symbols.syntax.document.text
             for name, span in tree.calls:
                 declarations = tuple(
                     declaration
@@ -124,6 +125,31 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
             self.workspace_symbols.commit_snapshots_if_current(snapshots, publish)
         except WorkspaceIndexError:
             return
+
+    @classmethod
+    def _is_literal_unresolved_name(cls, text: str, diagnostic: Diagnostic) -> bool:
+        if diagnostic.code != "nova.unresolved-name":
+            return False
+        token = text[diagnostic.span.start : diagnostic.span.end]
+        if token in _BOOLEAN_LITERALS:
+            return True
+        return cls._inside_string_literal(text, diagnostic.span.start)
+
+    @staticmethod
+    def _inside_string_literal(text: str, offset: int) -> bool:
+        quoted = False
+        escaped = False
+        for character in text[:offset]:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    quoted = False
+            elif character == '"':
+                quoted = True
+        return quoted
 
     def _declaration_parameter_types(self, declaration: Any) -> tuple[str | None, ...]:
         signature = self._function_signature(declaration)
