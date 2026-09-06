@@ -8,12 +8,13 @@ from typing import Any
 from .diagnostics import Diagnostic
 from .inlay_hints import NovaProductLanguageServer as _NovaProductLanguageServer
 from .nova import NovaFunctionSyntax
+from .semantic_token_delta import SemanticTokenDeltaMixin
 from .workspace import WorkspaceIndexError
 
 _INTEGER_LITERAL = re.compile(r"[+-]?\d+")
 
 
-class NovaProductLanguageServer(_NovaProductLanguageServer):
+class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageServer):
     """Final product server with bounded exact-workspace call type checking."""
 
     def _publish_workspace_diagnostics(self) -> None:
