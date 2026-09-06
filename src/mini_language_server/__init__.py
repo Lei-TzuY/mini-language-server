@@ -15,7 +15,7 @@ from .server import LanguageServer, ServerState
 from .source import Position, SourceError, SourceText, Span
 from .symbols import Symbol, SymbolError, SymbolIndex, SymbolSnapshot
 from .syntax import SyntaxError, SyntaxSnapshot, SyntaxStore
-from .typed_parameter_arguments import NovaProductLanguageServer
+from .typed_local_arguments import NovaProductLanguageServer
 
 __all__ = [
     "Diagnostic",
