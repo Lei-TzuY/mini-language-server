@@ -52,10 +52,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if _IDENTIFIER.fullmatch(value) is None:
             return None
 
-        value_span = Span(
-            target.span.end + match.start("value"),
-            target.span.end + match.end("value"),
-        )
+        value_span = Span(match.start("value"), match.end("value"))
         inherited_type = super()._argument_type(snapshot, value_span)
         if inherited_type is not None:
             return inherited_type
