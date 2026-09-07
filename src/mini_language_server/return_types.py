@@ -17,6 +17,7 @@ _TYPED_FUNCTION = re.compile(
 )
 _RETURN = re.compile(r"\breturn\b")
 _INTEGER = re.compile(r"-?[0-9]+")
+_RETURN_TYPE_DIAGNOSTIC = "nova.return-type"
 
 
 class ReturnTypeNovaFunctionAdapter(TypedLocalNovaFunctionAdapter):
@@ -45,8 +46,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def publish_diagnostics(
         self, semantic: SemanticSnapshot, diagnostics: Iterable[Diagnostic]
     ) -> bool:
-        materialized = tuple(diagnostics)
         document = semantic.symbols.syntax.document
+        materialized = tuple(
+            diagnostic
+            for diagnostic in diagnostics
+            if diagnostic.code != _RETURN_TYPE_DIAGNOSTIC
+        )
         if document.language_id == self.nova_adapter.language_id:
             materialized += self._nova_return_type_diagnostics(document.text)
         return super().publish_diagnostics(semantic, materialized)
@@ -82,7 +87,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         message=(
                             f"return type mismatch: expected '{expected}', got '{actual}'"
                         ),
-                        code="nova.return-type",
+                        code=_RETURN_TYPE_DIAGNOSTIC,
                         source="nova",
                     )
                 )
@@ -94,7 +99,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return "Int"
         if expression in {"true", "false"}:
             return "Bool"
-        if len(expression) >= 2 and expression[0] == expression[-1] and expression[0] in {"'", '"'}:
+        if (
+            len(expression) >= 2
+            and expression[0] == expression[-1]
+            and expression[0] in {"'", '"'}
+        ):
             return "String"
         return None
 
