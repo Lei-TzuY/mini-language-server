@@ -26,16 +26,36 @@ def initialize(server: NovaProductLanguageServer, *, supported: bool = True) -> 
     return response
 
 
-def open_document(server: NovaProductLanguageServer, uri: str, text: str, version: int = 1) -> None:
+def open_document(
+    server: NovaProductLanguageServer,
+    uri: str,
+    text: str,
+    version: int = 1,
+) -> None:
     server.handle(
         notification(
             "textDocument/didOpen",
-            {"textDocument": {"uri": uri, "languageId": "nova", "version": version, "text": text}},
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "nova",
+                    "version": version,
+                    "text": text,
+                }
+            },
         )
     )
 
 
-def on_type(server: NovaProductLanguageServer, uri: str, line: int, character: int, *, request_id: int = 2, ch: str = "}"):
+def on_type(
+    server: NovaProductLanguageServer,
+    uri: str,
+    line: int,
+    character: int,
+    *,
+    request_id: int = 2,
+    ch: str = "}",
+):
     return server.handle(
         request(
             "textDocument/onTypeFormatting",
@@ -55,7 +75,6 @@ def test_on_type_formatting_capability_is_negotiated() -> None:
     capabilities = initialize(supported)["result"]["capabilities"]
     assert capabilities["documentOnTypeFormattingProvider"] == {
         "firstTriggerCharacter": "}",
-        "moreTriggerCharacter": ["\n"],
     }
 
     unsupported = NovaProductLanguageServer()
@@ -63,7 +82,7 @@ def test_on_type_formatting_capability_is_negotiated() -> None:
     assert "documentOnTypeFormattingProvider" not in capabilities
 
 
-def test_on_type_formatting_reindents_only_current_line_and_ignores_trivia_braces() -> None:
+def test_on_type_formatting_reindents_current_line_and_ignores_trivia_braces() -> None:
     server = NovaProductLanguageServer()
     initialize(server)
     uri = "file:///workspace/main.nova"
@@ -92,8 +111,15 @@ def test_on_type_formatting_tracks_change_and_close_reopen() -> None:
     open_document(server, uri, "fn old() {\n      }\n")
     assert on_type(server, uri, 1, 7)["result"][0]["newText"] == ""
 
-    server.handle(notification("textDocument/didClose", {"textDocument": {"uri": uri}}))
-    open_document(server, uri, "fn reopened() {\n    let value: Int = 1\n      }\n", version=1)
+    server.handle(
+        notification("textDocument/didClose", {"textDocument": {"uri": uri}})
+    )
+    open_document(
+        server,
+        uri,
+        "fn reopened() {\n    let value: Int = 1\n      }\n",
+        version=1,
+    )
     assert on_type(server, uri, 2, 7)["result"][0]["newText"] == ""
 
     server.handle(
@@ -101,14 +127,18 @@ def test_on_type_formatting_tracks_change_and_close_reopen() -> None:
             "textDocument/didChange",
             {
                 "textDocument": {"uri": uri, "version": 2},
-                "contentChanges": [{"text": "fn reopened() {\nlet value: Int = 1\n}\n"}],
+                "contentChanges": [
+                    {"text": "fn reopened() {\nlet value: Int = 1\n}\n"}
+                ],
             },
         )
     )
     assert on_type(server, uri, 2, 1)["result"] == []
 
 
-def test_on_type_formatting_rejects_same_version_semantic_replacement(monkeypatch: Any) -> None:
+def test_on_type_formatting_rejects_same_version_semantic_replacement(
+    monkeypatch: Any,
+) -> None:
     server = NovaProductLanguageServer()
     initialize(server)
     uri = "file:///workspace/main.nova"
