@@ -38,7 +38,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         for diagnostic in diagnostics:
             if diagnostic.code != "nova.return-type":
                 continue
-            if not self._diagnostic_overlaps(
+            if not self._return_diagnostic_overlaps(
                 diagnostic, start_offset=start_offset, end_offset=end_offset
             ):
                 continue
@@ -67,3 +67,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 }
             )
         return actions
+
+    @staticmethod
+    def _return_diagnostic_overlaps(
+        diagnostic: Diagnostic, *, start_offset: int, end_offset: int
+    ) -> bool:
+        if start_offset == end_offset:
+            return diagnostic.span.start <= start_offset <= diagnostic.span.end
+        return diagnostic.span.start < end_offset and start_offset < diagnostic.span.end
