@@ -9,7 +9,7 @@ from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
 from .nova import NovaFunctionSyntax, NovaLanguageServer
 from .server import ServerState
-from .source import SourceText
+from .source import SourceText, Span
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
 
 _SYMBOL_KINDS = {
@@ -52,6 +52,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 )
                 if workspace_result is not None:
                     return workspace_result
+            if method == "textDocument/prepareCallHierarchy":
+                return self._handle_prepare_call_hierarchy(
+                    message.get("id"), message.get("params")
+                )
+            if method in {"callHierarchy/incomingCalls", "callHierarchy/outgoingCalls"}:
+                return self._handle_call_hierarchy_calls(
+                    method, message.get("id"), message.get("params")
+                )
             if method == "textDocument/prepareRename":
                 workspace_result = self._handle_workspace_prepare_rename(
                     message.get("id"), message.get("params")
@@ -68,10 +76,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         result = super().handle(message)
         if method == "initialize" and result is not None and "result" in result:
             params = message.get("params")
-            if self._client_supports_workspace_symbol(params):
-                capabilities = result["result"].get("capabilities")
-                if isinstance(capabilities, dict):
+            capabilities = result["result"].get("capabilities")
+            if isinstance(capabilities, dict):
+                if self._client_supports_workspace_symbol(params):
                     capabilities["workspaceSymbolProvider"] = True
+                if self._client_supports_call_hierarchy(params):
+                    capabilities["callHierarchyProvider"] = True
         return result
 
     def _handle_document_notification(self, method: str, params: Any) -> None:
@@ -231,6 +241,202 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return f"function {declaration.symbol.name}"
         signature = text[start:opening].strip()
         return signature or f"function {declaration.symbol.name}"
+
+    def _function_extent(self, declaration: Any) -> Span:
+        text = declaration.snapshot.symbols.syntax.document.text
+        selection = declaration.symbol.span
+        start = text.rfind("fn", 0, selection.start)
+        opening = text.find("{", selection.end)
+        if start < 0 or opening < 0:
+            return selection
+        closing = self.nova_adapter._matching_brace(text, opening)
+        if closing is None:
+            return selection
+        return Span(start, closing + 1)
+
+    def _call_hierarchy_item(self, declaration: Any) -> dict[str, Any]:
+        source = SourceText(declaration.snapshot.symbols.syntax.document.text)
+        return {
+            "name": declaration.symbol.name,
+            "kind": 12,
+            "detail": self._function_signature(declaration),
+            "uri": declaration.uri,
+            "range": self._range(source, self._function_extent(declaration)),
+            "selectionRange": self._range(source, declaration.symbol.span),
+            "data": {"name": declaration.symbol.name, "uri": declaration.uri},
+        }
+
+    def _call_hierarchy_declaration(self, params: Any):
+        if not isinstance(params, dict):
+            return None
+        item = params.get("item")
+        if not isinstance(item, dict):
+            return None
+        data = item.get("data")
+        if not isinstance(data, dict):
+            return None
+        name = data.get("name")
+        uri = data.get("uri")
+        if not isinstance(name, str) or not isinstance(uri, str):
+            return None
+        declarations = tuple(
+            declaration
+            for declaration in self.workspace_symbols.declarations(name)
+            if declaration.symbol.kind == "function" and declaration.uri == uri
+        )
+        return declarations[0] if len(declarations) == 1 else None
+
+    def _owning_function_declaration(self, snapshot: Any, offset: int):
+        candidates = []
+        for symbol in snapshot.symbols.symbols:
+            if symbol.kind != "function":
+                continue
+            declaration = next(
+                (
+                    candidate
+                    for candidate in self.workspace_symbols.declarations(symbol.name)
+                    if candidate.snapshot is snapshot and candidate.symbol is symbol
+                ),
+                None,
+            )
+            if declaration is None:
+                continue
+            extent = self._function_extent(declaration)
+            if extent.start <= offset < extent.end:
+                candidates.append(declaration)
+        if not candidates:
+            return None
+        return min(candidates, key=lambda declaration: self._function_extent(declaration).end)
+
+    def _handle_prepare_call_hierarchy(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any]:
+        query = self._workspace_function_query(params)
+        if query is None:
+            return self._result(request_id, [])
+        semantics, name = query
+        declarations = tuple(
+            declaration
+            for declaration in self.workspace_symbols.declarations(name)
+            if declaration.symbol.kind == "function"
+        )
+        snapshots = self.workspace_symbols.snapshots()
+        try:
+            context = self.requests.start(request_id, uri=semantics.uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+        try:
+            self.requests.checkpoint(context)
+            result = [self._call_hierarchy_item(declarations[0])] if len(declarations) == 1 else []
+            self.requests.checkpoint(context)
+            try:
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots, lambda: self._result(request_id, result)
+                )
+            except WorkspaceIndexError:
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _handle_call_hierarchy_calls(
+        self, method: str, request_id: Any, params: Any
+    ) -> dict[str, Any]:
+        declaration = self._call_hierarchy_declaration(params)
+        if declaration is None:
+            return self._result(request_id, [])
+        snapshots = self.workspace_symbols.snapshots()
+        try:
+            context = self.requests.start(request_id, uri=declaration.uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+        try:
+            self.requests.checkpoint(context)
+            if method == "callHierarchy/incomingCalls":
+                result = self._incoming_calls(declaration, snapshots)
+            else:
+                result = self._outgoing_calls(declaration)
+            self.requests.checkpoint(context)
+            try:
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots, lambda: self._result(request_id, result)
+                )
+            except WorkspaceIndexError:
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _incoming_calls(self, declaration: Any, snapshots: tuple[Any, ...]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, int], tuple[Any, list[Span]]] = {}
+        target_name = declaration.symbol.name
+        for snapshot in snapshots:
+            tree = snapshot.symbols.syntax.tree
+            if not isinstance(tree, NovaFunctionSyntax):
+                continue
+            for call_name, span in tree.calls:
+                if call_name != target_name:
+                    continue
+                caller = self._owning_function_declaration(snapshot, span.start)
+                if caller is None:
+                    continue
+                key = (caller.uri, caller.symbol.span.start)
+                grouped.setdefault(key, (caller, []))[1].append(span)
+        result = []
+        for key in sorted(grouped):
+            caller, spans = grouped[key]
+            source = SourceText(caller.snapshot.symbols.syntax.document.text)
+            result.append(
+                {
+                    "from": self._call_hierarchy_item(caller),
+                    "fromRanges": [
+                        self._range(source, span)
+                        for span in sorted(spans, key=lambda item: item.start)
+                    ],
+                }
+            )
+        return result
+
+    def _outgoing_calls(self, declaration: Any) -> list[dict[str, Any]]:
+        snapshot = declaration.snapshot
+        tree = snapshot.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return []
+        extent = self._function_extent(declaration)
+        source = SourceText(snapshot.symbols.syntax.document.text)
+        grouped: dict[tuple[str, int], tuple[Any, list[Span]]] = {}
+        for call_name, span in tree.calls:
+            if not (extent.start <= span.start < extent.end):
+                continue
+            targets = tuple(
+                target
+                for target in self.workspace_symbols.declarations(call_name)
+                if target.symbol.kind == "function"
+            )
+            if len(targets) != 1:
+                continue
+            target = targets[0]
+            key = (target.uri, target.symbol.span.start)
+            grouped.setdefault(key, (target, []))[1].append(span)
+        result = []
+        for key in sorted(grouped):
+            target, spans = grouped[key]
+            result.append(
+                {
+                    "to": self._call_hierarchy_item(target),
+                    "fromRanges": [
+                        self._range(source, span)
+                        for span in sorted(spans, key=lambda item: item.start)
+                    ],
+                }
+            )
+        return result
 
     def _handle_workspace_hover(
         self, request_id: Any, params: Any
@@ -593,3 +799,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(workspace, dict):
             return False
         return isinstance(workspace.get("symbol"), dict)
+
+    @staticmethod
+    def _client_supports_call_hierarchy(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        text_document = capabilities.get("textDocument")
+        if not isinstance(text_document, dict):
+            return False
+        return isinstance(text_document.get("callHierarchy"), dict)
