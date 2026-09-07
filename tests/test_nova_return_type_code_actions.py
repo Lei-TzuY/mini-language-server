@@ -27,7 +27,13 @@ def initialized_server() -> NovaProductLanguageServer:
     return server
 
 
-def open_nova(server: NovaProductLanguageServer, uri: str, text: str) -> None:
+def open_nova(
+    server: NovaProductLanguageServer,
+    uri: str,
+    text: str,
+    *,
+    version: int = 1,
+) -> None:
     server.handle(
         notify(
             "textDocument/didOpen",
@@ -35,7 +41,7 @@ def open_nova(server: NovaProductLanguageServer, uri: str, text: str) -> None:
                 "textDocument": {
                     "uri": uri,
                     "languageId": "nova",
-                    "version": 1,
+                    "version": version,
                     "text": text,
                 }
             },
@@ -123,3 +129,73 @@ def test_reference_return_mismatch_gets_repair_from_current_diagnostic() -> None
     assert code_action(
         server, uri, 3, changed_start, changed_start + len("value")
     )["result"] == []
+
+
+def test_close_reopen_rebuilds_return_quick_fix_from_new_document_identity() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    bad = 'fn target() -> Int { return "x" }\n'
+    open_nova(server, uri, bad)
+    start = bad.index('"x"')
+    assert code_action(server, uri, 2, start, start + 3)["result"]
+
+    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
+    good = "fn target() -> Int { return 1 }\n"
+    open_nova(server, uri, good, version=1)
+    current = good.index("1")
+    assert code_action(server, uri, 3, current, current + 1)["result"] == []
+
+
+def test_same_version_semantic_replacement_suppresses_stale_return_quick_fix() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = 'fn target() -> Int { return "x" }\n'
+    open_nova(server, uri, text)
+    start = text.index('"x"')
+
+    real_commit = server.diagnostics.commit_if_current
+    replaced = False
+
+    def replace_then_commit(snapshot, callback):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            document = server.documents.get(uri)
+            assert document is not None
+            old_workspace = server.workspace_symbols.get(uri)
+            assert old_workspace is not None
+            replacement = server.nova_adapter.publish(server, document)
+            server.workspace_symbols.replace(replacement, expected=old_workspace)
+            server._publish_workspace_diagnostics()
+        return real_commit(snapshot, callback)
+
+    server.diagnostics.commit_if_current = replace_then_commit  # type: ignore[method-assign]
+    assert code_action(server, uri, 2, start, start + 3) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+
+def test_return_type_quick_fix_honors_cancellation_checkpoint() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = 'fn target() -> Int { return "x" }\n'
+    open_nova(server, uri, text)
+    start = text.index('"x"')
+    real_checkpoint = server.requests.checkpoint
+    cancelled = False
+
+    def cancel_then_checkpoint(context):
+        nonlocal cancelled
+        if not cancelled:
+            cancelled = True
+            server.requests.cancel(context.request_id)
+        real_checkpoint(context)
+
+    server.requests.checkpoint = cancel_then_checkpoint  # type: ignore[method-assign]
+    assert code_action(server, uri, 2, start, start + 3) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
