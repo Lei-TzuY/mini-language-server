@@ -13,7 +13,7 @@ from .typed_local_annotations import NovaProductLanguageServer as _NovaProductLa
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product with conservative current-line on-type indentation."""
 
-    _ON_TYPE_TRIGGERS = frozenset({"}", "\n"})
+    _ON_TYPE_TRIGGERS = frozenset({"}"})
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -22,7 +22,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             and "id" in message
             and self.state is ServerState.RUNNING
         ):
-            return self._handle_on_type_formatting(message.get("id"), message.get("params"))
+            return self._handle_on_type_formatting(
+                message.get("id"), message.get("params")
+            )
 
         result = super().handle(message)
         if (
@@ -35,7 +37,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if isinstance(capabilities, dict):
                 capabilities["documentOnTypeFormattingProvider"] = {
                     "firstTriggerCharacter": "}",
-                    "moreTriggerCharacter": ["\n"],
                 }
         return result
 
@@ -51,7 +52,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return False
         return isinstance(text_document.get("onTypeFormatting"), dict)
 
-    def _handle_on_type_formatting(self, request_id: Any, params: Any) -> dict[str, Any]:
+    def _handle_on_type_formatting(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any]:
         context = self._start_document_request(request_id, params)
         if context is None or not isinstance(params, dict):
             return self._error(request_id, -32602, "Invalid params")
