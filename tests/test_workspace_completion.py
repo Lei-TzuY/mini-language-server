@@ -131,3 +131,35 @@ def test_workspace_completion_suppresses_same_version_replacement() -> None:
         "id": 2,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+
+def test_workspace_completion_suppresses_concurrent_workspace_addition() -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize(server)
+    main_uri = "file:///workspace/main.nova"
+    added_uri = "file:///workspace/added.nova"
+    open_nova(server, main_uri, "fn caller() {}\n")
+
+    real_commit = server.workspace_symbols.commit_snapshots_if_current
+    injected = False
+
+    def add_then_commit(snapshots, callback):
+        nonlocal injected
+        if not injected:
+            injected = True
+            document = server.documents.open(
+                uri=added_uri,
+                language_id="nova",
+                version=1,
+                text="fn added() {}\n",
+            )
+            semantic = server.nova_adapter.publish(server, document)
+            server.workspace_symbols.replace(semantic)
+        return real_commit(snapshots, callback)
+
+    server.workspace_symbols.commit_snapshots_if_current = add_then_commit  # type: ignore[method-assign]
+    assert complete(server, main_uri) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
