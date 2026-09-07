@@ -19,6 +19,8 @@ _TYPED_FUNCTION = re.compile(
 _RETURN = re.compile(r"\breturn\b")
 _INTEGER = re.compile(r"-?[0-9]+")
 _RETURN_TYPE_DIAGNOSTIC = "nova.return-type"
+_MISSING_RETURN_DIAGNOSTIC = "nova.missing-return"
+_VALUE_RETURN_TYPES = frozenset({"Int", "String", "Bool"})
 
 
 class ReturnTypeNovaFunctionAdapter(TypedLocalNovaFunctionAdapter):
@@ -51,7 +53,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         materialized = tuple(
             diagnostic
             for diagnostic in diagnostics
-            if diagnostic.code != _RETURN_TYPE_DIAGNOSTIC
+            if diagnostic.code
+            not in {_RETURN_TYPE_DIAGNOSTIC, _MISSING_RETURN_DIAGNOSTIC}
         )
         if document.language_id == self.nova_adapter.language_id:
             materialized += self._nova_return_type_diagnostics(semantic)
@@ -70,6 +73,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if closing is None:
                 continue
             body_code = code[opening + 1 : closing]
+            has_value_return = False
             for statement in _RETURN.finditer(body_code):
                 keyword_end = opening + 1 + statement.end()
                 boundary = len(text)
@@ -81,6 +85,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 raw = text[keyword_end:boundary]
                 leading = len(raw) - len(raw.lstrip())
                 expression = raw.strip()
+                if not expression:
+                    continue
+                has_value_return = True
                 start = keyword_end + leading
                 expression_span = Span(start, start + len(expression))
                 actual = self._return_expression_type(
@@ -95,6 +102,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                             f"return type mismatch: expected '{expected}', got '{actual}'"
                         ),
                         code=_RETURN_TYPE_DIAGNOSTIC,
+                        source="nova",
+                    )
+                )
+            if expected in _VALUE_RETURN_TYPES and not has_value_return:
+                diagnostics.append(
+                    Diagnostic(
+                        span=Span(function.start("type"), function.end("type")),
+                        message=(
+                            f"function '{function.group('name')}' with return type "
+                            f"'{expected}' has no value return"
+                        ),
+                        code=_MISSING_RETURN_DIAGNOSTIC,
                         source="nova",
                     )
                 )
