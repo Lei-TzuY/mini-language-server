@@ -136,11 +136,10 @@ class ReplacingSemanticServer(NovaProductLanguageServer):
         actions = super()._nova_code_actions(
             uri, document, source, diagnostics, start_offset, end_offset
         )
-        old = self.semantics.get(uri)
+        old = self.workspace_symbols.get(uri)
         assert old is not None
         replacement = self.nova_adapter.publish(self, document)
-        self.semantics.replace(replacement, expected=old)
-        self.workspace_symbols.replace(replacement, expected=self.workspace_symbols.get(uri))
+        self.workspace_symbols.replace(replacement, expected=old)
         self._publish_workspace_diagnostics()
         return actions
 
