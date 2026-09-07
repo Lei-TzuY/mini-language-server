@@ -41,6 +41,12 @@ def codes(server: NovaProductLanguageServer, uri: str) -> list[str]:
     return [item.code or "" for item in snapshot.diagnostics]
 
 
+def return_diagnostics(server: NovaProductLanguageServer, uri: str):
+    snapshot = server.diagnostics.get(uri)
+    assert snapshot is not None
+    return [item for item in snapshot.diagnostics if item.code == "nova.return-type"]
+
+
 def test_return_and_boolean_literals_are_not_unresolved_names() -> None:
     tree = ReturnTypeNovaFunctionAdapter.parse(
         "fn truth() -> Bool { return true } fn lie() -> Bool { return false }\n"
@@ -54,9 +60,7 @@ def test_literal_return_mismatch_is_deterministic_and_exact_spanned() -> None:
     text = 'fn count() -> Int { return "wrong"; }\n'
     open_nova(server, uri, text)
 
-    snapshot = server.diagnostics.get(uri)
-    assert snapshot is not None
-    diagnostics = [item for item in snapshot.diagnostics if item.code == "nova.return-type"]
+    diagnostics = return_diagnostics(server, uri)
     assert len(diagnostics) == 1
     diagnostic = diagnostics[0]
     assert diagnostic.message == "return type mismatch: expected 'Int', got 'String'"
@@ -71,6 +75,54 @@ def test_matching_literal_return_types_remain_clean() -> None:
         uri,
         'fn i() -> Int { return 1; } fn s() -> String { return "ok"; } '
         "fn b() -> Bool { return true; }\n",
+    )
+    assert "nova.return-type" not in codes(server, uri)
+
+
+def test_typed_parameter_return_reference_uses_exact_semantic_type() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn value(input: String) -> Int { return input; }\n"
+    open_nova(server, uri, text)
+
+    diagnostics = return_diagnostics(server, uri)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].message == (
+        "return type mismatch: expected 'Int', got 'String'"
+    )
+    assert text[diagnostics[0].span.start : diagnostics[0].span.end] == "input"
+
+
+def test_local_and_alias_return_references_reuse_bounded_type_knowledge() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        'fn explicit() -> Int { let value: String = "bad"\nreturn value; }\n'
+        'fn inferred() -> Int { let value = "bad"\nreturn value; }\n'
+        'fn alias() -> Int { let first = "bad"\nlet second = first\nreturn second; }\n'
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = return_diagnostics(server, uri)
+    assert len(diagnostics) == 3
+    assert all("got 'String'" in diagnostic.message for diagnostic in diagnostics)
+    assert [text[item.span.start : item.span.end] for item in diagnostics] == [
+        "value",
+        "value",
+        "second",
+    ]
+
+
+def test_untyped_or_matching_return_references_are_not_guessed() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        (
+            "fn matching(value: Int) -> Int { return value; }\n"
+            "fn unknown(value) -> Int { return value; }\n"
+        ),
     )
     assert "nova.return-type" not in codes(server, uri)
 
@@ -95,6 +147,26 @@ def test_did_change_replaces_return_diagnostic_on_new_snapshot() -> None:
     assert "nova.return-type" not in codes(server, uri)
 
 
+def test_did_change_rebinds_return_reference_type() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn value(input: String) -> Int { return input; }\n")
+    assert "nova.return-type" in codes(server, uri)
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [
+                    {"text": "fn value(input: Int) -> Int { return input; }\n"}
+                ],
+            },
+        )
+    )
+    assert "nova.return-type" not in codes(server, uri)
+
+
 def test_close_reopen_rebuilds_return_diagnostics() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
@@ -103,3 +175,40 @@ def test_close_reopen_rebuilds_return_diagnostics() -> None:
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
     open_nova(server, uri, "fn value() -> Int { return 9; }\n", version=1)
     assert "nova.return-type" not in codes(server, uri)
+
+
+def test_same_version_replacement_suppresses_stale_return_reference_diagnostic() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn value(input: String) -> Int { return input; }\n")
+    server.drain_notifications()
+    original = server.workspace_symbols.get(uri)
+    assert original is not None
+
+    real_commit = server.workspace_symbols.commit_snapshots_if_current
+    replaced = False
+
+    def replace_then_commit(snapshots, callback):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            document = server.documents.get(uri)
+            assert document is not None
+            replacement = server.nova_adapter.publish(server, document)
+            server.workspace_symbols.replace(replacement, expected=original)
+        return real_commit(snapshots, callback)
+
+    server.workspace_symbols.commit_snapshots_if_current = replace_then_commit  # type: ignore[method-assign]
+    server._publish_workspace_diagnostics()
+    notifications = [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "textDocument/publishDiagnostics"
+        and item.get("params", {}).get("uri") == uri
+    ]
+    assert notifications
+    assert all(
+        diagnostic["code"] != "nova.return-type"
+        for item in notifications
+        for diagnostic in item["params"]["diagnostics"]
+    )
