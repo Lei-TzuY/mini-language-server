@@ -116,7 +116,9 @@ def test_explicit_local_annotation_drives_hints_hover_and_argument_types() -> No
         diagnostic for diagnostic in snapshot.diagnostics if diagnostic.code == "nova.argument-type"
     ]
     assert len(argument_types) == 1
-    assert "expected String but got Int" in argument_types[0].message
+    assert argument_types[0].message == (
+        "argument 1 to 'takes' has type 'Int'; expected 'String'"
+    )
     assert all(
         not (
             diagnostic.code == "nova.unresolved-name"
