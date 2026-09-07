@@ -34,7 +34,7 @@ LSP / JSON-RPC lifecycle
 - exact-workspace Nova call hierarchy resolves uniquely named functions and deterministically aggregates incoming callers and outgoing callees without guessing across ambiguous declarations
 - exact-workspace Nova reference CodeLens counts uniquely resolved cross-file call sites and exposes an exact-workspace reference-location command while suppressing ambiguous or stale results
 - literal-aware Nova call parsing so quoted commas, parentheses, and escaped quotes do not corrupt argument boundaries
-- negotiated Nova quick fixes for unresolved functions, unresolved local names, argument-count mismatches, and argument-type mismatches, all gated on exact current diagnostic and workspace snapshots
+- negotiated Nova quick fixes for unresolved functions, unresolved local names, argument-count mismatches, argument-type mismatches, return-type mismatches, and explicit-local initializer type mismatches, all gated on exact current diagnostic and workspace snapshots
 - trivia-aware Nova formatting reindents structural braces while preserving non-leading source text; braces inside comments and quoted strings do not affect indentation, and responses are gated on the exact current semantic/document snapshot
 - conservative Nova range formatting reindents only leading whitespace spans fully contained in the requested range, computes structural depth from the complete trivia-aware document view, and never publishes edits that escape the requested range
 - conservative on-type Nova formatting reindents only the current line when `}` is typed, using the same trivia-aware structural view and exact semantic/document publication guard
