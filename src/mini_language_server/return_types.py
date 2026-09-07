@@ -9,6 +9,7 @@ from dataclasses import replace
 from .diagnostics import Diagnostic
 from .range_formatting import NovaProductLanguageServer as _NovaProductLanguageServer
 from .semantic import SemanticSnapshot
+from .source import Span
 from .typed_local_annotations import TypedLocalNovaFunctionAdapter
 
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
@@ -53,10 +54,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if diagnostic.code != _RETURN_TYPE_DIAGNOSTIC
         )
         if document.language_id == self.nova_adapter.language_id:
-            materialized += self._nova_return_type_diagnostics(document.text)
+            materialized += self._nova_return_type_diagnostics(semantic)
         return super().publish_diagnostics(semantic, materialized)
 
-    def _nova_return_type_diagnostics(self, text: str) -> tuple[Diagnostic, ...]:
+    def _nova_return_type_diagnostics(
+        self, semantic: SemanticSnapshot
+    ) -> tuple[Diagnostic, ...]:
+        text = semantic.symbols.syntax.document.text
         code = self.nova_adapter.code_view(text)
         diagnostics: list[Diagnostic] = []
         for function in _TYPED_FUNCTION.finditer(code):
@@ -77,13 +81,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 raw = text[keyword_end:boundary]
                 leading = len(raw) - len(raw.lstrip())
                 expression = raw.strip()
-                actual = self._literal_type(expression)
+                start = keyword_end + leading
+                expression_span = Span(start, start + len(expression))
+                actual = self._return_expression_type(
+                    semantic, expression, expression_span
+                )
                 if actual is None or actual == expected:
                     continue
-                start = keyword_end + leading
                 diagnostics.append(
                     Diagnostic(
-                        span=self._span(start, start + len(expression)),
+                        span=expression_span,
                         message=(
                             f"return type mismatch: expected '{expected}', got '{actual}'"
                         ),
@@ -92,6 +99,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     )
                 )
         return tuple(diagnostics)
+
+    def _return_expression_type(
+        self, semantic: SemanticSnapshot, expression: str, span: Span
+    ) -> str | None:
+        literal_type = self._literal_type(expression)
+        if literal_type is not None:
+            return literal_type
+        if re.fullmatch(_IDENTIFIER, expression) is None:
+            return None
+        target = self._exact_reference_target(semantic, span)
+        if target is None or target.kind not in {"parameter", "variable"}:
+            return None
+        return self._symbol_type(semantic, target)
 
     @staticmethod
     def _literal_type(expression: str) -> str | None:
@@ -106,9 +126,3 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         ):
             return "String"
         return None
-
-    @staticmethod
-    def _span(start: int, end: int):
-        from .source import Span
-
-        return Span(start, end)
