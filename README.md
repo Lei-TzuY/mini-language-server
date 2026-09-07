@@ -34,7 +34,7 @@ LSP / JSON-RPC lifecycle
 - literal-aware Nova call parsing so quoted commas, parentheses, and escaped quotes do not corrupt argument boundaries
 - negotiated Nova quick fixes for unresolved functions, unresolved local names, argument-count mismatches, and argument-type mismatches, all gated on exact current diagnostic and workspace snapshots
 - trivia-aware Nova formatting reindents structural braces while preserving non-leading source text; braces inside comments and quoted strings do not affect indentation, and responses are gated on the exact current semantic/document snapshot
-- conservative on-type Nova formatting reindents only the current line on `}` or newline triggers, using the same trivia-aware structural view and exact semantic/document publication guard
+- conservative on-type Nova formatting reindents only the current line when `}` is typed, using the same trivia-aware structural view and exact semantic/document publication guard
 - push diagnostics with stale-notification suppression
 - request cancellation and stale-document rejection
 - deterministic concurrency regressions for same-version snapshot replacement, close/reopen, and out-of-order publication
