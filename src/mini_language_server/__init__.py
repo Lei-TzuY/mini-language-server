@@ -7,10 +7,10 @@ from .cancellation import (
     RequestTracker,
     StaleRequest,
 )
+from .code_lenses import NovaProductLanguageServer
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
 from .documents import Document, DocumentError, DocumentStore
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
-from .pull_diagnostics import NovaProductLanguageServer
 from .semantic import Reference, SemanticDatabase, SemanticError, SemanticSnapshot
 from .server import LanguageServer, ServerState
 from .source import Position, SourceError, SourceText, Span
