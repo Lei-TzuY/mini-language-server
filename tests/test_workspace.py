@@ -90,3 +90,39 @@ def test_remove_honors_exact_snapshot_identity() -> None:
     assert index.remove(uri, expected=current) is current
     assert index.get(uri) is None
     assert index.declarations("current") == ()
+
+
+def test_complete_snapshot_guard_rejects_added_workspace_document() -> None:
+    index = WorkspaceSymbolIndex()
+    first = snapshot("file:///workspace/a.nova", "alpha")
+    second = snapshot("file:///workspace/b.nova", "beta")
+    index.replace(first)
+    captured = index.snapshots()
+    index.replace(second)
+
+    with pytest.raises(WorkspaceIndexError, match="snapshot set changed"):
+        index.commit_snapshots_if_current(captured, lambda: None)
+
+
+def test_complete_snapshot_guard_rejects_removed_workspace_document() -> None:
+    index = WorkspaceSymbolIndex()
+    first = snapshot("file:///workspace/a.nova", "alpha")
+    second = snapshot("file:///workspace/b.nova", "beta")
+    index.replace(first)
+    index.replace(second)
+    captured = index.snapshots()
+    index.remove(second.uri, expected=second)
+
+    with pytest.raises(WorkspaceIndexError, match="snapshot set changed"):
+        index.commit_snapshots_if_current(captured, lambda: None)
+
+
+def test_complete_snapshot_guard_allows_duplicate_identity_but_not_conflicting_uri() -> None:
+    index = WorkspaceSymbolIndex()
+    current = snapshot("file:///workspace/main.nova", "current")
+    conflicting = snapshot("file:///workspace/main.nova", "conflict", version=2)
+    index.replace(current)
+
+    assert index.commit_snapshots_if_current((current, current), lambda: "ok") == "ok"
+    with pytest.raises(WorkspaceIndexError, match="conflicting URIs"):
+        index.commit_snapshots_if_current((current, conflicting), lambda: None)
