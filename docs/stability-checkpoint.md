@@ -17,7 +17,7 @@ The checkpoint covers:
 9. request cancellation
 10. stale-result suppression across concurrent document and semantic replacement
 
-The core invariant is generational identity: a derived result is valid only while the exact parent snapshot that produced it remains current. Structural equality or a matching numeric document version is not enough.
+The core invariant is generational identity: a derived result is valid only while the exact parent snapshot that produced it remains current. Structural equality or a matching numeric document version is not enough. Workspace-wide derived results that capture the complete semantic workspace must also reject publication when a URI is added or removed after capture, even if every previously captured snapshot object remains current.
 
 ## Responsibility boundaries
 

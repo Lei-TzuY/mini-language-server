@@ -107,19 +107,40 @@ class WorkspaceSymbolIndex:
         callback: Callable[[], _T],
     ) -> _T:
         """Publish a derived workspace result only while every parent is exact-current."""
-        return self.commit_snapshots_if_current(
+        return self._commit_subset_if_current(
             tuple(declaration.snapshot for declaration in declarations), callback
         )
+
+    def _commit_subset_if_current(
+        self,
+        snapshots: tuple[SemanticSnapshot, ...],
+        callback: Callable[[], _T],
+    ) -> _T:
+        """Guard a deliberately partial workspace query by exact parent identities."""
+        with self._lock:
+            for snapshot in snapshots:
+                if self._snapshots.get(snapshot.uri) is not snapshot:
+                    raise WorkspaceIndexError("workspace snapshot was replaced")
+            return callback()
 
     def commit_snapshots_if_current(
         self,
         snapshots: tuple[SemanticSnapshot, ...],
         callback: Callable[[], _T],
     ) -> _T:
-        """Publish only while every exact semantic parent remains workspace-current."""
+        """Publish only while the complete exact semantic snapshot set is unchanged."""
+        expected_by_uri: dict[str, SemanticSnapshot] = {}
+        for snapshot in snapshots:
+            previous = expected_by_uri.get(snapshot.uri)
+            if previous is not None and previous is not snapshot:
+                raise WorkspaceIndexError("workspace snapshot set has conflicting URIs")
+            expected_by_uri[snapshot.uri] = snapshot
+
         with self._lock:
-            for snapshot in snapshots:
-                if self._snapshots.get(snapshot.uri) is not snapshot:
+            if set(self._snapshots) != set(expected_by_uri):
+                raise WorkspaceIndexError("workspace snapshot set changed")
+            for uri, snapshot in expected_by_uri.items():
+                if self._snapshots.get(uri) is not snapshot:
                     raise WorkspaceIndexError("workspace snapshot was replaced")
             return callback()
 
