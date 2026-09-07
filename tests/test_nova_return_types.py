@@ -177,10 +177,11 @@ def test_close_reopen_rebuilds_return_diagnostics() -> None:
     assert "nova.return-type" not in codes(server, uri)
 
 
-def test_same_version_replacement_suppresses_stale_return_reference_diagnostic() -> None:
+def test_same_version_replacement_rebinds_return_diagnostic_to_exact_semantics() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    open_nova(server, uri, "fn value(input: String) -> Int { return input; }\n")
+    text = "fn value(input: String) -> Int { return input; }\n"
+    open_nova(server, uri, text)
     server.drain_notifications()
     original = server.workspace_symbols.get(uri)
     assert original is not None
@@ -200,15 +201,16 @@ def test_same_version_replacement_suppresses_stale_return_reference_diagnostic()
 
     server.workspace_symbols.commit_snapshots_if_current = replace_then_commit  # type: ignore[method-assign]
     server._publish_workspace_diagnostics()
-    notifications = [
+
+    current = server.workspace_symbols.get(uri)
+    assert current is not None and current is not original
+    diagnostic_snapshot = server.diagnostics.get(uri)
+    assert diagnostic_snapshot is not None
+    assert diagnostic_snapshot.semantic is current
+    diagnostics = [
         item
-        for item in server.drain_notifications()
-        if item.get("method") == "textDocument/publishDiagnostics"
-        and item.get("params", {}).get("uri") == uri
+        for item in diagnostic_snapshot.diagnostics
+        if item.code == "nova.return-type"
     ]
-    assert notifications
-    assert all(
-        diagnostic["code"] != "nova.return-type"
-        for item in notifications
-        for diagnostic in item["params"]["diagnostics"]
-    )
+    assert len(diagnostics) == 1
+    assert text[diagnostics[0].span.start : diagnostics[0].span.end] == "input"
