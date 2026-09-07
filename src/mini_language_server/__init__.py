@@ -9,8 +9,8 @@ from .cancellation import (
 )
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
 from .documents import Document, DocumentError, DocumentStore
-from .range_formatting import NovaProductLanguageServer
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
+from .range_formatting import NovaProductLanguageServer
 from .semantic import Reference, SemanticDatabase, SemanticError, SemanticSnapshot
 from .server import LanguageServer, ServerState
 from .source import Position, SourceError, SourceText, Span
