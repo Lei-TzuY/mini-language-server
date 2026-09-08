@@ -195,3 +195,66 @@ def test_ambiguous_inferred_function_result_is_suppressed() -> None:
     open_nova(server, main_uri, main)
 
     assert hover_value(server, main_uri, main) == "variable value"
+
+
+def test_unannotated_wrapper_infers_explicit_direct_call_return_type() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn source() -> Int { return 1; } "
+        "fn wrapper() { return source(); } "
+        "fn main() { let value = wrapper() value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: Int"
+
+
+def test_cross_file_wrapper_inference_recomputes_after_explicit_target_change() -> None:
+    server = initialized_server()
+    source_uri = "file:///workspace/source.nova"
+    wrapper_uri = "file:///workspace/wrapper.nova"
+    main_uri = "file:///workspace/main.nova"
+    wrapper = "fn wrapper() { return source(); }\n"
+    main = "fn main() { let value = wrapper() value }\n"
+    open_nova(server, source_uri, "fn source() -> Int { return 1; }\n")
+    open_nova(server, wrapper_uri, wrapper)
+    open_nova(server, main_uri, main)
+    assert hover_value(server, main_uri, main) == "variable value: Int"
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": source_uri, "version": 2},
+                "contentChanges": [{"text": "fn source() -> Bool { return true; }\n"}],
+            },
+        )
+    )
+    assert hover_value(server, main_uri, main) == "variable value: Bool"
+
+
+def test_wrapper_inference_rejects_ambiguous_explicit_target() -> None:
+    server = initialized_server()
+    wrapper_uri = "file:///workspace/wrapper.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(server, "file:///workspace/a.nova", "fn source() -> Int { return 1; }\n")
+    open_nova(server, "file:///workspace/b.nova", "fn source() -> Int { return 1; }\n")
+    open_nova(server, wrapper_uri, "fn wrapper() { return source(); }\n")
+    main = "fn main() { let value = wrapper() value }\n"
+    open_nova(server, main_uri, main)
+
+    assert hover_value(server, main_uri, main) == "variable value"
+
+
+def test_wrapper_inference_requires_consistent_literal_and_call_returns() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn source() -> Int { return 1; } "
+        "fn wrapper() { return source(); return true; } "
+        "fn main() { let value = wrapper() value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value"
