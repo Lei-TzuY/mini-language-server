@@ -18,6 +18,8 @@ _TYPED_FUNCTION = re.compile(
 )
 _RETURN = re.compile(r"\breturn\b")
 _INTEGER = re.compile(r"-?[0-9]+")
+_CALL_EXPRESSION = re.compile(rf"(?P<name>{_IDENTIFIER})\s*\(")
+_RETURN_ANNOTATION = re.compile(rf"->\s*(?P<type>{_IDENTIFIER}|!)\s*$")
 _RETURN_TYPE_DIAGNOSTIC = "nova.return-type"
 _MISSING_RETURN_DIAGNOSTIC = "nova.missing-return"
 _VALUE_RETURN_TYPES = frozenset({"Int", "String", "Bool"})
@@ -125,12 +127,38 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         literal_type = self._literal_type(expression)
         if literal_type is not None:
             return literal_type
+        call_type = self._function_call_return_type(expression)
+        if call_type is not None:
+            return call_type
         if re.fullmatch(_IDENTIFIER, expression) is None:
             return None
         target = self._exact_reference_target(semantic, span)
         if target is None or target.kind not in {"parameter", "variable"}:
             return None
         return self._symbol_type(semantic, target)
+
+    def _function_call_return_type(self, expression: str) -> str | None:
+        """Resolve a bounded explicit result type from one exact workspace call."""
+        match = _CALL_EXPRESSION.match(expression)
+        if match is None:
+            return None
+        parsed = self._call_argument_bounds(expression, match.end("name"))
+        if parsed is None or parsed[1] != len(expression) - 1:
+            return None
+
+        declarations = tuple(
+            declaration
+            for declaration in self.workspace_symbols.declarations(match.group("name"))
+            if declaration.symbol.kind == "function"
+        )
+        if len(declarations) != 1:
+            return None
+        signature = self._function_signature(declarations[0])
+        annotation = _RETURN_ANNOTATION.search(signature)
+        if annotation is None:
+            return None
+        result_type = annotation.group("type")
+        return result_type if result_type in _VALUE_RETURN_TYPES else None
 
     @staticmethod
     def _literal_type(expression: str) -> str | None:
