@@ -15,6 +15,10 @@ _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _ANNOTATED_INITIALIZER_PREFIX = re.compile(
     rf"\s*:\s*(?P<expected>{_IDENTIFIER}|!)\s*=\s*"
 )
+_INITIALIZER_ATOM = re.compile(
+    rf"-?[0-9]+|true\b|false\b|"
+    rf'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|{_IDENTIFIER}'
+)
 _LOCAL_TYPE_DIAGNOSTIC = "nova.local-type"
 _LOCAL_TYPE_MESSAGE = re.compile(
     r"^local type mismatch: expected '([^']+)', got '[^']+'$"
@@ -57,20 +61,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             expected = match.group("expected")
             if expected not in _SUPPORTED_TYPES:
                 continue
-            boundary = len(text)
-            for delimiter in (";", "\n", "\r"):
-                found = text.find(delimiter, match.end())
-                if found >= 0:
-                    boundary = min(boundary, found)
-            raw = text[match.end() : boundary]
-            leading = len(raw) - len(raw.lstrip())
-            value = raw.strip()
-            if not value:
+            initializer = self._local_initializer(text, match.end())
+            if initializer is None:
                 continue
-            value_span = Span(
-                match.end() + leading,
-                match.end() + leading + len(value),
-            )
+            value, value_span = initializer
             actual = self._return_expression_type(semantic, value, value_span)
             if actual is None or actual == expected:
                 continue
@@ -85,6 +79,24 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 )
             )
         return tuple(diagnostics)
+
+    def _local_initializer(self, text: str, start: int) -> tuple[str, Span] | None:
+        while start < len(text) and text[start].isspace():
+            start += 1
+        atom = _INITIALIZER_ATOM.match(text, start)
+        if atom is None:
+            return None
+
+        end = atom.end()
+        value = atom.group()
+        if re.fullmatch(_IDENTIFIER, value) is not None:
+            parsed = self._call_argument_bounds(text, end)
+            if parsed is not None:
+                opening, closing, _ = parsed
+                if opening >= end:
+                    end = closing + 1
+                    value = text[start:end]
+        return value, Span(start, end)
 
     def _nova_code_actions(
         self,
