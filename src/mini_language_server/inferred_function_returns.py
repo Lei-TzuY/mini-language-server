@@ -74,6 +74,33 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             declaration.symbol.span.end,
         )
 
+    def _unwrap_parenthesized_return(self, expression: str) -> str:
+        """Remove complete outer grouping without accepting a compound expression."""
+        current = expression
+        while True:
+            code = self.nova_adapter.code_view(current)
+            start = len(code) - len(code.lstrip())
+            end = len(code.rstrip())
+            if end - start < 2 or code[start] != "(" or code[end - 1] != ")":
+                return current.strip()
+
+            depth = 0
+            closes_at_end = False
+            for offset in range(start, end):
+                char = code[offset]
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0:
+                        closes_at_end = offset == end - 1
+                        break
+                    if depth < 0:
+                        return current.strip()
+            if not closes_at_end:
+                return current.strip()
+            current = current[start + 1 : end - 1]
+
     def _bounded_function_return_type(
         self,
         declaration: Any,
@@ -125,6 +152,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 actual = super()._function_call_return_type(expression)
             if actual is None:
                 actual = self._inferred_function_call_return_type(expression, resolving)
+            if actual is None:
+                grouped = self._unwrap_parenthesized_return(expression)
+                if grouped != expression:
+                    actual = self._literal_type(grouped)
+                    if actual is None:
+                        actual = super()._function_call_return_type(grouped)
+                    if actual is None:
+                        actual = self._inferred_function_call_return_type(grouped, resolving)
             if actual is None:
                 return None
             if inferred is None:
