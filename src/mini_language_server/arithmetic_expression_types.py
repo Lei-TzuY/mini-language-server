@@ -103,14 +103,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 continue
             if depth != 0 or char not in operators:
                 continue
-            if char in {"+", "-"} and self._is_unary_sign(code, offset):
+            if char in {"+", "-"} and self._is_unary_sign(expression, offset):
                 continue
             candidate = (char, offset)
         return candidate
 
     @staticmethod
-    def _is_unary_sign(code: str, offset: int) -> bool:
-        prefix = code[:offset].rstrip()
+    def _is_unary_sign(expression: str, offset: int) -> bool:
+        prefix = expression[:offset].rstrip()
         if not prefix:
             return True
         return prefix[-1] in "(,+-*/%"
