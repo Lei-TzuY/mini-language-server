@@ -79,17 +79,16 @@ def test_equality_accepts_same_bounded_non_integer_operands() -> None:
     assert "nova.argument-type" in diagnostic_codes(server, uri)
 
 
-def test_mixed_and_chained_comparisons_remain_conservative() -> None:
-    server = initialized_server()
-    uri = "file:///workspace/main.nova"
-    open_nova(
-        server,
-        uri,
-        "fn sink(value: Int) {}\n"
-        "fn main() { sink(1 == true); sink(1 < 2 < 3); sink(\"a\" < \"b\"); }\n",
-    )
-
-    assert "nova.argument-type" not in diagnostic_codes(server, uri)
+def test_unsupported_comparisons_remain_conservative() -> None:
+    for index, expression in enumerate(("1 == true", "1 < 2 < 3", '"a" < "b"')):
+        server = initialized_server()
+        uri = f"file:///workspace/conservative-{index}.nova"
+        open_nova(
+            server,
+            uri,
+            f"fn sink(value: Int) {{}}\nfn main() {{ sink({expression}); }}\n",
+        )
+        assert "nova.argument-type" not in diagnostic_codes(server, uri), expression
 
 
 def test_cross_file_comparison_rebinds_after_result_type_change() -> None:
