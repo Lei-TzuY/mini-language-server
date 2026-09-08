@@ -17,15 +17,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _return_expression_type(
         self, semantic: Any, expression: str, span: Span
     ) -> str | None:
-        inherited = super()._return_expression_type(semantic, expression, span)
-        if inherited is not None:
-            return inherited
         return self._integer_arithmetic_type(semantic, expression, span)
 
     def _argument_type(self, snapshot: Any, argument: Span) -> str | None:
-        inherited = super()._argument_type(snapshot, argument)
-        if inherited is not None:
-            return inherited
         text = snapshot.symbols.syntax.document.text
         return self._integer_arithmetic_type(
             snapshot,
@@ -40,15 +34,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         expression, span = self._trim_expression(expression, span)
         expression, span = self._unwrap_expression_with_span(expression, span)
 
-        inherited = super()._return_expression_type(semantic, expression, span)
-        if inherited is not None:
-            return inherited
-
         split = self._top_level_operator(expression, _ADDITIVE)
         if split is None:
             split = self._top_level_operator(expression, _MULTIPLICATIVE)
         if split is None:
-            return None
+            return super()._return_expression_type(semantic, expression, span)
 
         operator, offset = split
         left_text = expression[:offset]
@@ -113,14 +103,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 continue
             if depth != 0 or char not in operators:
                 continue
-            if char in {"+", "-"} and self._is_unary_sign(code, offset):
+            if char in {"+", "-"} and self._is_unary_sign(expression, offset):
                 continue
             candidate = (char, offset)
         return candidate
 
     @staticmethod
-    def _is_unary_sign(code: str, offset: int) -> bool:
-        prefix = code[:offset].rstrip()
+    def _is_unary_sign(expression: str, offset: int) -> bool:
+        prefix = expression[:offset].rstrip()
         if not prefix:
             return True
         return prefix[-1] in "(,+-*/%"
