@@ -73,6 +73,44 @@ def test_same_file_inferred_wrapper_chain_propagates_result_type() -> None:
     assert hover_value(server, uri, text) == "variable value: Int"
 
 
+def test_inferred_result_uses_typed_parameter_reference() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn identity(input: String) { return input; } "
+        "fn main() { let value = identity(\"x\") value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: String"
+
+
+def test_inferred_result_uses_typed_local_reference_and_recomputes() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn source() { let item: Int = 1 return item; } "
+        "fn main() { let value = source() value }\n"
+    )
+    open_nova(server, uri, text)
+    assert hover_value(server, uri, text) == "variable value: Int"
+
+    changed = (
+        "fn source() { let item: Bool = true return item; } "
+        "fn main() { let value = source() value }\n"
+    )
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": changed}],
+            },
+        )
+    )
+    assert hover_value(server, uri, changed) == "variable value: Bool"
+
+
 def test_cross_file_inferred_wrapper_chain_recomputes_after_leaf_change() -> None:
     server = initialized_server()
     source_uri = "file:///workspace/source.nova"
@@ -155,6 +193,20 @@ def test_transitive_inferred_result_flows_into_argument_and_return_validation() 
         "fn sink(value: Int) {} "
         "fn relay() -> Int { return wrapper(); } "
         "fn main() { sink(wrapper()) }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert {"nova.argument-type", "nova.return-type"} <= diagnostic_codes(server, uri)
+
+
+def test_reference_inferred_result_flows_into_validation() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn identity(input: String) { return input; } "
+        "fn sink(value: Int) {} "
+        "fn relay() -> Int { return identity(\"x\"); } "
+        "fn main() { sink(identity(\"x\")) }\n"
     )
     open_nova(server, uri, text)
 
