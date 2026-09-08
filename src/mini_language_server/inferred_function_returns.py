@@ -1,4 +1,4 @@
-"""Bounded Nova function result inference from consistent literal returns."""
+"""Bounded Nova function result inference from consistent return expressions."""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ _RETURN_ANNOTATION = re.compile(r"->")
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
-    """Final Nova product with conservative literal-return function inference."""
+    """Final Nova product with conservative bounded function-result inference."""
 
     def _function_call_return_type(self, expression: str) -> str | None:
-        """Resolve explicit results first, then one unannotated literal-return function."""
+        """Resolve explicit results first, then one unannotated bounded-return function."""
         explicit = super()._function_call_return_type(expression)
         if explicit is not None:
             return explicit
@@ -44,10 +44,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         signature = self._function_signature(declaration)
         if _RETURN_ANNOTATION.search(self.nova_adapter.code_view(signature)) is not None:
             return None
-        return self._literal_function_return_type(declaration)
+        return self._bounded_function_return_type(declaration)
 
-    def _literal_function_return_type(self, declaration) -> str | None:
-        """Infer a result only when every value return is a literal of one type."""
+    def _bounded_function_return_type(self, declaration) -> str | None:
+        """Infer a result when every value return has one bounded consistent type."""
         text = declaration.snapshot.symbols.syntax.document.text
         code = self.nova_adapter.code_view(text)
         opening = code.find("{", declaration.symbol.span.end)
@@ -70,6 +70,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if not expression:
                 continue
             actual = self._literal_type(expression)
+            if actual is None:
+                # Deliberately delegate to the explicit-result layer only. Calling this
+                # class's resolver here would make inferred wrappers recursively depend
+                # on inferred wrappers and would need a separate cycle-safe fixed point.
+                actual = super()._function_call_return_type(expression)
             if actual is None:
                 return None
             if inferred is None:
