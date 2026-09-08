@@ -28,7 +28,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product with conservative bounded function-result inference."""
 
     def _function_call_return_type(self, expression: str) -> str | None:
-        """Resolve explicit results first, then an acyclic inferred-wrapper chain."""
+        """Resolve grouped exact calls through explicit or inferred result typing."""
+        expression = self._unwrap_parenthesized_expression(expression)
         explicit = super()._function_call_return_type(expression)
         if explicit is not None:
             return explicit
@@ -74,7 +75,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             declaration.symbol.span.end,
         )
 
-    def _unwrap_parenthesized_return(self, expression: str) -> str:
+    def _unwrap_parenthesized_expression(self, expression: str) -> str:
         """Remove complete outer grouping without accepting a compound expression."""
         current = expression
         while True:
@@ -153,7 +154,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if actual is None:
                 actual = self._inferred_function_call_return_type(expression, resolving)
             if actual is None:
-                grouped = self._unwrap_parenthesized_return(expression)
+                grouped = self._unwrap_parenthesized_expression(expression)
                 if grouped != expression:
                     actual = self._literal_type(grouped)
                     if actual is None:
