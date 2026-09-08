@@ -15,10 +15,6 @@ _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _ANNOTATED_INITIALIZER_PREFIX = re.compile(
     rf"\s*:\s*(?P<expected>{_IDENTIFIER}|!)\s*=\s*"
 )
-_INITIALIZER_ATOM = re.compile(
-    rf"-?[0-9]+|true\b|false\b|"
-    rf'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|{_IDENTIFIER}'
-)
 _LOCAL_TYPE_DIAGNOSTIC = "nova.local-type"
 _LOCAL_TYPE_MESSAGE = re.compile(
     r"^local type mismatch: expected '([^']+)', got '[^']+'$"
@@ -83,20 +79,32 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _local_initializer(self, text: str, start: int) -> tuple[str, Span] | None:
         while start < len(text) and text[start].isspace():
             start += 1
-        atom = _INITIALIZER_ATOM.match(text, start)
-        if atom is None:
+        if start >= len(text):
             return None
 
-        end = atom.end()
-        value = atom.group()
-        if re.fullmatch(_IDENTIFIER, value) is not None:
-            parsed = self._call_argument_bounds(text, end)
-            if parsed is not None:
-                opening, closing, _ = parsed
-                if opening >= end:
-                    end = closing + 1
-                    value = text[start:end]
-        return value, Span(start, end)
+        tail = text[start:]
+        code = self.nova_adapter.code_view(tail)
+        depth = 0
+        boundary = len(code)
+        for offset, char in enumerate(code):
+            if char == "(":
+                depth += 1
+                continue
+            if char == ")":
+                if depth == 0:
+                    boundary = offset
+                    break
+                depth -= 1
+                continue
+            if depth == 0 and char in "\n;}":
+                boundary = offset
+                break
+
+        meaningful = code[:boundary].rstrip()
+        if not meaningful:
+            return None
+        end = start + len(meaningful)
+        return text[start:end], Span(start, end)
 
     def _nova_code_actions(
         self,
