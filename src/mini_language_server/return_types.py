@@ -18,7 +18,7 @@ _TYPED_FUNCTION = re.compile(
 )
 _RETURN = re.compile(r"\breturn\b")
 _INTEGER = re.compile(r"-?[0-9]+")
-_CALL_EXPRESSION = re.compile(rf"(?P<name>{_IDENTIFIER})\s*\(")
+_CALL_EXPRESSION = re.compile(rf"\s*(?P<name>{_IDENTIFIER})\s*\(")
 _RETURN_ANNOTATION = re.compile(rf"->\s*(?P<type>{_IDENTIFIER}|!)\s*$")
 _RETURN_TYPE_DIAGNOSTIC = "nova.return-type"
 _MISSING_RETURN_DIAGNOSTIC = "nova.missing-return"
@@ -139,11 +139,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     def _function_call_return_type(self, expression: str) -> str | None:
         """Resolve a bounded explicit result type from one exact workspace call."""
-        match = _CALL_EXPRESSION.match(expression)
+        code = self.nova_adapter.code_view(expression)
+        match = _CALL_EXPRESSION.match(code)
         if match is None:
             return None
         parsed = self._call_argument_bounds(expression, match.end("name"))
-        if parsed is None or parsed[1] != len(expression) - 1:
+        if parsed is None:
+            return None
+        closing = parsed[1]
+        if code[closing + 1 :].strip():
             return None
 
         declarations = tuple(
