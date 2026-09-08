@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .function_call_arguments import NovaProductLanguageServer as _NovaProductLanguageServer
+from .workspace import WorkspaceIndexError
 
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _LOCAL_CALL_PREFIX = re.compile(rf"\s*=\s*(?P<name>{_IDENTIFIER})\s*\(")
@@ -71,3 +73,54 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 result_type = function.group("type")
                 return result_type if result_type in _VALUE_TYPES else None
         return None
+
+    def _handle_workspace_hover(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any] | None:
+        """Publish local call-derived hover types against the exact workspace set."""
+        parsed = self._semantic_query(params)
+        if parsed is None:
+            return super()._handle_workspace_hover(request_id, params)
+        semantics, offset, source = parsed
+        if semantics is None:
+            return super()._handle_workspace_hover(request_id, params)
+
+        target = semantics.definition_at(offset)
+        if target is None or target.kind not in {"parameter", "variable"}:
+            return super()._handle_workspace_hover(request_id, params)
+
+        snapshots = self.workspace_symbols.snapshots()
+        target_type = self._symbol_type(semantics, target)
+        if target_type is None:
+            return super()._handle_workspace_hover(request_id, params)
+
+        try:
+            context = self.requests.start(request_id, uri=semantics.uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            result = {
+                "contents": {
+                    "kind": "plaintext",
+                    "value": f"{target.kind} {target.name}: {target_type}",
+                },
+                "range": self._range(source, target.span),
+            }
+            self.requests.checkpoint(context)
+            try:
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots,
+                    lambda: self._current_semantic_result(
+                        semantics, request_id, result
+                    ),
+                )
+            except WorkspaceIndexError:
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
