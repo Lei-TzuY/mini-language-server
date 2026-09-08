@@ -130,3 +130,29 @@ def test_close_reopen_rebinds_function_call_argument_type() -> None:
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": helper}}))
     open_nova(server, helper, "fn helper() -> Int { return 1; }\n")
     assert latest_codes(server, caller) == []
+
+
+def test_comment_trivia_around_function_call_argument_preserves_type() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        'fn helper() -> String { return "x"; } '
+        "fn target(value: Int) {} "
+        "fn caller() { target(/* before */ helper() /* after */) }\n",
+    )
+    assert latest_codes(server, uri) == ["nova.argument-type"]
+
+
+def test_comment_trivia_does_not_turn_compound_argument_into_direct_call() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        'fn helper() -> String { return "x"; } '
+        "fn target(value: Int) {} "
+        "fn caller() { target(helper() /* trivia */ + 1) }\n",
+    )
+    assert latest_codes(server, uri) == []
