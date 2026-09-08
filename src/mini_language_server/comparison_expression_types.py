@@ -36,6 +36,55 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return comparison_type
         return super()._argument_type(snapshot, argument)
 
+    def _inference_expression_type(
+        self,
+        semantic: Any,
+        expression: str,
+        span: Span,
+        resolving: frozenset[tuple[int, int, int]],
+    ) -> str | None:
+        """Reuse bounded comparison semantics without dropping call-cycle identity."""
+        expression, span = self._trim_expression(expression, span)
+        expression, span = self._unwrap_expression_with_span(expression, span)
+
+        operators = self._top_level_comparison_operators(expression)
+        if not operators:
+            return super()._inference_expression_type(
+                semantic,
+                expression,
+                span,
+                resolving,
+            )
+        if len(operators) != 1:
+            return None
+
+        operator, offset = operators[0]
+        left_text = expression[:offset]
+        right_text = expression[offset + len(operator) :]
+        left_span = Span(span.start, span.start + offset)
+        right_span = Span(span.start + offset + len(operator), span.end)
+
+        left_type = super()._inference_expression_type(
+            semantic,
+            left_text,
+            left_span,
+            resolving,
+        )
+        right_type = super()._inference_expression_type(
+            semantic,
+            right_text,
+            right_span,
+            resolving,
+        )
+
+        if operator in _EQUALITY:
+            if left_type == right_type and left_type in _BOUNDED_EQUALITY_TYPES:
+                return "Bool"
+            return None
+        if operator in _ORDERING and left_type == right_type == "Int":
+            return "Bool"
+        return None
+
     def _comparison_type_if_present(
         self, semantic: Any, expression: str, span: Span
     ) -> tuple[bool, str | None]:

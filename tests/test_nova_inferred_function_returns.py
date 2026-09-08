@@ -258,3 +258,98 @@ def test_wrapper_inference_requires_consistent_literal_and_call_returns() -> Non
     open_nova(server, uri, text)
 
     assert hover_value(server, uri, text) == "variable value"
+
+
+def test_unannotated_arithmetic_return_infers_int_result() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn helper(input: Int) { return input + 2 * 3; } "
+        "fn main() { let value = helper(1) value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: Int"
+
+
+def test_unannotated_comparison_return_infers_bool_result() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn helper(input: Int) { return input < 3; } "
+        "fn main() { let value = helper(1) value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: Bool"
+
+
+def test_bounded_expression_result_recomputes_after_cross_file_change() -> None:
+    server = initialized_server()
+    source_uri = "file:///workspace/source.nova"
+    helper_uri = "file:///workspace/helper.nova"
+    main_uri = "file:///workspace/main.nova"
+    helper = "fn helper() { return source() + 1; }\n"
+    main = "fn main() { let value = helper() value }\n"
+    open_nova(server, source_uri, "fn source() -> Int { return 1; }\n")
+    open_nova(server, helper_uri, helper)
+    open_nova(server, main_uri, main)
+    assert hover_value(server, main_uri, main) == "variable value: Int"
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": source_uri, "version": 2},
+                "contentChanges": [{"text": "fn source() -> Bool { return true; }\n"}],
+            },
+        )
+    )
+    assert hover_value(server, main_uri, main) == "variable value"
+
+
+def test_bounded_expression_result_rebinds_after_close_reopen() -> None:
+    server = initialized_server()
+    source_uri = "file:///workspace/source.nova"
+    helper_uri = "file:///workspace/helper.nova"
+    main_uri = "file:///workspace/main.nova"
+    helper = "fn helper() { return source() == 1; }\n"
+    main = "fn main() { let value = helper() value }\n"
+    open_nova(server, source_uri, "fn source() -> Int { return 1; }\n")
+    open_nova(server, helper_uri, helper)
+    open_nova(server, main_uri, main)
+    assert hover_value(server, main_uri, main) == "variable value: Bool"
+
+    server.handle(
+        notify("textDocument/didClose", {"textDocument": {"uri": source_uri}})
+    )
+    assert hover_value(server, main_uri, main) == "variable value"
+
+    open_nova(server, source_uri, "fn source() -> Int { return 2; }\n")
+    assert hover_value(server, main_uri, main) == "variable value: Bool"
+
+
+def test_recursive_arithmetic_inference_remains_cycle_safe() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn left() { return right() + 1; } "
+        "fn right() { return left() + 1; } "
+        "fn main() { let value = left() value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value"
+
+
+def test_bounded_expression_result_flows_into_argument_validation() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn helper() { return 1 + 2; } "
+        "fn sink(value: String) {} "
+        "fn main() { sink(helper()) }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert "nova.argument-type" in diagnostic_codes(server, uri)

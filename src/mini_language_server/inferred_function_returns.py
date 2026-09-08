@@ -107,7 +107,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         declaration: Any,
         resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> str | None:
-        """Infer one bounded type through explicit references and acyclic call chains."""
+        """Infer one bounded type through exact expressions and acyclic call chains."""
         identity = self._inference_identity(declaration)
         if identity in resolving:
             return None
@@ -141,26 +141,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 keyword_end + leading + len(expression),
             )
 
-            actual = self._literal_type(expression)
-            if actual is None and re.fullmatch(_IDENTIFIER, expression) is not None:
-                actual = self._reference_return_type(
-                    declaration.snapshot,
-                    expression_span,
-                    resolving,
-                    frozenset(),
-                )
-            if actual is None:
-                actual = super()._function_call_return_type(expression)
-            if actual is None:
-                actual = self._inferred_function_call_return_type(expression, resolving)
-            if actual is None:
-                grouped = self._unwrap_parenthesized_expression(expression)
-                if grouped != expression:
-                    actual = self._literal_type(grouped)
-                    if actual is None:
-                        actual = super()._function_call_return_type(grouped)
-                    if actual is None:
-                        actual = self._inferred_function_call_return_type(grouped, resolving)
+            actual = self._inference_expression_type(
+                declaration.snapshot,
+                expression,
+                expression_span,
+                resolving,
+            )
             if actual is None:
                 return None
             if inferred is None:
@@ -168,6 +154,39 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             elif inferred != actual:
                 return None
         return inferred
+
+    def _inference_expression_type(
+        self,
+        semantic: Any,
+        expression: str,
+        span: Span,
+        resolving: frozenset[tuple[int, int, int]],
+    ) -> str | None:
+        """Resolve one bounded return expression while preserving cycle identity."""
+        actual = self._literal_type(expression)
+        if actual is None and re.fullmatch(_IDENTIFIER, expression) is not None:
+            actual = self._reference_return_type(
+                semantic,
+                span,
+                resolving,
+                frozenset(),
+            )
+        if actual is None:
+            actual = super()._function_call_return_type(expression)
+        if actual is None:
+            actual = self._inferred_function_call_return_type(expression, resolving)
+        if actual is not None:
+            return actual
+
+        grouped = self._unwrap_parenthesized_expression(expression)
+        if grouped == expression:
+            return None
+        actual = self._literal_type(grouped)
+        if actual is None:
+            actual = super()._function_call_return_type(grouped)
+        if actual is None:
+            actual = self._inferred_function_call_return_type(grouped, resolving)
+        return actual
 
     def _reference_return_type(
         self,
