@@ -62,12 +62,25 @@ def test_nested_parenthesized_literal_and_call_returns_infer_type() -> None:
     assert hover_value(server, uri, text) == "variable value: Int"
 
 
-def test_parenthesized_compound_return_remains_conservative() -> None:
+def test_parenthesized_bounded_arithmetic_return_infers_type() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
     text = (
         "fn source() -> Int { return 1; } "
         "fn wrapper() { return (source() + 1); } "
+        "fn main() { let value = wrapper() value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: Int"
+
+
+def test_parenthesized_mixed_arithmetic_return_remains_conservative() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn source() -> Int { return 1; } "
+        "fn wrapper() { return (source() + true); } "
         "fn main() { let value = wrapper() value }\n"
     )
     open_nova(server, uri, text)
