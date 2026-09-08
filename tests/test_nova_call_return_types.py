@@ -164,3 +164,30 @@ def test_same_version_workspace_replacement_suppresses_stale_call_return_publica
     refreshed = server.diagnostics.get(main_uri)
     assert refreshed is not None and refreshed is not original_diagnostics
     assert len(diagnostics(server, main_uri, "nova.return-type")) == 1
+
+
+def test_comment_trivia_around_function_call_return_preserves_type() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        'fn helper() -> String { return "value"; }\n'
+        "fn main() -> Int { return /* before */ helper() /* after */; }\n"
+    )
+    open_nova(server, uri, text)
+
+    mismatches = diagnostics(server, uri, "nova.return-type")
+    assert len(mismatches) == 1
+    assert mismatches[0].message == "return type mismatch: expected 'Int', got 'String'"
+
+
+def test_comment_trivia_does_not_turn_compound_return_into_direct_call() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        'fn helper() -> String { return "value"; }\n'
+        "fn main() -> Int { return helper() /* trivia */ + 1; }\n",
+    )
+
+    assert diagnostics(server, uri, "nova.return-type") == []
