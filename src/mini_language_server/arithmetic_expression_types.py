@@ -27,6 +27,52 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             argument,
         )
 
+    def _inference_expression_type(
+        self,
+        semantic: Any,
+        expression: str,
+        span: Span,
+        resolving: frozenset[tuple[int, int, int]],
+    ) -> str | None:
+        """Reuse bounded integer semantics without dropping recursive call identity."""
+        expression, span = self._trim_expression(expression, span)
+        expression, span = self._unwrap_expression_with_span(expression, span)
+
+        split = self._top_level_operator(expression, _ADDITIVE)
+        if split is None:
+            split = self._top_level_operator(expression, _MULTIPLICATIVE)
+        if split is None:
+            return super()._inference_expression_type(
+                semantic,
+                expression,
+                span,
+                resolving,
+            )
+
+        operator, offset = split
+        left_text = expression[:offset]
+        right_text = expression[offset + len(operator) :]
+        left_span = Span(span.start, span.start + offset)
+        right_span = Span(
+            span.start + offset + len(operator),
+            span.end,
+        )
+        left_type = self._inference_expression_type(
+            semantic,
+            left_text,
+            left_span,
+            resolving,
+        )
+        right_type = self._inference_expression_type(
+            semantic,
+            right_text,
+            right_span,
+            resolving,
+        )
+        if left_type == right_type == "Int":
+            return "Int"
+        return None
+
     def _integer_arithmetic_type(
         self, semantic: Any, expression: str, span: Span
     ) -> str | None:
