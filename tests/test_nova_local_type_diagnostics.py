@@ -153,7 +153,10 @@ def test_ambiguous_function_call_initializer_type_is_not_guessed() -> None:
     assert local_diagnostics(server, main_uri) == []
     snapshot = server.diagnostics.get(main_uri)
     assert snapshot is not None
-    assert len([item for item in snapshot.diagnostics if item.code == "nova.ambiguous-function"]) == 1
+    ambiguous = [
+        item for item in snapshot.diagnostics if item.code == "nova.ambiguous-function"
+    ]
+    assert len(ambiguous) == 1
 
 
 def test_did_change_replaces_local_type_diagnostic_on_new_snapshot() -> None:
