@@ -1,5 +1,6 @@
 """mini-language-server package."""
 
+from .arithmetic_expression_types import NovaProductLanguageServer
 from .cancellation import (
     RequestCancelled,
     RequestContext,
@@ -9,7 +10,6 @@ from .cancellation import (
 )
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
 from .documents import Document, DocumentError, DocumentStore
-from .inferred_function_returns import NovaProductLanguageServer
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
 from .semantic import Reference, SemanticDatabase, SemanticError, SemanticSnapshot
 from .server import LanguageServer, ServerState
