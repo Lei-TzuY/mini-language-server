@@ -6,11 +6,14 @@ import re
 from typing import Any
 
 from .function_call_locals import NovaProductLanguageServer as _NovaProductLanguageServer
+from .source import Span
 
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _CALL_EXPRESSION = re.compile(rf"\s*(?P<name>{_IDENTIFIER})\s*\(")
+_LOCAL_TYPE_SUFFIX = re.compile(rf"\s*:\s*(?P<type>{_IDENTIFIER}|!)\s*(?==)")
 _RETURN = re.compile(r"\breturn\b")
 _RETURN_ANNOTATION = re.compile(r"->")
+_VALUE_RETURN_TYPES = frozenset({"Int", "String", "Bool"})
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -68,7 +71,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         declaration: Any,
         resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> str | None:
-        """Infer one bounded type through acyclic literal/direct-call return chains."""
+        """Infer one bounded type through explicit references and acyclic call chains."""
         identity = self._inference_identity(declaration)
         if identity in resolving:
             return None
@@ -92,11 +95,21 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 found = code.find(delimiter, keyword_end, closing)
                 if found >= 0:
                     boundary = min(boundary, found)
-            expression = text[keyword_end:boundary].strip()
+            raw = text[keyword_end:boundary]
+            leading = len(raw) - len(raw.lstrip())
+            expression = raw.strip()
             if not expression:
                 continue
+            expression_span = Span(
+                keyword_end + leading,
+                keyword_end + leading + len(expression),
+            )
 
             actual = self._literal_type(expression)
+            if actual is None and re.fullmatch(_IDENTIFIER, expression) is not None:
+                actual = self._explicit_reference_return_type(
+                    declaration.snapshot, expression_span
+                )
             if actual is None:
                 actual = super()._function_call_return_type(expression)
             if actual is None:
@@ -108,3 +121,21 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             elif inferred != actual:
                 return None
         return inferred
+
+    def _explicit_reference_return_type(self, semantic: Any, span: Span) -> str | None:
+        """Resolve only explicitly typed parameter/local references to bounded results."""
+        target = self._exact_reference_target(semantic, span)
+        if target is None:
+            return None
+
+        result: str | None = None
+        if target.kind == "parameter":
+            result = self._parameter_type(semantic, target)
+        elif target.kind == "variable":
+            text = semantic.symbols.syntax.document.text
+            code = self.nova_adapter.code_view(text)
+            annotation = _LOCAL_TYPE_SUFFIX.match(code, target.span.end)
+            if annotation is not None:
+                result = annotation.group("type")
+
+        return result if result in _VALUE_RETURN_TYPES else None
