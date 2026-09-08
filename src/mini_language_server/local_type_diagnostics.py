@@ -12,10 +12,8 @@ from .semantic import SemanticSnapshot
 from .source import Span
 
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
-_ANNOTATED_INITIALIZER = re.compile(
+_ANNOTATED_INITIALIZER_PREFIX = re.compile(
     rf"\s*:\s*(?P<expected>{_IDENTIFIER}|!)\s*=\s*"
-    rf"(?P<value>-?[0-9]+|true\b|false\b|"
-    rf'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|{_IDENTIFIER})'
 )
 _LOCAL_TYPE_DIAGNOSTIC = "nova.local-type"
 _LOCAL_TYPE_MESSAGE = re.compile(
@@ -53,14 +51,26 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         for symbol in semantic.symbols.symbols:
             if symbol.kind != "variable":
                 continue
-            match = _ANNOTATED_INITIALIZER.match(text, symbol.span.end)
+            match = _ANNOTATED_INITIALIZER_PREFIX.match(text, symbol.span.end)
             if match is None:
                 continue
             expected = match.group("expected")
             if expected not in _SUPPORTED_TYPES:
                 continue
-            value = match.group("value")
-            value_span = Span(match.start("value"), match.end("value"))
+            boundary = len(text)
+            for delimiter in (";", "\n", "\r"):
+                found = text.find(delimiter, match.end())
+                if found >= 0:
+                    boundary = min(boundary, found)
+            raw = text[match.end() : boundary]
+            leading = len(raw) - len(raw.lstrip())
+            value = raw.strip()
+            if not value:
+                continue
+            value_span = Span(
+                match.end() + leading,
+                match.end() + leading + len(value),
+            )
             actual = self._return_expression_type(semantic, value, value_span)
             if actual is None or actual == expected:
                 continue
