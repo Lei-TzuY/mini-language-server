@@ -125,3 +125,42 @@ def test_close_reopen_rebinds_cross_file_function_call_return_type() -> None:
 
     open_nova(server, helper_uri, "fn helper() -> Int { return 1; }\n", version=1)
     assert diagnostics(server, main_uri, "nova.return-type") == []
+
+
+def test_same_version_workspace_replacement_suppresses_stale_call_return_publication() -> None:
+    server = initialized_server()
+    helper_uri = "file:///workspace/helper.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(server, helper_uri, 'fn helper() -> String { return "value"; }\n')
+    open_nova(server, main_uri, "fn main() -> Int { return helper(); }\n")
+    original_helper = server.workspace_symbols.get(helper_uri)
+    original_diagnostics = server.diagnostics.get(main_uri)
+    assert original_helper is not None
+    assert original_diagnostics is not None
+    assert len(diagnostics(server, main_uri, "nova.return-type")) == 1
+
+    real_commit = server.workspace_symbols.commit_snapshots_if_current
+    replaced = False
+
+    def replace_then_commit(snapshots, callback):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            document = server.documents.get(helper_uri)
+            assert document is not None
+            replacement = server.nova_adapter.publish(server, document)
+            server.workspace_symbols.replace(replacement, expected=original_helper)
+        return real_commit(snapshots, callback)
+
+    server.workspace_symbols.commit_snapshots_if_current = replace_then_commit  # type: ignore[method-assign]
+    server._publish_workspace_diagnostics()
+
+    current_helper = server.workspace_symbols.get(helper_uri)
+    assert current_helper is not None and current_helper is not original_helper
+    assert server.diagnostics.get(main_uri) is original_diagnostics
+
+    server.workspace_symbols.commit_snapshots_if_current = real_commit  # type: ignore[method-assign]
+    server._publish_workspace_diagnostics()
+    refreshed = server.diagnostics.get(main_uri)
+    assert refreshed is not None and refreshed is not original_diagnostics
+    assert len(diagnostics(server, main_uri, "nova.return-type")) == 1
