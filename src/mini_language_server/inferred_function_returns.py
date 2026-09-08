@@ -12,7 +12,10 @@ _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _CALL_EXPRESSION = re.compile(rf"\s*(?P<name>{_IDENTIFIER})\s*\(")
 _LOCAL_TYPE_SUFFIX = re.compile(rf"\s*:\s*(?P<type>{_IDENTIFIER}|!)\s*(?==)")
 _LOCAL_CALL_PREFIX = re.compile(rf"\s*=\s*(?P<name>{_IDENTIFIER})\s*\(")
-_LOCAL_ALIAS_PREFIX = re.compile(rf"\s*=\s*(?P<name>{_IDENTIFIER})\s*(?=\}}|let\b|{_IDENTIFIER}(?:\s*\(|\b)|$)")
+_LOCAL_ALIAS_PREFIX = re.compile(
+    rf"\s*=\s*(?P<name>{_IDENTIFIER})\s*"
+    rf"(?=\}}|let\b|{_IDENTIFIER}(?:\s*\(|\b)|$)"
+)
 _LOCAL_INITIALIZER_TAIL = re.compile(
     rf"\s*(?=\}}|let\b|{_IDENTIFIER}(?:\s*\(|\b)|$)"
 )
