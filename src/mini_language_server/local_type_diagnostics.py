@@ -105,11 +105,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 boundary = offset
                 break
 
-        meaningful = code[:boundary].rstrip()
-        if not meaningful:
+        value = text[start : start + boundary].rstrip()
+        if not value:
             return None
-        end = start + len(meaningful)
-        return text[start:end], Span(start, end)
+        end = start + len(value)
+        return value, Span(start, end)
 
     @staticmethod
     def _starts_same_line_local(code: str, offset: int) -> bool:
