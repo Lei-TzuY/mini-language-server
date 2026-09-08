@@ -33,19 +33,21 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return inherited
 
         text = snapshot.symbols.syntax.document.text
-        suffix = text[target.span.end :]
+        code = self.nova_adapter.code_view(text)
+        suffix = code[target.span.end :]
         call = _LOCAL_CALL_PREFIX.match(suffix)
         if call is None:
             return None
 
         expression_start = target.span.end + call.start("name")
         expression = text[expression_start:]
+        expression_code = code[expression_start:]
         name_end = call.end("name") - call.start("name")
         parsed = self._call_argument_bounds(expression, name_end)
         if parsed is None:
             return None
         closing = parsed[1]
-        if _LOCAL_INITIALIZER_TAIL.match(expression[closing + 1 :]) is None:
+        if _LOCAL_INITIALIZER_TAIL.match(expression_code[closing + 1 :]) is None:
             return None
 
         name = call.group("name")
@@ -57,7 +59,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if len(declarations) != 1:
             return None
 
-        code = self.nova_adapter.code_view(text)
         declaration = declarations[0]
         for function in _TYPED_FUNCTION.finditer(code):
             if (
