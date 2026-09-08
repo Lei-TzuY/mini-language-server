@@ -1,4 +1,4 @@
-"""Exact-snapshot Nova local types from same-file direct function calls."""
+"""Exact-workspace Nova local types from direct function calls."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ _VALUE_TYPES = frozenset({"Int", "String", "Bool"})
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
-    """Final Nova product with bounded same-file call initializer inference."""
+    """Final Nova product with bounded exact-workspace call initializer inference."""
 
     def _local_type(
         self,
@@ -27,7 +27,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         target: Any,
         seen: frozenset[tuple[int, int]],
     ) -> str | None:
-        """Infer inherited local types, then one exact same-file direct call."""
+        """Infer inherited local types, then one exact-workspace direct call."""
         inherited = super()._local_type(snapshot, target, seen)
         if inherited is not None:
             return inherited
@@ -52,19 +52,21 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         name = call.group("name")
         declarations = tuple(
-            symbol
-            for symbol in snapshot.symbols.symbols
-            if symbol.kind == "function" and symbol.name == name
+            declaration
+            for declaration in self.workspace_symbols.declarations(name)
+            if declaration.symbol.kind == "function"
         )
         if len(declarations) != 1:
             return None
 
         declaration = declarations[0]
-        for function in _TYPED_FUNCTION.finditer(code):
+        declaration_text = declaration.snapshot.symbols.syntax.document.text
+        declaration_code = self.nova_adapter.code_view(declaration_text)
+        for function in _TYPED_FUNCTION.finditer(declaration_code):
             if (
                 function.group("name") == name
-                and function.start("name") == declaration.span.start
-                and function.end("name") == declaration.span.end
+                and function.start("name") == declaration.symbol.span.start
+                and function.end("name") == declaration.symbol.span.end
             ):
                 result_type = function.group("type")
                 return result_type if result_type in _VALUE_TYPES else None
