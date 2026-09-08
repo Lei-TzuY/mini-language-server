@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from .function_call_locals import NovaProductLanguageServer as _NovaProductLanguageServer
+from .source import Span
 
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _CALL_EXPRESSION = re.compile(rf"\s*(?P<name>{_IDENTIFIER})\s*\(")
@@ -68,7 +69,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         declaration: Any,
         resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> str | None:
-        """Infer one bounded type through acyclic literal/direct-call return chains."""
+        """Infer one bounded type through exact references and acyclic call chains."""
         identity = self._inference_identity(declaration)
         if identity in resolving:
             return None
@@ -92,11 +93,21 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 found = code.find(delimiter, keyword_end, closing)
                 if found >= 0:
                     boundary = min(boundary, found)
-            expression = text[keyword_end:boundary].strip()
+            raw = text[keyword_end:boundary]
+            leading = len(raw) - len(raw.lstrip())
+            expression = raw.strip()
             if not expression:
                 continue
+            expression_span = Span(
+                keyword_end + leading,
+                keyword_end + leading + len(expression),
+            )
 
             actual = self._literal_type(expression)
+            if actual is None and re.fullmatch(_IDENTIFIER, expression) is not None:
+                actual = self._return_expression_type(
+                    declaration.snapshot, expression, expression_span
+                )
             if actual is None:
                 actual = super()._function_call_return_type(expression)
             if actual is None:
