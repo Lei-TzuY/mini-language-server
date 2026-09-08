@@ -96,7 +96,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     break
                 depth -= 1
                 continue
-            if depth == 0 and char in "\n;}":
+            if depth != 0:
+                continue
+            if char in "\n;}":
+                boundary = offset
+                break
+            if self._starts_same_line_local(code, offset):
                 boundary = offset
                 break
 
@@ -105,6 +110,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return None
         end = start + len(meaningful)
         return text[start:end], Span(start, end)
+
+    @staticmethod
+    def _starts_same_line_local(code: str, offset: int) -> bool:
+        if not code.startswith("let", offset):
+            return False
+        if offset == 0 or not code[offset - 1].isspace():
+            return False
+        end = offset + 3
+        return end == len(code) or not (code[end].isalnum() or code[end] == "_")
 
     def _nova_code_actions(
         self,
