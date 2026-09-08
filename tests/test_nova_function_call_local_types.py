@@ -104,3 +104,48 @@ def test_call_initializer_type_appears_in_completion_detail() -> None:
     assert response is not None
     item = next(item for item in response["result"] if item["label"] == "value")
     assert item["detail"] == "variable: Int"
+
+
+def test_call_initializer_ignores_block_comment_trivia_around_direct_call() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn helper() -> String { return \"x\"; } "
+        "fn main() { let value = /* before */ helper() /* after */ value }\n"
+    )
+    open_nova(server, uri, text)
+    assert hover_value(server, uri, text) == "variable value: String"
+
+
+def test_call_initializer_trivia_still_rejects_compound_expression() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn helper() -> Int { return 1; } "
+        "fn main() { let value = /* before */ helper() /* after */ + 1 value }\n"
+    )
+    open_nova(server, uri, text)
+    assert hover_value(server, uri, text) == "variable value"
+
+
+def test_trivia_aware_call_initializer_type_recomputes_after_change() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    first = (
+        "fn helper() -> Int { return 1; } "
+        "fn main() { let value = /* before */ helper() value }\n"
+    )
+    open_nova(server, uri, first)
+    assert hover_value(server, uri, first) == "variable value: Int"
+
+    second = (
+        "fn helper() -> Bool { return true; } "
+        "fn main() { let value = /* before */ helper() value }\n"
+    )
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {"textDocument": {"uri": uri, "version": 2}, "contentChanges": [{"text": second}]},
+        )
+    )
+    assert hover_value(server, uri, second) == "variable value: Bool"
