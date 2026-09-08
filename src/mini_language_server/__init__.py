@@ -1,6 +1,5 @@
 """mini-language-server package."""
 
-from .arithmetic_expression_types import NovaProductLanguageServer
 from .cancellation import (
     RequestCancelled,
     RequestContext,
@@ -8,6 +7,7 @@ from .cancellation import (
     RequestTracker,
     StaleRequest,
 )
+from .comparison_expression_types import NovaProductLanguageServer
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
 from .documents import Document, DocumentError, DocumentStore
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
