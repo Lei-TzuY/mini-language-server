@@ -70,6 +70,12 @@ def condition_actions(actions: list[dict]) -> list[dict]:
     ]
 
 
+def typed_condition_actions(actions: list[dict]) -> list[dict]:
+    return [
+        action for action in actions if action.get("title", "").startswith("Compare ")
+    ]
+
+
 def test_condition_type_quick_fix_targets_exact_trimmed_expression() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
@@ -97,6 +103,49 @@ def test_condition_type_quick_fix_targets_exact_trimmed_expression() -> None:
     ]
 
 
+def test_int_condition_type_quick_fix_preserves_expression_via_zero_comparison() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn main() { if ( 1 + 2 ) { let value = 1; } }\n"
+    open_nova(server, uri, text)
+
+    expression = "1 + 2"
+    start = text.index(expression)
+    actions = typed_condition_actions(
+        code_actions(server, uri, line=0, start=start, end=start + len(expression))
+    )
+    assert len(actions) == 1
+    action = actions[0]
+    assert action["title"] == "Compare Int condition with zero"
+    assert action["diagnostics"][0]["code"] == "nova.condition-type"
+    assert action["edit"]["changes"][uri] == [
+        {
+            "range": {
+                "start": {"line": 0, "character": start},
+                "end": {"line": 0, "character": start + len(expression)},
+            },
+            "newText": "(1 + 2) != 0",
+        }
+    ]
+
+
+def test_string_condition_type_quick_fix_preserves_expression_via_empty_comparison() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = 'fn main() { while ("value") { let value = 1; } }\n'
+    open_nova(server, uri, text)
+
+    expression = '"value"'
+    start = text.index(expression)
+    actions = typed_condition_actions(
+        code_actions(server, uri, line=0, start=start, end=start + len(expression))
+    )
+    assert len(actions) == 1
+    action = actions[0]
+    assert action["title"] == "Compare String condition with empty string"
+    assert action["edit"]["changes"][uri][0]["newText"] == '("value") != ""'
+
+
 def test_condition_type_quick_fix_rebinds_across_workspace_lifecycle() -> None:
     server = initialized_server()
     helper_uri = "file:///workspace/helper.nova"
@@ -109,9 +158,13 @@ def test_condition_type_quick_fix_rebinds_across_workspace_lifecycle() -> None:
 
     open_nova(server, helper_uri, helper_int, version=1)
     open_nova(server, main_uri, main, version=1)
-    assert condition_actions(
-        code_actions(server, main_uri, line=0, start=start, end=start + len(expression))
+    initial_actions = code_actions(
+        server, main_uri, line=0, start=start, end=start + len(expression)
     )
+    assert condition_actions(initial_actions)
+    typed = typed_condition_actions(initial_actions)
+    assert len(typed) == 1
+    assert typed[0]["edit"]["changes"][main_uri][0]["newText"] == "(source()) != 0"
 
     server.handle(
         notify(
@@ -122,39 +175,41 @@ def test_condition_type_quick_fix_rebinds_across_workspace_lifecycle() -> None:
             },
         )
     )
-    assert condition_actions(
-        code_actions(
-            server,
-            main_uri,
-            line=0,
-            start=start,
-            end=start + len(expression),
-            request_id=3,
-        )
-    ) == []
+    changed_actions = code_actions(
+        server,
+        main_uri,
+        line=0,
+        start=start,
+        end=start + len(expression),
+        request_id=3,
+    )
+    assert condition_actions(changed_actions) == []
+    assert typed_condition_actions(changed_actions) == []
 
     server.handle(
         notify("textDocument/didClose", {"textDocument": {"uri": helper_uri}})
     )
-    assert condition_actions(
-        code_actions(
-            server,
-            main_uri,
-            line=0,
-            start=start,
-            end=start + len(expression),
-            request_id=4,
-        )
-    ) == []
+    closed_actions = code_actions(
+        server,
+        main_uri,
+        line=0,
+        start=start,
+        end=start + len(expression),
+        request_id=4,
+    )
+    assert condition_actions(closed_actions) == []
+    assert typed_condition_actions(closed_actions) == []
 
     open_nova(server, helper_uri, helper_int, version=3)
-    assert condition_actions(
-        code_actions(
-            server,
-            main_uri,
-            line=0,
-            start=start,
-            end=start + len(expression),
-            request_id=5,
-        )
+    reopened_actions = code_actions(
+        server,
+        main_uri,
+        line=0,
+        start=start,
+        end=start + len(expression),
+        request_id=5,
     )
+    assert condition_actions(reopened_actions)
+    typed = typed_condition_actions(reopened_actions)
+    assert len(typed) == 1
+    assert typed[0]["edit"]["changes"][main_uri][0]["newText"] == "(source()) != 0"

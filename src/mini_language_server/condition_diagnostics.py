@@ -75,6 +75,37 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 diagnostic, start_offset=start_offset, end_offset=end_offset
             ):
                 continue
+
+            expression = document.text[diagnostic.span.start : diagnostic.span.end]
+            actual = self._return_expression_type(semantic, expression, diagnostic.span)
+            typed_repair: tuple[str, str] | None = None
+            if actual == "Int":
+                typed_repair = ("Compare Int condition with zero", f"({expression}) != 0")
+            elif actual == "String":
+                typed_repair = (
+                    "Compare String condition with empty string",
+                    f'({expression}) != ""',
+                )
+            if typed_repair is not None:
+                title, new_text = typed_repair
+                actions.append(
+                    {
+                        "title": title,
+                        "kind": "quickfix",
+                        "diagnostics": [self._diagnostic(source, diagnostic)],
+                        "edit": {
+                            "changes": {
+                                uri: [
+                                    {
+                                        "range": self._range(source, diagnostic.span),
+                                        "newText": new_text,
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                )
+
             actions.append(
                 {
                     "title": "Replace condition with Bool literal",
