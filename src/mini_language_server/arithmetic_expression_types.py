@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .inferred_function_returns import NovaProductLanguageServer as _NovaProductLanguageServer
+from .inferred_return_inlay_hints import NovaProductLanguageServer as _NovaProductLanguageServer
 from .source import Span
 
 _ADDITIVE = frozenset({"+", "-"})
