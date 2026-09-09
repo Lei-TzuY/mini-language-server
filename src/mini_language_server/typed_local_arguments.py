@@ -55,20 +55,33 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             symbol_type = self._symbol_type(semantics, symbol)
             if symbol_type is None:
                 continue
-            hints.append(
-                (
-                    symbol.span.end,
+
+            insertion_span = Span(symbol.span.end, symbol.span.end)
+            insertion_range = self._range(source, insertion_span)
+            annotation = f": {symbol_type}"
+            hint: dict[str, Any] = {
+                "position": insertion_range["start"],
+                "label": annotation,
+                "kind": 1,
+                "paddingLeft": True,
+            }
+            if not self._has_explicit_local_annotation(semantics, symbol):
+                hint["textEdits"] = [
                     {
-                        "position": self._range(
-                            source, Span(symbol.span.end, symbol.span.end)
-                        )["start"],
-                        "label": f": {symbol_type}",
-                        "kind": 1,
-                        "paddingLeft": True,
-                    },
-                )
-            )
+                        "range": insertion_range,
+                        "newText": annotation,
+                    }
+                ]
+            hints.append((symbol.span.end, hint))
         return hints
+
+    def _has_explicit_local_annotation(self, snapshot: Any, target: Any) -> bool:
+        """Return whether an exact local declaration already has a type annotation."""
+        code = self.nova_adapter.code_view(snapshot.symbols.syntax.document.text)
+        offset = target.span.end
+        while offset < len(code) and code[offset].isspace():
+            offset += 1
+        return offset < len(code) and code[offset] == ":"
 
     def _handle_workspace_completion(
         self, request_id: Any, params: Any
