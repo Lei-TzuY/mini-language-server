@@ -100,7 +100,7 @@ def test_if_condition_scan_ignores_comments_and_strings() -> None:
     assert condition_diagnostics == []
 
 
-def test_cross_file_if_condition_rebinds_on_same_version_change_close_and_reopen() -> None:
+def test_cross_file_if_condition_rebinds_on_change_close_and_reopen() -> None:
     server = initialized_server()
     helper_uri = "file:///workspace/helper.nova"
     main_uri = "file:///workspace/main.nova"
@@ -116,7 +116,7 @@ def test_cross_file_if_condition_rebinds_on_same_version_change_close_and_reopen
         notify(
             "textDocument/didChange",
             {
-                "textDocument": {"uri": helper_uri, "version": 1},
+                "textDocument": {"uri": helper_uri, "version": 2},
                 "contentChanges": [{"text": helper_int}],
             },
         )
@@ -128,8 +128,32 @@ def test_cross_file_if_condition_rebinds_on_same_version_change_close_and_reopen
     )
     assert "nova.condition-type" not in diagnostic_codes(server, main_uri)
 
-    open_nova(server, helper_uri, helper_bool, version=1)
+    open_nova(server, helper_uri, helper_bool, version=3)
     assert "nova.condition-type" not in diagnostic_codes(server, main_uri)
+
+
+def test_same_version_condition_reanalysis_rebinds_exact_semantic_parent() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn main() { if (1) { let value = 1; } }\n"
+    open_nova(server, uri, text, version=1)
+
+    document = server.documents.get(uri)
+    first_semantic = server.semantics.get(uri)
+    first_diagnostic = server.diagnostics.get(uri)
+    assert document is not None
+    assert first_semantic is not None
+    assert first_diagnostic is not None
+    assert "nova.condition-type" in diagnostic_codes(server, uri)
+
+    second_semantic = server.nova_adapter.publish(server, document)
+    second_diagnostic = server.diagnostics.get(uri)
+    assert second_semantic is not first_semantic
+    assert second_semantic.version == first_semantic.version == 1
+    assert second_diagnostic is not None
+    assert second_diagnostic is not first_diagnostic
+    assert second_diagnostic.semantic is second_semantic
+    assert "nova.condition-type" in diagnostic_codes(server, uri)
 
 
 def test_if_condition_diagnostic_is_deterministic_and_uses_condition_span() -> None:
