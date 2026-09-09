@@ -169,3 +169,98 @@ def test_if_condition_diagnostic_is_deterministic_and_uses_condition_span() -> N
     diagnostic = condition_diagnostics[0]
     assert text[diagnostic.span.start : diagnostic.span.end] == "1 + 2"
     assert diagnostic.message == "condition type mismatch: expected 'Bool', got 'Int'"
+
+
+def test_while_condition_requires_bool_without_becoming_a_function_call() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        "fn main(input: Int) { while (input + 1) { let value = 1; } }\n",
+    )
+
+    codes = diagnostic_codes(server, uri)
+    assert "nova.condition-type" in codes
+    assert "nova.unresolved-function" not in codes
+    assert "nova.ambiguous-function" not in codes
+
+
+def test_while_condition_accepts_bounded_logical_and_comparison_expression() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        (
+            "fn main(input: Int) { while (input < 4 && !(input == 2)) "
+            "{ let value = 1; } }\n"
+        ),
+    )
+
+    assert "nova.condition-type" not in diagnostic_codes(server, uri)
+
+
+def test_while_condition_scan_ignores_comments_and_strings() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        (
+            'fn main() { let text = "while (1)"; // while (1)\n'
+            " while (true) { let value = 1; } }\n"
+        ),
+    )
+
+    condition_diagnostics = [
+        item for item in diagnostics(server, uri) if item.code == "nova.condition-type"
+    ]
+    assert condition_diagnostics == []
+
+
+def test_cross_file_while_condition_rebinds_on_change_close_and_reopen() -> None:
+    server = initialized_server()
+    helper_uri = "file:///workspace/helper.nova"
+    main_uri = "file:///workspace/main.nova"
+    helper_bool = "fn source() -> Bool { return true; }\n"
+    helper_int = "fn source() -> Int { return 1; }\n"
+    main = "fn main() { while (source()) { let value = 1; } }\n"
+
+    open_nova(server, helper_uri, helper_bool, version=1)
+    open_nova(server, main_uri, main, version=1)
+    assert "nova.condition-type" not in diagnostic_codes(server, main_uri)
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": helper_uri, "version": 2},
+                "contentChanges": [{"text": helper_int}],
+            },
+        )
+    )
+    assert "nova.condition-type" in diagnostic_codes(server, main_uri)
+
+    server.handle(
+        notify("textDocument/didClose", {"textDocument": {"uri": helper_uri}})
+    )
+    assert "nova.condition-type" not in diagnostic_codes(server, main_uri)
+
+    open_nova(server, helper_uri, helper_bool, version=3)
+    assert "nova.condition-type" not in diagnostic_codes(server, main_uri)
+
+
+def test_while_condition_diagnostic_uses_trimmed_condition_span() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn main() { while ( 1 + 2 ) { let value = 1; } }\n"
+    open_nova(server, uri, text)
+
+    condition_diagnostics = [
+        item for item in diagnostics(server, uri) if item.code == "nova.condition-type"
+    ]
+    assert len(condition_diagnostics) == 1
+    diagnostic = condition_diagnostics[0]
+    assert text[diagnostic.span.start : diagnostic.span.end] == "1 + 2"
+    assert diagnostic.message == "condition type mismatch: expected 'Bool', got 'Int'"
