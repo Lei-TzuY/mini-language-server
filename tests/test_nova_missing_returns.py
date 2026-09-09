@@ -51,9 +51,7 @@ def test_empty_typed_function_reports_deterministic_missing_return() -> None:
     diagnostics = missing_returns(server, uri)
     assert len(diagnostics) == 1
     diagnostic = diagnostics[0]
-    assert diagnostic.message == (
-        "function 'value' with return type 'Int' has no top-level value return"
-    )
+    assert diagnostic.message == "function 'value' with return type 'Int' has no value return"
     assert text[diagnostic.span.start : diagnostic.span.end] == "Int"
 
 
