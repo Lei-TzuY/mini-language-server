@@ -40,7 +40,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         for diagnostic in diagnostics:
             if diagnostic.code != _UNREACHABLE_CODE_DIAGNOSTIC:
                 continue
-            if diagnostic not in current:
+            if not any(diagnostic is candidate for candidate in current):
                 continue
             if not self._diagnostic_overlaps(
                 diagnostic, start_offset=start_offset, end_offset=end_offset
