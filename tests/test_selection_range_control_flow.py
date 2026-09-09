@@ -189,7 +189,15 @@ def test_control_flow_selection_ranges_follow_change_and_close_reopen() -> None:
     open_document(
         server,
         uri,
-        "fn main(flag: Bool) {\n  if (flag) {\n    while (flag) {\n      print(flag)\n    }\n  }\n}\n",
+        (
+            "fn main(flag: Bool) {\n"
+            "  if (flag) {\n"
+            "    while (flag) {\n"
+            "      print(flag)\n"
+            "    }\n"
+            "  }\n"
+            "}\n"
+        ),
         version=1,
     )
     reopened = ranges(selection_range(server, uri, 3, 13))
