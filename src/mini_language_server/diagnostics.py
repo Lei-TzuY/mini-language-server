@@ -15,6 +15,9 @@ class DiagnosticError(ValueError):
     """Raised when diagnostics cannot be associated with current semantics."""
 
 
+DIAGNOSTIC_TAG_VALUES = {"unnecessary": 1, "deprecated": 2}
+
+
 @dataclass(frozen=True, slots=True)
 class Diagnostic:
     """A language-independent diagnostic anchored to one source span."""
@@ -24,6 +27,7 @@ class Diagnostic:
     severity: str = "error"
     code: str | None = None
     source: str | None = None
+    tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.span, Span):
@@ -38,6 +42,12 @@ class Diagnostic:
             not isinstance(self.source, str) or not self.source
         ):
             raise DiagnosticError("diagnostic source must be a non-empty string or None")
+        if not isinstance(self.tags, tuple):
+            raise DiagnosticError("diagnostic tags must be a tuple")
+        if len(set(self.tags)) != len(self.tags):
+            raise DiagnosticError("diagnostic tags must be unique")
+        if any(tag not in DIAGNOSTIC_TAG_VALUES for tag in self.tags):
+            raise DiagnosticError("unsupported diagnostic tag")
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +178,7 @@ class DiagnosticStore:
                     diagnostic.message,
                     diagnostic.code or "",
                     diagnostic.source or "",
+                    diagnostic.tags,
                 ),
             )
         )
