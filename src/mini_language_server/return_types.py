@@ -114,7 +114,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         span=Span(function.start("type"), function.end("type")),
                         message=(
                             f"function '{function.group('name')}' with return type "
-                            f"'{expected}' has no top-level value return"
+                            f"'{expected}' has no value return"
                         ),
                         code=_MISSING_RETURN_DIAGNOSTIC,
                         source="nova",
