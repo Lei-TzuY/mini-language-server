@@ -125,7 +125,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         return tuple(diagnostics)
 
     def _body_guarantees_value_return(self, code: str, text: str) -> bool:
-        """Prove a bounded body returns via a top-level return or complete if/else."""
+        """Prove a bounded body returns via a top-level return or complete if chain."""
         for statement in _RETURN.finditer(code):
             if self._brace_depth_before(code, statement.start()) != 0:
                 continue
@@ -135,17 +135,38 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         for statement in _IF.finditer(code):
             if self._brace_depth_before(code, statement.start()) != 0:
                 continue
-            bounds = self._complete_if_else_bounds(code, statement.start(), statement.end())
-            if bounds is None:
-                continue
-            then_open, then_close, else_open, else_close = bounds
-            if self._body_guarantees_value_return(
-                code[then_open + 1 : then_close], text[then_open + 1 : then_close]
-            ) and self._body_guarantees_value_return(
-                code[else_open + 1 : else_close], text[else_open + 1 : else_close]
+            if self._if_statement_guarantees_value_return(
+                code, text, statement.start(), statement.end()
             ):
                 return True
         return False
+
+    def _if_statement_guarantees_value_return(
+        self, code: str, text: str, statement_start: int, condition_prefix_end: int
+    ) -> bool:
+        branches = self._if_then_else_bounds(code, statement_start, condition_prefix_end)
+        if branches is None:
+            return False
+        then_open, then_close, else_start = branches
+        if not self._body_guarantees_value_return(
+            code[then_open + 1 : then_close], text[then_open + 1 : then_close]
+        ):
+            return False
+
+        if code[else_start] == "{":
+            else_close = self._matching_delimiter(code, else_start, "{", "}")
+            if else_close is None:
+                return False
+            return self._body_guarantees_value_return(
+                code[else_start + 1 : else_close], text[else_start + 1 : else_close]
+            )
+
+        nested_if = _IF.match(code, else_start)
+        if nested_if is None:
+            return False
+        return self._if_statement_guarantees_value_return(
+            code, text, nested_if.start(), nested_if.end()
+        )
 
     @staticmethod
     def _return_statement_has_value(text: str, keyword_end: int) -> bool:
@@ -157,9 +178,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         return bool(text[keyword_end:boundary].strip())
 
     @classmethod
-    def _complete_if_else_bounds(
+    def _if_then_else_bounds(
         cls, code: str, statement_start: int, condition_prefix_end: int
-    ) -> tuple[int, int, int, int] | None:
+    ) -> tuple[int, int, int] | None:
         condition_open = code.find("(", statement_start, condition_prefix_end)
         if condition_open < 0:
             return None
@@ -172,19 +193,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         then_close = cls._matching_delimiter(code, then_open, "{", "}")
         if then_close is None:
             return None
-        else_start = cls._next_non_space(code, then_close + 1)
-        if else_start is None or not code.startswith("else", else_start):
+        else_keyword = cls._next_non_space(code, then_close + 1)
+        if else_keyword is None or not code.startswith("else", else_keyword):
             return None
-        else_end = else_start + len("else")
+        else_end = else_keyword + len("else")
         if else_end < len(code) and (code[else_end].isalnum() or code[else_end] == "_"):
             return None
-        else_open = cls._next_non_space(code, else_end)
-        if else_open is None or code[else_open] != "{":
+        else_start = cls._next_non_space(code, else_end)
+        if else_start is None:
             return None
-        else_close = cls._matching_delimiter(code, else_open, "{", "}")
-        if else_close is None:
-            return None
-        return then_open, then_close, else_open, else_close
+        if code[else_start] == "{" or _IF.match(code, else_start) is not None:
+            return then_open, then_close, else_start
+        return None
 
     @staticmethod
     def _next_non_space(code: str, offset: int) -> int | None:
