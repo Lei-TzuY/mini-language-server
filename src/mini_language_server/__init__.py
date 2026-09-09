@@ -9,7 +9,7 @@ from .cancellation import (
 )
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
 from .documents import Document, DocumentError, DocumentStore
-from .nested_unreachable import NovaProductLanguageServer
+from .inferred_return_hover import NovaProductLanguageServer
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
 from .semantic import Reference, SemanticDatabase, SemanticError, SemanticSnapshot
 from .server import LanguageServer, ServerState
