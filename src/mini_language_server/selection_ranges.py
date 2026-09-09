@@ -1,7 +1,8 @@
-"""Exact-snapshot lexical selection ranges for Nova documents."""
+"""Exact-snapshot lexical and structural selection ranges for Nova documents."""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .cancellation import RequestCancelled, StaleRequest
@@ -10,9 +11,12 @@ from .safe_renames import NovaProductLanguageServer as _NovaProductLanguageServe
 from .server import ServerState
 from .source import Position, SourceError, SourceText, Span
 
+_CONTROL_FLOW_KEYWORD = re.compile(r"\b(?:if|while)\b")
+_ELSE_KEYWORD = re.compile(r"\belse\b")
+
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
-    """Final Nova product server with lexical exact-snapshot selection ranges."""
+    """Final Nova product server with exact-snapshot selection ranges."""
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -46,6 +50,59 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if not isinstance(text_document, dict):
             return False
         return isinstance(text_document.get("selectionRange"), dict)
+
+    @staticmethod
+    def _matching_delimiter(text: str, opening: int, left: str, right: str) -> int | None:
+        depth = 0
+        for index in range(opening, len(text)):
+            character = text[index]
+            if character == left:
+                depth += 1
+            elif character == right:
+                depth -= 1
+                if depth == 0:
+                    return index
+        return None
+
+    @classmethod
+    def _control_flow_spans(
+        cls,
+        code: str,
+        start: int,
+        end: int,
+        matching_brace: Any,
+    ) -> tuple[Span, ...]:
+        spans: set[Span] = set()
+
+        for match in _CONTROL_FLOW_KEYWORD.finditer(code, start, end):
+            cursor = match.end()
+            while cursor < end and code[cursor].isspace():
+                cursor += 1
+            if cursor >= end or code[cursor] != "(":
+                continue
+            closing_condition = cls._matching_delimiter(code, cursor, "(", ")")
+            if closing_condition is None or closing_condition >= end:
+                continue
+            cursor = closing_condition + 1
+            while cursor < end and code[cursor].isspace():
+                cursor += 1
+            if cursor >= end or code[cursor] != "{":
+                continue
+            closing = matching_brace(code, cursor)
+            if closing is not None and closing < end:
+                spans.add(Span(match.start(), closing + 1))
+
+        for match in _ELSE_KEYWORD.finditer(code, start, end):
+            cursor = match.end()
+            while cursor < end and code[cursor].isspace():
+                cursor += 1
+            if cursor >= end or code[cursor] != "{":
+                continue
+            closing = matching_brace(code, cursor)
+            if closing is not None and closing < end:
+                spans.add(Span(match.start(), closing + 1))
+
+        return tuple(sorted(spans, key=lambda span: (span.start, span.end)))
 
     def _handle_selection_range(self, request_id: Any, params: Any) -> dict[str, Any]:
         context = self._start_document_request(request_id, params)
@@ -88,18 +145,34 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 return self._current_semantic_result(semantics, request_id, [])
 
             token_spans = self._nova_token_spans(tree)
-            function_spans = tuple(
-                span
-                for _, owner in tree.declarations
-                if (span := self._nova_function_span(document.text, owner)) is not None
-            )
+            code = self.nova_adapter.code_view(document.text)
+            function_spans: list[Span] = []
+            control_flow_spans: set[Span] = set()
+            for _, owner in tree.declarations:
+                function = self._nova_function_span(document.text, owner)
+                if function is None:
+                    continue
+                function_spans.append(function)
+                opening = code.find("{", owner.end)
+                if opening < 0:
+                    continue
+                control_flow_spans.update(
+                    self._control_flow_spans(
+                        code,
+                        opening + 1,
+                        function.end - 1,
+                        self.nova_adapter._matching_brace,
+                    )
+                )
+
             document_span = Span(0, len(document.text))
             ranges = [
                 self._selection_range_for_offset(
                     source,
                     offset,
                     token_spans,
-                    function_spans,
+                    tuple(sorted(control_flow_spans, key=lambda span: (span.start, span.end))),
+                    tuple(function_spans),
                     document_span,
                 )
                 for offset in offsets
@@ -144,6 +217,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         source: SourceText,
         offset: int,
         token_spans: tuple[Span, ...],
+        control_flow_spans: tuple[Span, ...],
         function_spans: tuple[Span, ...],
         document_span: Span,
     ) -> dict[str, Any]:
@@ -154,6 +228,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         )
         if token is not None:
             parents.append(token)
+
+        containing_control_flow = sorted(
+            (
+                span
+                for span in control_flow_spans
+                if span.start <= offset < span.end
+            ),
+            key=lambda span: (span.end - span.start, -span.start),
+        )
+        for span in containing_control_flow:
+            if not parents or span != parents[-1]:
+                parents.append(span)
 
         function = next(
             (span for span in function_spans if span.start <= offset < span.end),
