@@ -66,7 +66,7 @@ def hover_value(
 def test_comparison_initializer_exposes_local_type_in_hover() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    text = "fn main(input: Int) { let value = input + 2 >= 3 value }\n"
+    text = "fn main(input: Int) { let value = input + 2 >= 3; value }\n"
     open_nova(server, uri, text)
 
     assert hover_value(server, uri, text) == "variable value: Bool"
@@ -75,7 +75,7 @@ def test_comparison_initializer_exposes_local_type_in_hover() -> None:
 def test_comparison_initializer_exposes_local_type_in_completion_detail() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    text = "fn main(input: Int) { let value = input >= 1 value }\n"
+    text = "fn main(input: Int) { let value = input >= 1; value }\n"
     open_nova(server, uri, text)
 
     offset = text.rindex("value")
@@ -97,7 +97,7 @@ def test_comparison_initializer_exposes_local_type_in_completion_detail() -> Non
 def test_comparison_initializer_exposes_local_type_in_inlay_hints() -> None:
     server = initialized_server(inlay_hints=True)
     uri = "file:///workspace/main.nova"
-    text = "fn main(input: Int) { let value = (input + 1) == 2 value }\n"
+    text = "fn main(input: Int) { let value = (input + 1) == 2; value }\n"
     open_nova(server, uri, text)
 
     response = server.handle(
@@ -123,7 +123,7 @@ def test_comparison_initializer_exposes_local_type_in_inlay_hints() -> None:
 def test_mixed_comparison_initializer_remains_conservative() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    text = "fn main(input: Int) { let value = input == true value }\n"
+    text = "fn main(input: Int) { let value = input == true; value }\n"
     open_nova(server, uri, text)
 
     assert hover_value(server, uri, text) == "variable value"
@@ -134,7 +134,7 @@ def test_cross_file_comparison_local_type_rebinds_after_change() -> None:
     helper_uri = "file:///workspace/helper.nova"
     main_uri = "file:///workspace/main.nova"
     helper = "fn source() -> Int { return 1; }\n"
-    main = "fn main() { let value = source() == 1 value }\n"
+    main = "fn main() { let value = source() == 1; value }\n"
     open_nova(server, helper_uri, helper)
     open_nova(server, main_uri, main)
 
