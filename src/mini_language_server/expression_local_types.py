@@ -1,4 +1,4 @@
-"""Exact-snapshot Nova local types from bounded initializer expressions."""
+"""Exact-snapshot Nova local types from bounded comparison initializers."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ _UNANNOTATED_INITIALIZER_PREFIX = re.compile(r"\s*=\s*")
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
-    """Final Nova product with bounded expression-derived local type knowledge."""
+    """Final Nova product with bounded comparison-derived local type knowledge."""
 
     def _local_type(
         self,
@@ -19,7 +19,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         target: Any,
         seen: frozenset[tuple[int, int]],
     ) -> str | None:
-        """Infer a local from inherited rules or one bounded exact initializer expression."""
+        """Infer inherited local types, then one exact bounded comparison initializer."""
         inherited = super()._local_type(snapshot, target, seen)
         if inherited is not None:
             return inherited
@@ -37,12 +37,20 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return None
         expression, expression_span = initializer
 
-        # Reuse the cycle-safe inference expression path rather than the public
-        # argument dispatcher: exact references stay conservative and recursive
-        # function calls retain their snapshot-bound resolving identity.
+        # Preserve the existing conservative contract for generic compound locals:
+        # this slice only promotes initializers owned by the bounded comparison layer.
+        normalized, normalized_span = self._trim_expression(expression, expression_span)
+        normalized, normalized_span = self._unwrap_expression_with_span(
+            normalized, normalized_span
+        )
+        if not self._top_level_comparison_operators(normalized):
+            return None
+
+        # Reuse the cycle-safe exact-snapshot inference path so function-call operands
+        # retain recursive identity and ambiguous/mixed comparisons stay unknown.
         return self._inference_expression_type(
             snapshot,
-            expression,
-            expression_span,
+            normalized,
+            normalized_span,
             frozenset(),
         )
