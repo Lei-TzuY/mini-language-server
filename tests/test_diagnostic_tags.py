@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
 from mini_language_server import NovaProductLanguageServer, Span
-from mini_language_server.diagnostics import Diagnostic, DiagnosticError
+from mini_language_server.diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot
 
 
 def request(method: str, request_id: int, params: dict) -> dict:
@@ -102,6 +103,33 @@ def test_unreachable_code_is_tagged_unnecessary_in_push_and_pull_protocol() -> N
     report = pull(server, uri)["result"]
     assert report["kind"] == "full"
     assert tagged_unreachable(report["items"])["tags"] == [1]
+
+
+def test_pull_result_id_changes_when_only_diagnostic_tags_change() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() { return; let value = 1; }\n")
+
+    document = server.documents.get(uri)
+    snapshot = server.diagnostics.get(uri)
+    assert document is not None
+    assert snapshot is not None
+    unreachable = next(
+        diagnostic
+        for diagnostic in snapshot.diagnostics
+        if diagnostic.code == "nova.unreachable-code"
+    )
+    untagged = DiagnosticSnapshot(
+        semantic=snapshot.semantic,
+        diagnostics=tuple(
+            replace(diagnostic, tags=()) if diagnostic is unreachable else diagnostic
+            for diagnostic in snapshot.diagnostics
+        ),
+    )
+
+    tagged_result_id = server._diagnostic_result_id(document, snapshot)
+    untagged_result_id = server._diagnostic_result_id(document, untagged)
+    assert tagged_result_id != untagged_result_id
 
 
 def test_unreachable_tag_tracks_change_close_and_reopen_lifecycle() -> None:
