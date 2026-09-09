@@ -77,6 +77,50 @@ def test_value_return_and_never_return_annotation_remain_clean() -> None:
     assert missing_returns(server, uri) == []
 
 
+def test_nested_if_return_does_not_prove_function_returns() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn value(flag: Bool) -> Int { if (flag) { return 1; } }\n"
+    open_nova(server, uri, text)
+
+    diagnostics = missing_returns(server, uri)
+    assert len(diagnostics) == 1
+    assert text[diagnostics[0].span.start : diagnostics[0].span.end] == "Int"
+
+
+def test_nested_while_return_does_not_prove_function_returns() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn value(flag: Bool) -> String { while (flag) { return \"ok\"; } }\n"
+    open_nova(server, uri, text)
+
+    assert len(missing_returns(server, uri)) == 1
+
+
+def test_top_level_value_return_after_conditional_satisfies_bounded_check() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn value(flag: Bool) -> Int { if (flag) { return 1; } return 0; }\n"
+    open_nova(server, uri, text)
+
+    assert missing_returns(server, uri) == []
+
+
+def test_nested_return_still_participates_in_return_type_validation() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = 'fn value(flag: Bool) -> Int { if (flag) { return "wrong"; } }\n'
+    open_nova(server, uri, text)
+
+    snapshot = server.diagnostics.get(uri)
+    assert snapshot is not None
+    diagnostics = snapshot.diagnostics
+    assert any(item.code == "nova.missing-return" for item in diagnostics)
+    mismatches = [item for item in diagnostics if item.code == "nova.return-type"]
+    assert len(mismatches) == 1
+    assert text[mismatches[0].span.start : mismatches[0].span.end] == '"wrong"'
+
+
 def test_comments_do_not_fake_a_value_return() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
@@ -91,7 +135,11 @@ def test_comments_do_not_fake_a_value_return() -> None:
 def test_did_change_clears_missing_return_on_new_snapshot() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    open_nova(server, uri, "fn value() -> Int {}\n")
+    open_nova(
+        server,
+        uri,
+        "fn value(flag: Bool) -> Int { if (flag) { return 1; } }\n",
+    )
     assert len(missing_returns(server, uri)) == 1
 
     server.handle(
@@ -99,7 +147,14 @@ def test_did_change_clears_missing_return_on_new_snapshot() -> None:
             "textDocument/didChange",
             {
                 "textDocument": {"uri": uri, "version": 2},
-                "contentChanges": [{"text": "fn value() -> Int { return 1; }\n"}],
+                "contentChanges": [
+                    {
+                        "text": (
+                            "fn value(flag: Bool) -> Int { "
+                            "if (flag) { return 1; } return 0; }\n"
+                        )
+                    }
+                ],
             },
         )
     )
@@ -120,7 +175,7 @@ def test_close_reopen_rebuilds_missing_return_diagnostics() -> None:
 def test_same_version_replacement_rebinds_missing_return_to_exact_semantics() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    text = "fn value() -> Int {}\n"
+    text = "fn value(flag: Bool) -> Int { if (flag) { return 1; } }\n"
     open_nova(server, uri, text)
     server.drain_notifications()
     original = server.workspace_symbols.get(uri)

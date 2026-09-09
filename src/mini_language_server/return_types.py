@@ -75,7 +75,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if closing is None:
                 continue
             body_code = code[opening + 1 : closing]
-            has_value_return = False
+            has_top_level_value_return = False
             for statement in _RETURN.finditer(body_code):
                 keyword_end = opening + 1 + statement.end()
                 boundary = len(text)
@@ -89,7 +89,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 expression = raw.strip()
                 if not expression:
                     continue
-                has_value_return = True
+                if self._brace_depth_before(body_code, statement.start()) == 0:
+                    has_top_level_value_return = True
                 start = keyword_end + leading
                 expression_span = Span(start, start + len(expression))
                 actual = self._return_expression_type(
@@ -107,7 +108,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         source="nova",
                     )
                 )
-            if expected in _VALUE_RETURN_TYPES and not has_value_return:
+            if expected in _VALUE_RETURN_TYPES and not has_top_level_value_return:
                 diagnostics.append(
                     Diagnostic(
                         span=Span(function.start("type"), function.end("type")),
@@ -120,6 +121,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     )
                 )
         return tuple(diagnostics)
+
+    @staticmethod
+    def _brace_depth_before(code: str, offset: int) -> int:
+        """Return structural brace depth before one trivia-masked body offset."""
+        depth = 0
+        for character in code[:offset]:
+            if character == "{":
+                depth += 1
+            elif character == "}" and depth > 0:
+                depth -= 1
+        return depth
 
     def _return_expression_type(
         self, semantic: SemanticSnapshot, expression: str, span: Span
