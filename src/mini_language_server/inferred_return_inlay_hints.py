@@ -31,10 +31,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if not isinstance(tree, NovaFunctionSyntax):
             return hints
 
+        code = self.nova_adapter.code_view(source.text)
         for symbol in semantics.symbols.symbols:
             if symbol.kind != "function":
                 continue
-            if not (start_offset <= symbol.span.start < end_offset):
+
+            opening = code.find("(", symbol.span.end)
+            if opening < 0 or code[symbol.span.end:opening].strip():
+                continue
+            closing = self._matching_paren(code, opening)
+            if closing is None:
+                continue
+            insertion_offset = closing + 1
+            if not (start_offset <= insertion_offset < end_offset):
                 continue
 
             declarations = tuple(
@@ -55,15 +64,22 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if inferred is None:
                 continue
 
+            insertion_span = Span(insertion_offset, insertion_offset)
+            insertion_range = self._range(source, insertion_span)
+            annotation = f" -> {inferred}"
             hints.append(
                 (
-                    symbol.span.end,
+                    insertion_offset,
                     {
-                        "position": self._range(
-                            source, Span(symbol.span.end, symbol.span.end)
-                        )["start"],
-                        "label": f" -> {inferred}",
+                        "position": insertion_range["start"],
+                        "label": annotation,
                         "kind": 1,
+                        "textEdits": [
+                            {
+                                "range": insertion_range,
+                                "newText": annotation,
+                            }
+                        ],
                         "paddingLeft": True,
                     },
                 )
