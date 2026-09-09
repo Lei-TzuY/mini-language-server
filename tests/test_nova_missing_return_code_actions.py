@@ -105,6 +105,26 @@ def test_missing_return_quick_fixes_insert_bounded_default_literals() -> None:
         assert edit["newText"] == f" return {replacement}; "
 
 
+def test_nested_conditional_return_still_offers_top_level_return_quick_fix() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn target(flag: Bool) -> Int { if (flag) { return 1; } }\n"
+    open_nova(server, uri, text)
+    type_start = text.index("Int")
+
+    actions = code_action(server, uri, 2, 0, type_start, type_start + 3)["result"]
+    assert len(actions) == 1
+    action = actions[0]
+    assert action["title"] == "Add Int return"
+    edit = action["edit"]["changes"][uri][0]
+    assert edit["newText"] == " return 0; "
+    closing = text.rindex("}")
+    assert edit["range"] == {
+        "start": {"line": 0, "character": closing},
+        "end": {"line": 0, "character": closing},
+    }
+
+
 def test_missing_return_quick_fix_preserves_multiline_closing_indent() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
