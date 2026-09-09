@@ -17,6 +17,7 @@ _TYPED_FUNCTION = re.compile(
     rf"\bfn\s+(?P<name>{_IDENTIFIER})\s*\([^)]*\)\s*->\s*(?P<type>{_IDENTIFIER}|!)\s*\{{"
 )
 _RETURN = re.compile(r"\breturn\b")
+_IF = re.compile(r"\bif\s*\(")
 _INTEGER = re.compile(r"-?[0-9]+")
 _CALL_EXPRESSION = re.compile(rf"\s*(?P<name>{_IDENTIFIER})\s*\(")
 _RETURN_ANNOTATION = re.compile(rf"->\s*(?P<type>{_IDENTIFIER}|!)\s*$")
@@ -74,8 +75,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             closing = self.nova_adapter._matching_brace(text, opening)
             if closing is None:
                 continue
+            body_text = text[opening + 1 : closing]
             body_code = code[opening + 1 : closing]
-            has_top_level_value_return = False
+            guarantees_value_return = self._body_guarantees_value_return(
+                body_code, body_text
+            )
             for statement in _RETURN.finditer(body_code):
                 keyword_end = opening + 1 + statement.end()
                 boundary = len(text)
@@ -89,8 +93,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 expression = raw.strip()
                 if not expression:
                     continue
-                if self._brace_depth_before(body_code, statement.start()) == 0:
-                    has_top_level_value_return = True
                 start = keyword_end + leading
                 expression_span = Span(start, start + len(expression))
                 actual = self._return_expression_type(
@@ -108,7 +110,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         source="nova",
                     )
                 )
-            if expected in _VALUE_RETURN_TYPES and not has_top_level_value_return:
+            if expected in _VALUE_RETURN_TYPES and not guarantees_value_return:
                 diagnostics.append(
                     Diagnostic(
                         span=Span(function.start("type"), function.end("type")),
@@ -121,6 +123,89 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     )
                 )
         return tuple(diagnostics)
+
+    def _body_guarantees_value_return(self, code: str, text: str) -> bool:
+        """Prove a bounded body returns via a top-level return or complete if/else."""
+        for statement in _RETURN.finditer(code):
+            if self._brace_depth_before(code, statement.start()) != 0:
+                continue
+            if self._return_statement_has_value(text, statement.end()):
+                return True
+
+        for statement in _IF.finditer(code):
+            if self._brace_depth_before(code, statement.start()) != 0:
+                continue
+            bounds = self._complete_if_else_bounds(code, statement.start(), statement.end())
+            if bounds is None:
+                continue
+            then_open, then_close, else_open, else_close = bounds
+            if self._body_guarantees_value_return(
+                code[then_open + 1 : then_close], text[then_open + 1 : then_close]
+            ) and self._body_guarantees_value_return(
+                code[else_open + 1 : else_close], text[else_open + 1 : else_close]
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _return_statement_has_value(text: str, keyword_end: int) -> bool:
+        boundary = len(text)
+        for delimiter in (";", "\n", "\r"):
+            found = text.find(delimiter, keyword_end)
+            if found >= 0:
+                boundary = min(boundary, found)
+        return bool(text[keyword_end:boundary].strip())
+
+    @classmethod
+    def _complete_if_else_bounds(
+        cls, code: str, statement_start: int, condition_prefix_end: int
+    ) -> tuple[int, int, int, int] | None:
+        condition_open = code.find("(", statement_start, condition_prefix_end)
+        if condition_open < 0:
+            return None
+        condition_close = cls._matching_delimiter(code, condition_open, "(", ")")
+        if condition_close is None:
+            return None
+        then_open = cls._next_non_space(code, condition_close + 1)
+        if then_open is None or code[then_open] != "{":
+            return None
+        then_close = cls._matching_delimiter(code, then_open, "{", "}")
+        if then_close is None:
+            return None
+        else_start = cls._next_non_space(code, then_close + 1)
+        if else_start is None or not code.startswith("else", else_start):
+            return None
+        else_end = else_start + len("else")
+        if else_end < len(code) and (code[else_end].isalnum() or code[else_end] == "_"):
+            return None
+        else_open = cls._next_non_space(code, else_end)
+        if else_open is None or code[else_open] != "{":
+            return None
+        else_close = cls._matching_delimiter(code, else_open, "{", "}")
+        if else_close is None:
+            return None
+        return then_open, then_close, else_open, else_close
+
+    @staticmethod
+    def _next_non_space(code: str, offset: int) -> int | None:
+        while offset < len(code) and code[offset].isspace():
+            offset += 1
+        return offset if offset < len(code) else None
+
+    @staticmethod
+    def _matching_delimiter(
+        code: str, opening: int, open_character: str, close_character: str
+    ) -> int | None:
+        depth = 0
+        for offset in range(opening, len(code)):
+            character = code[offset]
+            if character == open_character:
+                depth += 1
+            elif character == close_character:
+                depth -= 1
+                if depth == 0:
+                    return offset
+        return None
 
     @staticmethod
     def _brace_depth_before(code: str, offset: int) -> int:

@@ -88,6 +88,43 @@ def test_nested_if_return_does_not_prove_function_returns() -> None:
     assert text[diagnostics[0].span.start : diagnostics[0].span.end] == "Int"
 
 
+def test_complete_if_else_proves_function_returns() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn value(flag: Bool) -> Int { "
+        "if (flag) { return 1; } else { return 0; } }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert missing_returns(server, uri) == []
+
+
+def test_incomplete_if_else_remains_conservative() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn value(flag: Bool) -> Int { "
+        "if (flag) { return 1; } else { let fallback = 0; } }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert len(missing_returns(server, uri)) == 1
+
+
+def test_nested_complete_if_else_branches_prove_outer_branch() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn value(left: Bool, right: Bool) -> Int { "
+        "if (left) { if (right) { return 1; } else { return 2; } } "
+        "else { return 0; } }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert missing_returns(server, uri) == []
+
+
 def test_nested_while_return_does_not_prove_function_returns() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
@@ -132,7 +169,7 @@ def test_comments_do_not_fake_a_value_return() -> None:
     assert len(missing_returns(server, uri)) == 1
 
 
-def test_did_change_clears_missing_return_on_new_snapshot() -> None:
+def test_did_change_clears_missing_return_on_complete_if_else_snapshot() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
     open_nova(
@@ -150,8 +187,8 @@ def test_did_change_clears_missing_return_on_new_snapshot() -> None:
                 "contentChanges": [
                     {
                         "text": (
-                            "fn value(flag: Bool) -> Int { "
-                            "if (flag) { return 1; } return 0; }\n"
+                            "fn value(flag: Bool) -> Int { if (flag) { return 1; } "
+                            "else { return 0; } }\n"
                         )
                     }
                 ],
@@ -168,7 +205,12 @@ def test_close_reopen_rebuilds_missing_return_diagnostics() -> None:
     assert len(missing_returns(server, uri)) == 1
 
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
-    open_nova(server, uri, "fn value() -> Int { return 1; }\n", version=1)
+    open_nova(
+        server,
+        uri,
+        "fn value(flag: Bool) -> Int { if (flag) { return 1; } else { return 0; } }\n",
+        version=1,
+    )
     assert missing_returns(server, uri) == []
 
 
