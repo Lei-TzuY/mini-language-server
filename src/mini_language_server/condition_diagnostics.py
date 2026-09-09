@@ -8,15 +8,15 @@ from dataclasses import replace
 
 from .diagnostics import Diagnostic
 from .expression_local_types import NovaProductLanguageServer as _NovaProductLanguageServer
+from .return_types import ReturnTypeNovaFunctionAdapter
 from .semantic import SemanticSnapshot
 from .source import Span
-from .typed_local_annotations import TypedLocalNovaFunctionAdapter
 
 _IF_CONDITION = re.compile(r"\bif\s*\(")
 _CONDITION_TYPE_DIAGNOSTIC = "nova.condition-type"
 
 
-class ControlFlowNovaFunctionAdapter(TypedLocalNovaFunctionAdapter):
+class ControlFlowNovaFunctionAdapter(ReturnTypeNovaFunctionAdapter):
     """Recognize bounded control-flow forms without treating them as function calls."""
 
     @classmethod
