@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any
 
-from .diagnostics import Diagnostic
+from .diagnostics import DIAGNOSTIC_TAG_VALUES, Diagnostic
 from .expression_local_types import NovaProductLanguageServer as _NovaProductLanguageServer
 from .return_types import ReturnTypeNovaFunctionAdapter
 from .semantic import SemanticSnapshot
@@ -46,6 +46,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def __init__(self) -> None:
         super().__init__()
         self.nova_adapter = ControlFlowNovaFunctionAdapter()
+
+    def _diagnostic(self, source: Any, diagnostic: Diagnostic) -> dict[str, Any]:
+        rendered = super()._diagnostic(source, diagnostic)
+        if diagnostic.tags:
+            rendered["tags"] = [DIAGNOSTIC_TAG_VALUES[tag] for tag in diagnostic.tags]
+        return rendered
 
     def publish_diagnostics(
         self, semantic: SemanticSnapshot, diagnostics: Iterable[Diagnostic]
@@ -202,6 +208,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     message="unreachable code after guaranteed return",
                     code=_UNREACHABLE_CODE_DIAGNOSTIC,
                     source="nova",
+                    tags=("unnecessary",),
                 )
             )
         return tuple(diagnostics)
