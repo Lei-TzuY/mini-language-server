@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import replace
+from typing import Any
 
 from .diagnostics import Diagnostic
 from .expression_local_types import NovaProductLanguageServer as _NovaProductLanguageServer
@@ -51,6 +52,48 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             materialized += self._nova_condition_type_diagnostics(semantic)
         return super().publish_diagnostics(semantic, materialized)
 
+    def _nova_code_actions(
+        self,
+        uri: str,
+        document: Any,
+        source: Any,
+        diagnostics: tuple[Diagnostic, ...],
+        start_offset: int,
+        end_offset: int,
+    ) -> list[dict[str, Any]]:
+        actions = super()._nova_code_actions(
+            uri, document, source, diagnostics, start_offset, end_offset
+        )
+        semantic = self.semantics.get(uri)
+        if semantic is None or semantic.symbols.syntax.document is not document:
+            return actions
+
+        for diagnostic in diagnostics:
+            if diagnostic.code != _CONDITION_TYPE_DIAGNOSTIC:
+                continue
+            if not self._condition_diagnostic_overlaps(
+                diagnostic, start_offset=start_offset, end_offset=end_offset
+            ):
+                continue
+            actions.append(
+                {
+                    "title": "Replace condition with Bool literal",
+                    "kind": "quickfix",
+                    "diagnostics": [self._diagnostic(source, diagnostic)],
+                    "edit": {
+                        "changes": {
+                            uri: [
+                                {
+                                    "range": self._range(source, diagnostic.span),
+                                    "newText": "false",
+                                }
+                            ]
+                        }
+                    },
+                }
+            )
+        return actions
+
     def _nova_condition_type_diagnostics(
         self, semantic: SemanticSnapshot
     ) -> tuple[Diagnostic, ...]:
@@ -82,3 +125,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 )
             )
         return tuple(diagnostics)
+
+    @staticmethod
+    def _condition_diagnostic_overlaps(
+        diagnostic: Diagnostic, *, start_offset: int, end_offset: int
+    ) -> bool:
+        if start_offset == end_offset:
+            return diagnostic.span.start <= start_offset <= diagnostic.span.end
+        return diagnostic.span.start < end_offset and start_offset < diagnostic.span.end
