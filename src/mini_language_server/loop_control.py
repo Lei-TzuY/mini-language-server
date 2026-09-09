@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any
 
-from .condition_diagnostics import ControlFlowNovaFunctionAdapter, _FUNCTION
+from .condition_diagnostics import _FUNCTION, ControlFlowNovaFunctionAdapter
 from .diagnostics import Diagnostic
 from .inferred_return_call_hierarchy import (
     NovaProductLanguageServer as _NovaProductLanguageServer,
