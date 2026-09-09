@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .comparison_expression_types import NovaProductLanguageServer as _NovaProductLanguageServer
+from .comparison_expression_types import (
+    NovaProductLanguageServer as _NovaProductLanguageServer,
+)
 
 _UNANNOTATED_INITIALIZER_PREFIX = re.compile(r"\s*=\s*")
 
@@ -19,7 +21,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         target: Any,
         seen: frozenset[tuple[int, int]],
     ) -> str | None:
-        """Infer inherited local types, then one exact bounded comparison initializer."""
+        """Infer inherited local types, then one bounded comparison initializer."""
         inherited = super()._local_type(snapshot, target, seen)
         if inherited is not None:
             return inherited
@@ -38,16 +40,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         expression, expression_span = initializer
 
         # Preserve the existing conservative contract for generic compound locals:
-        # this slice only promotes initializers owned by the bounded comparison layer.
-        normalized, normalized_span = self._trim_expression(expression, expression_span)
+        # this slice only promotes initializers owned by the comparison layer.
+        normalized, normalized_span = self._trim_expression(
+            expression, expression_span
+        )
         normalized, normalized_span = self._unwrap_expression_with_span(
             normalized, normalized_span
         )
         if not self._top_level_comparison_operators(normalized):
             return None
 
-        # Reuse the cycle-safe exact-snapshot inference path so function-call operands
-        # retain recursive identity and ambiguous/mixed comparisons stay unknown.
+        # Reuse the cycle-safe exact-snapshot inference path so call operands retain
+        # recursive identity and ambiguous/mixed comparisons stay unknown.
         return self._inference_expression_type(
             snapshot,
             normalized,
