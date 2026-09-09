@@ -18,17 +18,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     ) -> dict[str, Any] | None:
         parsed = self._semantic_query(params)
         if parsed is None:
-            return None
+            return super()._handle_workspace_hover(request_id, params)
         semantics, offset, source = parsed
         if semantics is None:
-            return None
+            return super()._handle_workspace_hover(request_id, params)
         tree = semantics.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
-            return None
+            return super()._handle_workspace_hover(request_id, params)
 
         target = semantics.definition_at(offset)
         if target is not None and target.kind != "function":
-            return None
+            return super()._handle_workspace_hover(request_id, params)
 
         call = next(
             (
@@ -44,7 +44,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         elif call is not None:
             name, hover_span = call
         else:
-            return None
+            return super()._handle_workspace_hover(request_id, params)
 
         declarations = tuple(
             declaration
