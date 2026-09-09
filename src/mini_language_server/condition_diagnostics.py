@@ -1,4 +1,4 @@
-"""Bounded exact-snapshot diagnostics for Nova if conditions."""
+"""Bounded exact-snapshot diagnostics for Nova control-flow conditions."""
 
 from __future__ import annotations
 
@@ -12,8 +12,9 @@ from .return_types import ReturnTypeNovaFunctionAdapter
 from .semantic import SemanticSnapshot
 from .source import Span
 
-_IF_CONDITION = re.compile(r"\bif\s*\(")
+_CONTROL_FLOW_CONDITION = re.compile(r"\b(?:if|while)\s*\(")
 _CONDITION_TYPE_DIAGNOSTIC = "nova.condition-type"
+_CONTROL_FLOW_NAMES = frozenset({"if", "while"})
 
 
 class ControlFlowNovaFunctionAdapter(ReturnTypeNovaFunctionAdapter):
@@ -22,14 +23,16 @@ class ControlFlowNovaFunctionAdapter(ReturnTypeNovaFunctionAdapter):
     @classmethod
     def parse(cls, text: str):
         tree = super().parse(text)
-        calls = tuple((name, span) for name, span in tree.calls if name != "if")
+        calls = tuple(
+            (name, span) for name, span in tree.calls if name not in _CONTROL_FLOW_NAMES
+        )
         if calls == tree.calls:
             return tree
         return replace(tree, calls=calls)
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
-    """Final Nova product with Bool validation for bounded ``if`` conditions."""
+    """Final Nova product with Bool validation for bounded control-flow conditions."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -54,7 +57,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         text = semantic.symbols.syntax.document.text
         code = self.nova_adapter.code_view(text)
         diagnostics: list[Diagnostic] = []
-        for match in _IF_CONDITION.finditer(code):
+        for match in _CONTROL_FLOW_CONDITION.finditer(code):
             opening = match.end() - 1
             closing = self._matching_paren(code, opening)
             if closing is None:
