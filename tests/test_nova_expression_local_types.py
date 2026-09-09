@@ -14,11 +14,18 @@ def notify(method: str, params: dict) -> dict:
 def initialized_server(*, inlay_hints: bool = False) -> NovaProductLanguageServer:
     server = NovaProductLanguageServer()
     capabilities = {"textDocument": {"inlayHint": {}}} if inlay_hints else {}
-    assert server.handle(request("initialize", 1, {"capabilities": capabilities})) is not None
+    result = server.handle(request("initialize", 1, {"capabilities": capabilities}))
+    assert result is not None
     return server
 
 
-def open_nova(server: NovaProductLanguageServer, uri: str, text: str, *, version: int = 1) -> None:
+def open_nova(
+    server: NovaProductLanguageServer,
+    uri: str,
+    text: str,
+    *,
+    version: int = 1,
+) -> None:
     server.handle(
         notify(
             "textDocument/didOpen",
@@ -34,13 +41,22 @@ def open_nova(server: NovaProductLanguageServer, uri: str, text: str, *, version
     )
 
 
-def hover_value(server: NovaProductLanguageServer, uri: str, text: str, *, request_id: int = 2) -> str:
+def hover_value(
+    server: NovaProductLanguageServer,
+    uri: str,
+    text: str,
+    *,
+    request_id: int = 2,
+) -> str:
     offset = text.rindex("value")
     response = server.handle(
         request(
             "textDocument/hover",
             request_id,
-            {"textDocument": {"uri": uri}, "position": {"line": 0, "character": offset}},
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": offset},
+            },
         )
     )
     assert response is not None
@@ -67,7 +83,10 @@ def test_comparison_initializer_exposes_local_type_in_completion_detail() -> Non
         request(
             "textDocument/completion",
             3,
-            {"textDocument": {"uri": uri}, "position": {"line": 0, "character": offset}},
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": offset},
+            },
         )
     )
     assert response is not None
@@ -95,7 +114,9 @@ def test_comparison_initializer_exposes_local_type_in_inlay_hints() -> None:
         )
     )
     assert response is not None
-    labels = [item["label"] for item in response["result"] if item.get("kind") == 1]
+    labels = [
+        item["label"] for item in response["result"] if item.get("kind") == 1
+    ]
     assert labels == [": Bool"]
 
 
