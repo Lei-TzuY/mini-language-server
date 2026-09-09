@@ -39,7 +39,12 @@ def open_nova(server: NovaProductLanguageServer, uri: str, text: str) -> None:
     )
 
 
-def prepare(server: NovaProductLanguageServer, uri: str, character: int, request_id: int = 2) -> dict:
+def prepare(
+    server: NovaProductLanguageServer,
+    uri: str,
+    character: int,
+    request_id: int = 2,
+) -> dict:
     result = server.handle(
         request(
             "textDocument/prepareCallHierarchy",
@@ -66,12 +71,16 @@ def test_call_hierarchy_surfaces_cross_file_inferred_return_details() -> None:
     target = prepare(server, library_uri, 4)["result"][0]
     assert target["detail"] == "fn target() -> Int"
 
-    incoming = server.handle(request("callHierarchy/incomingCalls", 3, {"item": target}))
+    incoming = server.handle(
+        request("callHierarchy/incomingCalls", 3, {"item": target})
+    )
     assert incoming is not None
     assert incoming["result"][0]["from"]["detail"] == "fn caller() -> Int"
 
     caller = prepare(server, caller_uri, 4, 4)["result"][0]
-    outgoing = server.handle(request("callHierarchy/outgoingCalls", 5, {"item": caller}))
+    outgoing = server.handle(
+        request("callHierarchy/outgoingCalls", 5, {"item": caller})
+    )
     assert outgoing is not None
     assert outgoing["result"][0]["to"]["detail"] == "fn target() -> Int"
 
@@ -81,12 +90,22 @@ def test_call_hierarchy_preserves_explicit_and_ambiguous_results() -> None:
     initialize(explicit)
     uri = "file:///workspace/explicit.nova"
     open_nova(explicit, uri, 'fn target() -> String { return "x"; }\n')
-    assert prepare(explicit, uri, 4)["result"][0]["detail"] == "fn target() -> String"
+    assert prepare(explicit, uri, 4)["result"][0]["detail"] == (
+        "fn target() -> String"
+    )
 
     ambiguous = NovaProductLanguageServer()
     initialize(ambiguous)
-    open_nova(ambiguous, "file:///workspace/a.nova", "fn target() { return 1; }\n")
-    open_nova(ambiguous, "file:///workspace/b.nova", "fn target() { return 1; }\n")
+    open_nova(
+        ambiguous,
+        "file:///workspace/a.nova",
+        "fn target() { return 1; }\n",
+    )
+    open_nova(
+        ambiguous,
+        "file:///workspace/b.nova",
+        "fn target() { return 1; }\n",
+    )
     caller_uri = "file:///workspace/main.nova"
     text = "fn caller() { return target(); }\n"
     open_nova(ambiguous, caller_uri, text)
@@ -109,13 +128,19 @@ def test_inferred_call_hierarchy_recomputes_across_change_close_and_reopen() -> 
             },
         )
     )
-    assert prepare(server, uri, 4, 3)["result"][0]["detail"] == "fn target() -> String"
+    assert prepare(server, uri, 4, 3)["result"][0]["detail"] == (
+        "fn target() -> String"
+    )
 
-    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
+    server.handle(
+        notify("textDocument/didClose", {"textDocument": {"uri": uri}})
+    )
     assert prepare(server, uri, 4, 4)["result"] == []
 
     open_nova(server, uri, "fn target() { return true; }\n")
-    assert prepare(server, uri, 4, 5)["result"][0]["detail"] == "fn target() -> Bool"
+    assert prepare(server, uri, 4, 5)["result"][0]["detail"] == (
+        "fn target() -> Bool"
+    )
 
 
 def test_inferred_call_hierarchy_suppresses_same_version_workspace_replacement() -> None:
