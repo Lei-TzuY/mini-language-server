@@ -70,3 +70,58 @@ def test_completion_keeps_ambiguous_function_detail_conservative() -> None:
 
     details = completion_details(server, main_uri)
     assert details["helper"] == "function"
+
+
+def test_completion_surfaces_conservative_inferred_return_types() -> None:
+    server = NovaProductLanguageServer()
+    assert server.handle(request("initialize", 1, {"capabilities": {}})) is not None
+    main_uri = "file:///workspace/main.nova"
+    open_nova(server, "file:///workspace/int.nova", "fn integer() { return 1; }\n")
+    open_nova(server, "file:///workspace/string.nova", 'fn text() { return "x"; }\n')
+    open_nova(server, main_uri, "fn main() { return true; }\n")
+
+    details = completion_details(server, main_uri)
+    assert details["integer"] == "fn integer() -> Int"
+    assert details["text"] == "fn text() -> String"
+    assert details["main"] == "fn main() -> Bool"
+
+
+def test_completion_preserves_explicit_and_ambiguous_return_details() -> None:
+    server = NovaProductLanguageServer()
+    assert server.handle(request("initialize", 1, {"capabilities": {}})) is not None
+    main_uri = "file:///workspace/main.nova"
+    open_nova(server, "file:///workspace/explicit.nova", "fn exact() -> Int { return 1; }\n")
+    open_nova(server, "file:///workspace/a.nova", "fn duplicate() { return 1; }\n")
+    open_nova(server, "file:///workspace/b.nova", "fn duplicate() { return 1; }\n")
+    open_nova(server, main_uri, "fn main() { }\n")
+
+    details = completion_details(server, main_uri)
+    assert details["exact"] == "fn exact() -> Int"
+    assert details["duplicate"] == "function"
+
+
+def test_inferred_completion_recomputes_across_change_close_and_reopen() -> None:
+    server = NovaProductLanguageServer()
+    assert server.handle(request("initialize", 1, {"capabilities": {}})) is not None
+    helper_uri = "file:///workspace/helper.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(server, helper_uri, "fn helper() { return 1; }\n")
+    open_nova(server, main_uri, "fn main() { }\n")
+    assert completion_details(server, main_uri)["helper"] == "fn helper() -> Int"
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": helper_uri, "version": 2},
+                "contentChanges": [{"text": 'fn helper() { return "x"; }\n'}],
+            },
+        )
+    )
+    assert completion_details(server, main_uri)["helper"] == "fn helper() -> String"
+
+    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": helper_uri}}))
+    assert "helper" not in completion_details(server, main_uri)
+
+    open_nova(server, helper_uri, "fn helper() { return true; }\n")
+    assert completion_details(server, main_uri)["helper"] == "fn helper() -> Bool"
