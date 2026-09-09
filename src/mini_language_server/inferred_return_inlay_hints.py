@@ -55,15 +55,22 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if inferred is None:
                 continue
 
+            insertion_span = Span(symbol.span.end, symbol.span.end)
+            insertion_range = self._range(source, insertion_span)
+            annotation = f" -> {inferred}"
             hints.append(
                 (
                     symbol.span.end,
                     {
-                        "position": self._range(
-                            source, Span(symbol.span.end, symbol.span.end)
-                        )["start"],
-                        "label": f" -> {inferred}",
+                        "position": insertion_range["start"],
+                        "label": annotation,
                         "kind": 1,
+                        "textEdits": [
+                            {
+                                "range": insertion_range,
+                                "newText": annotation,
+                            }
+                        ],
                         "paddingLeft": True,
                     },
                 )
