@@ -117,7 +117,7 @@ def test_nested_conditional_return_still_offers_top_level_return_quick_fix() -> 
     action = actions[0]
     assert action["title"] == "Add Int return"
     edit = action["edit"]["changes"][uri][0]
-    assert edit["newText"] == " return 0; "
+    assert edit["newText"] == "return 0;"
     closing = text.rindex("}")
     assert edit["range"] == {
         "start": {"line": 0, "character": closing},
