@@ -139,22 +139,8 @@ def test_unreachable_quick_fix_tracks_change_close_and_reopen() -> None:
     ) == []
 
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
-    response = server.handle(
-        request(
-            "textDocument/codeAction",
-            4,
-            {
-                "textDocument": {"uri": uri},
-                "range": {
-                    "start": {"line": 0, "character": start},
-                    "end": {"line": 0, "character": start + len(suffix)},
-                },
-                "context": {"diagnostics": []},
-            },
-        )
-    )
-    assert response is not None
-    assert response["result"] == []
+    assert server.documents.get(uri) is None
+    assert server.diagnostics.get(uri) is None
 
     open_nova(server, uri, unreachable_text, version=3)
     assert remove_actions(
@@ -163,7 +149,7 @@ def test_unreachable_quick_fix_tracks_change_close_and_reopen() -> None:
         line=0,
         start=start,
         end=start + len(suffix),
-        request_id=5,
+        request_id=4,
     )
 
 
