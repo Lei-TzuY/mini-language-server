@@ -204,6 +204,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     diagnostic.message,
                     diagnostic.code or "",
                     diagnostic.source or "",
+                    *diagnostic.tags,
                 ):
                     digest.update(b"\0")
                     digest.update(value.encode("utf-8"))
