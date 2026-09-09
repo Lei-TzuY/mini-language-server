@@ -73,7 +73,7 @@ def test_inferred_return_hint_surfaces_bounded_type_only_for_unannotated_functio
     uri = "file:///workspace/main.nova"
     text = "fn inferred() { return 1 } fn explicit() -> Int { return 1 }\n"
     open_nova(server, uri, text)
-    insertion_character = text.index("inferred") + len("inferred")
+    insertion_character = text.index(")") + 1
 
     assert return_hints(hints(server, uri, text)) == [
         {
