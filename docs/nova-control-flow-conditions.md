@@ -6,4 +6,6 @@ For an exact current semantic/workspace snapshot, each condition expression is e
 
 Condition typing composes existing literal, exact semantic reference, uniquely resolved function-result, integer arithmetic, comparison, and logical-expression knowledge. Cross-file function results therefore invalidate and rebind with the same workspace snapshot rules as the existing diagnostics pipeline across document changes and close/reopen transitions. Same-version semantic reanalysis also replaces the derived diagnostic snapshot and binds it to the new exact semantic parent identity rather than relying on the numeric version alone.
 
-Structural scans run on the Nova trivia-masked code view while diagnostic spans remain anchored to the original source text, so `if (...)` or `while (...)` text inside quoted strings or comments does not create control-flow diagnostics.
+When the exact current diagnostic snapshot contains a `nova.condition-type` mismatch, the Nova product exposes a focused quick fix that replaces only the diagnosed condition expression with the Bool literal `false`. The action is suppressed as soon as workspace reanalysis removes the mismatch, so stale cross-file type knowledge cannot keep publishing an obsolete repair.
+
+Structural scans run on the Nova trivia-masked code view while diagnostic and quick-fix spans remain anchored to the original source text, so `if (...)` or `while (...)` text inside quoted strings or comments does not create control-flow diagnostics or edits.
