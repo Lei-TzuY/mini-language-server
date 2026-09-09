@@ -1,7 +1,8 @@
-"""Exact-snapshot Nova function folding ranges."""
+"""Exact-snapshot Nova structural folding ranges."""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .cancellation import RequestCancelled, StaleRequest
@@ -10,9 +11,12 @@ from .server import ServerState
 from .source import SourceText
 from .typed_local_arguments import NovaProductLanguageServer as _NovaProductLanguageServer
 
+_CONTROL_FLOW_KEYWORD = re.compile(r"\b(?:if|while)\b")
+_ELSE_KEYWORD = re.compile(r"\belse\b")
+
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
-    """Final Nova product server with exact-snapshot function folding ranges."""
+    """Final Nova product server with exact-snapshot structural folding ranges."""
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -47,6 +51,47 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return False
         return isinstance(text_document.get("foldingRange"), dict)
 
+    @staticmethod
+    def _matching_delimiter(text: str, opening: int, left: str, right: str) -> int | None:
+        depth = 0
+        for index in range(opening, len(text)):
+            character = text[index]
+            if character == left:
+                depth += 1
+            elif character == right:
+                depth -= 1
+                if depth == 0:
+                    return index
+        return None
+
+    @classmethod
+    def _control_flow_openings(cls, code: str, start: int, end: int) -> tuple[int, ...]:
+        openings: set[int] = set()
+
+        for match in _CONTROL_FLOW_KEYWORD.finditer(code, start, end):
+            cursor = match.end()
+            while cursor < end and code[cursor].isspace():
+                cursor += 1
+            if cursor >= end or code[cursor] != "(":
+                continue
+            closing_condition = cls._matching_delimiter(code, cursor, "(", ")")
+            if closing_condition is None or closing_condition >= end:
+                continue
+            cursor = closing_condition + 1
+            while cursor < end and code[cursor].isspace():
+                cursor += 1
+            if cursor < end and code[cursor] == "{":
+                openings.add(cursor)
+
+        for match in _ELSE_KEYWORD.finditer(code, start, end):
+            cursor = match.end()
+            while cursor < end and code[cursor].isspace():
+                cursor += 1
+            if cursor < end and code[cursor] == "{":
+                openings.add(cursor)
+
+        return tuple(sorted(openings))
+
     def _handle_folding_range(self, request_id: Any, params: Any) -> dict[str, Any]:
         context = self._start_document_request(request_id, params)
         if context is None:
@@ -69,21 +114,36 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 return self._current_semantic_result(semantics, request_id, [])
 
             source = SourceText(document.text)
-            ranges: list[dict[str, int]] = []
+            code = self.nova_adapter.code_view(document.text)
+            line_ranges: set[tuple[int, int]] = set()
+
+            def add_block(opening: int, closing: int) -> None:
+                start_line = source.position_at(opening).line
+                closing_line = source.position_at(closing).line
+                if closing_line > start_line:
+                    line_ranges.add((start_line, closing_line - 1))
+
             for _, owner in tree.declarations:
-                opening = document.text.find("{", owner.end)
+                opening = code.find("{", owner.end)
                 if opening < 0:
                     continue
                 closing = self.nova_adapter._matching_brace(document.text, opening)
                 if closing is None:
                     continue
-                start_line = source.position_at(opening).line
-                closing_line = source.position_at(closing).line
-                if closing_line <= start_line:
-                    continue
-                ranges.append({"startLine": start_line, "endLine": closing_line - 1})
+                add_block(opening, closing)
 
-            ranges.sort(key=lambda item: (item["startLine"], item["endLine"]))
+                for control_opening in self._control_flow_openings(code, opening + 1, closing):
+                    control_closing = self.nova_adapter._matching_brace(
+                        document.text, control_opening
+                    )
+                    if control_closing is None or control_closing > closing:
+                        continue
+                    add_block(control_opening, control_closing)
+
+            ranges = [
+                {"startLine": start_line, "endLine": end_line}
+                for start_line, end_line in sorted(line_ranges)
+            ]
             self.requests.checkpoint(context)
             return self._current_semantic_result(semantics, request_id, ranges)
         except RequestCancelled:

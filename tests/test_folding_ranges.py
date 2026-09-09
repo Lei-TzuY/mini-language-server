@@ -78,6 +78,100 @@ def test_folding_ranges_cover_complete_multiline_nova_functions_deterministicall
     }
 
 
+def test_folding_ranges_cover_nested_if_else_if_else_and_while_blocks() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    open_document(
+        server,
+        uri,
+        (
+            "fn classify(flag: Bool) {\n"
+            "  if (flag) {\n"
+            "    while (flag) {\n"
+            "      let value = 1\n"
+            "    }\n"
+            "  } else if (!flag) {\n"
+            "    let value = 2\n"
+            "  } else {\n"
+            "    let value = 3\n"
+            "  }\n"
+            "}\n"
+        ),
+    )
+
+    assert folding_ranges(server, uri)["result"] == [
+        {"startLine": 0, "endLine": 9},
+        {"startLine": 1, "endLine": 4},
+        {"startLine": 2, "endLine": 3},
+        {"startLine": 5, "endLine": 6},
+        {"startLine": 7, "endLine": 8},
+    ]
+
+
+def test_control_flow_folding_ignores_trivia_braces_and_keywords() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    open_document(
+        server,
+        uri,
+        (
+            "fn sample(flag: Bool) {\n"
+            "  // if (flag) { fake }\n"
+            "  let text = \"while (flag) { fake }\"\n"
+            "  if (flag) {\n"
+            "    /* } else { */\n"
+            "    let value = 1\n"
+            "  }\n"
+            "}\n"
+        ),
+    )
+
+    assert folding_ranges(server, uri)["result"] == [
+        {"startLine": 0, "endLine": 6},
+        {"startLine": 3, "endLine": 5},
+    ]
+
+
+def test_control_flow_folding_follows_did_change_and_close_reopen() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    open_document(
+        server,
+        uri,
+        "fn old(flag: Bool) {\n  if (flag) {\n    let value = 1\n  }\n}\n",
+    )
+    assert folding_ranges(server, uri)["result"] == [
+        {"startLine": 0, "endLine": 3},
+        {"startLine": 1, "endLine": 2},
+    ]
+
+    server.handle(
+        notification(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": "fn new() {}\n"}],
+            },
+        )
+    )
+    assert folding_ranges(server, uri)["result"] == []
+
+    server.handle(notification("textDocument/didClose", {"textDocument": {"uri": uri}}))
+    open_document(
+        server,
+        uri,
+        "fn reopened(flag: Bool) {\n  while (flag) {\n    let value = true\n  }\n}\n",
+        version=1,
+    )
+    assert folding_ranges(server, uri)["result"] == [
+        {"startLine": 0, "endLine": 3},
+        {"startLine": 1, "endLine": 2},
+    ]
+
+
 def test_folding_ranges_follow_did_change_and_close_reopen() -> None:
     server = NovaProductLanguageServer()
     initialize(server)
