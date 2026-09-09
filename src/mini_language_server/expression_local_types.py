@@ -1,4 +1,4 @@
-"""Exact-snapshot Nova local types from bounded comparison initializers."""
+"""Exact-snapshot Nova local types from bounded expression initializers."""
 
 from __future__ import annotations
 
@@ -10,10 +10,12 @@ from .comparison_expression_types import (
 )
 
 _UNANNOTATED_INITIALIZER_PREFIX = re.compile(r"\s*=\s*")
+_ADDITIVE = frozenset({"+", "-"})
+_MULTIPLICATIVE = frozenset({"*", "/", "%"})
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
-    """Final Nova product with bounded comparison-derived local type knowledge."""
+    """Final Nova product with bounded expression-derived local type knowledge."""
 
     def _local_type(
         self,
@@ -21,7 +23,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         target: Any,
         seen: frozenset[tuple[int, int]],
     ) -> str | None:
-        """Infer inherited local types, then one bounded comparison initializer."""
+        """Infer inherited local types, then one bounded expression initializer."""
         inherited = super()._local_type(snapshot, target, seen)
         if inherited is not None:
             return inherited
@@ -39,19 +41,26 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return None
         expression, expression_span = initializer
 
-        # Preserve the existing conservative contract for generic compound locals:
-        # this slice only promotes initializers owned by the comparison layer.
+        # Only promote initializer forms owned by the bounded arithmetic/comparison
+        # expression layers. Bare identifiers, calls, and literals remain delegated
+        # to the inherited exact-snapshot local inference path above.
         normalized, normalized_span = self._trim_expression(
             expression, expression_span
         )
         normalized, normalized_span = self._unwrap_expression_with_span(
             normalized, normalized_span
         )
-        if not self._top_level_comparison_operators(normalized):
+        owns_comparison = bool(self._top_level_comparison_operators(normalized))
+        owns_arithmetic = self._top_level_operator(normalized, _ADDITIVE) is not None
+        if not owns_arithmetic:
+            owns_arithmetic = (
+                self._top_level_operator(normalized, _MULTIPLICATIVE) is not None
+            )
+        if not owns_comparison and not owns_arithmetic:
             return None
 
-        # Reuse the cycle-safe exact-snapshot inference path so call operands retain
-        # recursive identity and ambiguous/mixed comparisons stay unknown.
+        # Reuse the cycle-safe exact-snapshot inference path so function-call operands
+        # retain recursive identity and mixed/ambiguous expressions stay unknown.
         return self._inference_expression_type(
             snapshot,
             normalized,
