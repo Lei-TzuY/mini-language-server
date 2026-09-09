@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from .condition_diagnostics import _UNREACHABLE_CODE_DIAGNOSTIC
 from .condition_diagnostics import (
     NovaProductLanguageServer as _NovaProductLanguageServer,
-    _UNREACHABLE_CODE_DIAGNOSTIC,
 )
 from .diagnostics import Diagnostic
 
