@@ -36,7 +36,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         ):
             return actions
 
-        current = set(diagnostic_snapshot.diagnostics)
+        current = diagnostic_snapshot.diagnostics
         for diagnostic in diagnostics:
             if diagnostic.code != _UNREACHABLE_CODE_DIAGNOSTIC:
                 continue
