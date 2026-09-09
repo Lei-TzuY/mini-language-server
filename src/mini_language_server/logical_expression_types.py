@@ -43,10 +43,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         parts = self._split_top_level_logical(expression, span, "||")
         if parts is not None:
+            if not parts:
+                return None
             return self._all_bool_parts_type(semantic, parts, resolving)
 
         parts = self._split_top_level_logical(expression, span, "&&")
         if parts is not None:
+            if not parts:
+                return None
             return self._all_bool_parts_type(semantic, parts, resolving)
 
         if expression.startswith("!") and not expression.startswith("!="):
