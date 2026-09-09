@@ -17,7 +17,12 @@ def initialized_server() -> NovaProductLanguageServer:
     return server
 
 
-def open_nova(server: NovaProductLanguageServer, uri: str, text: str, version: int = 1) -> None:
+def open_nova(
+    server: NovaProductLanguageServer,
+    uri: str,
+    text: str,
+    version: int = 1,
+) -> None:
     server.handle(
         notify(
             "textDocument/didOpen",
@@ -39,7 +44,12 @@ def diagnostic_codes(server: NovaProductLanguageServer, uri: str) -> set[str]:
     return {item.code for item in snapshot.diagnostics}
 
 
-def hover_value(server: NovaProductLanguageServer, uri: str, text: str, request_id: int = 2) -> str:
+def hover_value(
+    server: NovaProductLanguageServer,
+    uri: str,
+    text: str,
+    request_id: int = 2,
+) -> str:
     offset = text.rindex("value")
     response = server.handle(
         request(
@@ -139,7 +149,9 @@ def test_cross_file_logical_type_rebinds_on_change_close_and_reopen() -> None:
     )
     assert "nova.argument-type" not in diagnostic_codes(server, main_uri)
 
-    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": helper_uri}}))
+    server.handle(
+        notify("textDocument/didClose", {"textDocument": {"uri": helper_uri}})
+    )
     assert "nova.argument-type" not in diagnostic_codes(server, main_uri)
 
     open_nova(server, helper_uri, helper, version=3)
