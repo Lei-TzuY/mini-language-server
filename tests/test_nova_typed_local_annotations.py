@@ -94,7 +94,11 @@ def test_explicit_local_annotation_drives_hints_hover_and_argument_types() -> No
     )
     open_nova(server, uri, text)
 
-    assert local_type_labels(full_hints(server, uri, text)) == [": Int"]
+    hints = full_hints(server, uri, text)
+    assert local_type_labels(hints) == [": Int"]
+    type_hints = [item for item in hints["result"] if item.get("kind") == 1]
+    assert len(type_hints) == 1
+    assert "textEdits" not in type_hints[0]
 
     count_use = text.rfind("count")
     hover = server.handle(
