@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mini_language_server import NovaProductLanguageServer
+from mini_language_server import NovaProductLanguageServer, SourceText
 
 
 def request(method: str, request_id: int, params: dict) -> dict:
@@ -192,12 +192,10 @@ def test_unreachable_quick_fix_rejects_superseded_same_version_diagnostic() -> N
     assert current_snapshot.semantic is semantic
     assert current_snapshot is not first_snapshot
 
-    source = server.sources.get(uri)
-    assert source is not None
     actions = server._nova_code_actions(
         uri,
         document,
-        source,
+        SourceText(document.text),
         stale,
         start,
         start + len(suffix),
