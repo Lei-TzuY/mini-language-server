@@ -130,3 +130,69 @@ def test_arithmetic_argument_mismatch_exposes_existing_quick_fix() -> None:
     assert result is not None
     actions = result["result"]
     assert any(action["kind"] == "quickfix" for action in actions)
+
+
+def test_unary_integer_signs_reach_return_and_argument_validation() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        "fn sink(value: Bool) {}\n"
+        "fn main(input: Int) -> Bool { sink(+input); return -(input + 1); }\n",
+    )
+
+    codes = diagnostic_codes(server, uri)
+    assert "nova.argument-type" in codes
+    assert "nova.return-type" in codes
+
+
+def test_unary_integer_signs_feed_local_expression_typing() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        "fn main(input: Int) { let value: Bool = -(+input); }\n",
+    )
+
+    assert "nova.local-type" in diagnostic_codes(server, uri)
+
+
+def test_unary_sign_over_non_integer_remains_conservative() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        'fn sink(value: Int) {}\nfn main() { sink(-"value"); }\n',
+    )
+
+    assert "nova.argument-type" not in diagnostic_codes(server, uri)
+
+
+def test_cross_file_unary_sign_rebinds_after_result_type_change() -> None:
+    server = initialized_server()
+    source_uri = "file:///workspace/source.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(server, source_uri, "fn source() -> Int { return 1; }\n")
+    open_nova(
+        server,
+        main_uri,
+        "fn sink(value: Bool) {}\nfn main() { sink(-source()) }\n",
+    )
+    assert "nova.argument-type" in diagnostic_codes(server, main_uri)
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": source_uri, "version": 2},
+                "contentChanges": [
+                    {"text": "fn source() -> Bool { return true; }\n"}
+                ],
+            },
+        )
+    )
+
+    assert "nova.argument-type" not in diagnostic_codes(server, main_uri)
