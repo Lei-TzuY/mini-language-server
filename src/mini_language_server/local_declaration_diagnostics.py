@@ -20,6 +20,11 @@ _ASSIGNMENT_SUFFIX = re.compile(r"\s*=(?!=)")
 _UNINITIALIZED_LET_DIAGNOSTIC = "nova.uninitialized-let"
 _UNTYPED_VAR_DIAGNOSTIC = "nova.untyped-var"
 _UNINITIALIZED_READ_DIAGNOSTIC = "nova.uninitialized-read"
+_DEFAULT_LITERAL_BY_TYPE = {
+    "Int": "0",
+    "String": '""',
+    "Bool": "false",
+}
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -261,8 +266,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         code = self.nova_adapter.code_view(document.text)
         for diagnostic in diagnostics:
-            if diagnostic.code != _UNINITIALIZED_LET_DIAGNOSTIC:
-                continue
             if not any(item is diagnostic for item in current.diagnostics):
                 continue
             if start_offset == end_offset:
@@ -272,27 +275,77 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if not overlaps:
                 continue
 
+            if diagnostic.code == _UNINITIALIZED_LET_DIAGNOSTIC:
+                declaration = next(
+                    (
+                        match
+                        for match in _UNINITIALIZED_LOCAL.finditer(code)
+                        if match.span("keyword") == (diagnostic.span.start, diagnostic.span.end)
+                    ),
+                    None,
+                )
+                if declaration is None or declaration.group("type") is None:
+                    continue
+                actions.append(
+                    {
+                        "title": "Change uninitialized let declaration to var",
+                        "kind": "quickfix",
+                        "diagnostics": [self._diagnostic(source, diagnostic)],
+                        "edit": {
+                            "changes": {
+                                uri: [
+                                    {
+                                        "range": self._range(source, diagnostic.span),
+                                        "newText": "var",
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                )
+                continue
+
+            if diagnostic.code != _UNINITIALIZED_READ_DIAGNOSTIC:
+                continue
+            reference = next(
+                (
+                    reference
+                    for reference in current.semantic.references
+                    if reference.span == diagnostic.span
+                ),
+                None,
+            )
+            if reference is None or reference.target is None or reference.target.kind != "variable":
+                continue
+            target = reference.target
             declaration = next(
                 (
                     match
                     for match in _UNINITIALIZED_LOCAL.finditer(code)
-                    if match.span("keyword") == (diagnostic.span.start, diagnostic.span.end)
+                    if match.group("keyword") == "var"
+                    and match.span("name") == (target.span.start, target.span.end)
                 ),
                 None,
             )
-            if declaration is None or declaration.group("type") is None:
+            if declaration is None:
                 continue
+            default_literal = _DEFAULT_LITERAL_BY_TYPE.get(declaration.group("type") or "")
+            if default_literal is None:
+                continue
+            insert_offset = declaration.end() - 1
             actions.append(
                 {
-                    "title": "Change uninitialized let declaration to var",
+                    "title": f"Initialize '{target.name}' at declaration",
                     "kind": "quickfix",
                     "diagnostics": [self._diagnostic(source, diagnostic)],
                     "edit": {
                         "changes": {
                             uri: [
                                 {
-                                    "range": self._range(source, diagnostic.span),
-                                    "newText": "var",
+                                    "range": self._range(
+                                        source, Span(insert_offset, insert_offset)
+                                    ),
+                                    "newText": f" = {default_literal}",
                                 }
                             ]
                         }
