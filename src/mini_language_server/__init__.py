@@ -1,5 +1,6 @@
 """mini-language-server package."""
 
+from .assignment_diagnostics import NovaProductLanguageServer
 from .cancellation import (
     RequestCancelled,
     RequestContext,
@@ -8,7 +9,6 @@ from .cancellation import (
     StaleRequest,
 )
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
-from .division_diagnostics import NovaProductLanguageServer
 from .documents import Document, DocumentError, DocumentStore
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
 from .semantic import Reference, SemanticDatabase, SemanticError, SemanticSnapshot
