@@ -17,7 +17,12 @@ def initialized_server() -> NovaProductLanguageServer:
     return server
 
 
-def open_nova(server: NovaProductLanguageServer, uri: str, text: str, version: int = 1) -> None:
+def open_nova(
+    server: NovaProductLanguageServer,
+    uri: str,
+    text: str,
+    version: int = 1,
+) -> None:
     server.handle(
         notify(
             "textDocument/didOpen",
@@ -36,10 +41,20 @@ def open_nova(server: NovaProductLanguageServer, uri: str, text: str, version: i
 def zero_diagnostics(server: NovaProductLanguageServer, uri: str):
     snapshot = server.diagnostics.get(uri)
     assert snapshot is not None
-    return [item for item in snapshot.diagnostics if item.code == "nova.division-by-zero"]
+    return [
+        item
+        for item in snapshot.diagnostics
+        if item.code == "nova.division-by-zero"
+    ]
 
 
-def replacement_actions(server: NovaProductLanguageServer, uri: str, start: int, end: int, request_id: int):
+def replacement_actions(
+    server: NovaProductLanguageServer,
+    uri: str,
+    start: int,
+    end: int,
+    request_id: int,
+):
     response = server.handle(
         request(
             "textDocument/codeAction",
@@ -65,12 +80,17 @@ def replacement_actions(server: NovaProductLanguageServer, uri: str, start: int,
 def test_literal_zero_divisors_report_exact_spans_and_ignore_trivia() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    text = 'fn main() { let a = 10 / 0; let b = 11 % -0; let s = "12 / 0"; /* 13 % 0 */ }\n'
+    text = (
+        'fn main() { let a = 10 / 0; let b = 11 % -0; '
+        'let s = "12 / 0"; /* 13 % 0 */ }\n'
+    )
     open_nova(server, uri, text)
 
     diagnostics = zero_diagnostics(server, uri)
     assert len(diagnostics) == 2
-    assert [text[item.span.start : item.span.end] for item in diagnostics] == ["0", "-0"]
+    assert [
+        text[item.span.start : item.span.end] for item in diagnostics
+    ] == ["0", "-0"]
 
 
 def test_zero_divisor_quick_fix_replaces_only_diagnosed_literal() -> None:
@@ -112,7 +132,9 @@ def test_zero_divisor_diagnostics_track_change_close_and_reopen() -> None:
     )
     assert zero_diagnostics(server, uri) == []
 
-    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
+    server.handle(
+        notify("textDocument/didClose", {"textDocument": {"uri": uri}})
+    )
     assert server.diagnostics.get(uri) is None
     open_nova(server, uri, invalid, 3)
     assert len(zero_diagnostics(server, uri)) == 1
@@ -128,7 +150,11 @@ def test_zero_divisor_quick_fix_rejects_superseded_same_version_diagnostic() -> 
     document = server.documents.get(uri)
     assert first_snapshot is not None
     assert document is not None
-    stale = tuple(item for item in first_snapshot.diagnostics if item.code == "nova.division-by-zero")
+    stale = tuple(
+        item
+        for item in first_snapshot.diagnostics
+        if item.code == "nova.division-by-zero"
+    )
     assert len(stale) == 1
 
     semantic = server.nova_adapter.publish(server, document)
