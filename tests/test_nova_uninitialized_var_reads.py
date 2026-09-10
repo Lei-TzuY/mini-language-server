@@ -59,6 +59,42 @@ def test_assignment_before_read_suppresses_uninitialized_read_diagnostic() -> No
     assert uninitialized_reads(server, uri) == []
 
 
+def test_nested_assignment_does_not_initialize_later_outer_read() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = uninitialized_reads(server, uri)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].span.start == text.index("value", text.index("copy"))
+
+
+def test_nested_assignment_initializes_later_read_in_same_branch() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { value = 1; let copy = value; } }\n"
+    )
+    open_nova(server, uri, text)
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_outer_assignment_initializes_read_in_nested_branch() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { var value: Int; value = 1; "
+        "if flag { let copy = value; } }\n"
+    )
+    open_nova(server, uri, text)
+    assert uninitialized_reads(server, uri) == []
+
+
 def test_multiple_reads_before_first_assignment_are_deterministic() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
@@ -76,6 +112,32 @@ def test_did_change_rebinds_uninitialized_read_to_current_snapshot() -> None:
     uri = "file:///workspace/main.nova"
     invalid = "fn main() { var value: Int; let copy = value; value = 1; }\n"
     valid = "fn main() { var value: Int; value = 1; let copy = value; }\n"
+    open_nova(server, uri, invalid, 1)
+    assert len(uninitialized_reads(server, uri)) == 1
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": valid}],
+            },
+        )
+    )
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_did_change_rebinds_branch_scope_definite_initialization() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    invalid = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { value = 1; } let copy = value; }\n"
+    )
+    valid = (
+        "fn main(flag: Bool) { var value: Int; value = 1; "
+        "if flag { let copy = value; } }\n"
+    )
     open_nova(server, uri, invalid, 1)
     assert len(uninitialized_reads(server, uri)) == 1
 
