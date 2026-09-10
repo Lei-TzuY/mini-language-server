@@ -16,8 +16,10 @@ _UNINITIALIZED_LOCAL = re.compile(
     rf"\b(?P<keyword>let|var)\s+(?P<name>{_IDENTIFIER})"
     rf"(?:\s*:\s*(?P<type>{_IDENTIFIER}|!))?\s*;"
 )
+_ASSIGNMENT_SUFFIX = re.compile(r"\s*=(?!=)")
 _UNINITIALIZED_LET_DIAGNOSTIC = "nova.uninitialized-let"
 _UNTYPED_VAR_DIAGNOSTIC = "nova.untyped-var"
+_UNINITIALIZED_READ_DIAGNOSTIC = "nova.uninitialized-read"
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -31,7 +33,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             diagnostic
             for diagnostic in diagnostics
             if diagnostic.code
-            not in {_UNINITIALIZED_LET_DIAGNOSTIC, _UNTYPED_VAR_DIAGNOSTIC}
+            not in {
+                _UNINITIALIZED_LET_DIAGNOSTIC,
+                _UNTYPED_VAR_DIAGNOSTIC,
+                _UNINITIALIZED_READ_DIAGNOSTIC,
+            }
         )
         if document.language_id == self.nova_adapter.language_id:
             materialized += self._nova_local_declaration_diagnostics(semantic)
@@ -65,7 +71,43 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         source="nova",
                     )
                 )
+            else:
+                diagnostics.extend(
+                    self._nova_reads_before_first_assignment(semantic, code, match)
+                )
 
+        return tuple(diagnostics)
+
+    @staticmethod
+    def _nova_reads_before_first_assignment(
+        semantic: SemanticSnapshot, code: str, declaration: re.Match[str]
+    ) -> tuple[Diagnostic, ...]:
+        name_span = Span(*declaration.span("name"))
+        target = next(
+            (
+                symbol
+                for symbol in semantic.symbols.symbols
+                if symbol.kind == "variable" and symbol.span == name_span
+            ),
+            None,
+        )
+        if target is None:
+            return ()
+
+        diagnostics: list[Diagnostic] = []
+        for reference in semantic.references:
+            if reference.target is not target or reference.span.start <= declaration.end():
+                continue
+            if _ASSIGNMENT_SUFFIX.match(code, reference.span.end):
+                break
+            diagnostics.append(
+                Diagnostic(
+                    span=reference.span,
+                    message=f"local '{target.name}' is read before its first assignment",
+                    code=_UNINITIALIZED_READ_DIAGNOSTIC,
+                    source="nova",
+                )
+            )
         return tuple(diagnostics)
 
     def _nova_code_actions(
