@@ -7,7 +7,11 @@ from mini_language_server.nova import NovaFunctionAdapter, NovaLanguageServer
 from mini_language_server.semantic import Reference
 
 
-def request(method: str, request_id: int, params: dict[str, Any] | None = None) -> dict[str, Any]:
+def request(
+    method: str,
+    request_id: int,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     message: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
     if params is not None:
         message["params"] = params
@@ -67,9 +71,11 @@ def test_var_local_drives_definition_references_and_rename() -> None:
         ("main", "function"),
         ("value", "variable"),
     ]
-    assert [(reference.span.start, reference.target.span.start) for reference in semantics.references] == [
-        (26, 16)
+    actual_references = [
+        (reference.span.start, reference.target.span.start)
+        for reference in semantics.references
     ]
+    assert actual_references == [(26, 16)]
 
     position = {"line": 0, "character": 27}
     definition = server.handle(
@@ -141,7 +147,9 @@ def test_var_local_change_close_and_reopen_replace_parent_identity() -> None:
     assert [symbol.name for symbol in changed.symbols.symbols] == ["main", "item"]
     assert changed.references[0].target is changed.symbols.symbols[1]
 
-    server.handle(notification("textDocument/didClose", {"textDocument": {"uri": uri}}))
+    server.handle(
+        notification("textDocument/didClose", {"textDocument": {"uri": uri}})
+    )
     open_nova(server, uri, 2, "fn main() { var value = 1 value }\n")
     reopened = server.semantics.get(uri)
     assert reopened is not None and reopened is not changed
@@ -149,7 +157,9 @@ def test_var_local_change_close_and_reopen_replace_parent_identity() -> None:
     assert [symbol.name for symbol in reopened.symbols.symbols] == ["main", "value"]
 
 
-def test_same_version_var_semantic_replacement_suppresses_stale_definition(monkeypatch) -> None:
+def test_same_version_var_semantic_replacement_suppresses_stale_definition(
+    monkeypatch,
+) -> None:
     server = NovaLanguageServer()
     initialize(server)
     uri = "file:///workspace/stale-var.nova"
