@@ -98,15 +98,15 @@ def test_inferred_local_assignment_supports_literal_and_call_initializers() -> N
     ]
 
 
-def test_matching_unknown_and_untyped_assignments_remain_clean() -> None:
+def test_matching_and_unknown_assignments_remain_clean() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
     open_nova(
         server,
         uri,
         (
-            'fn main(input: Int, opaque) { let count: Int = 1; let value = 1; '
-            "count = input + 1; count = opaque; value = true; }\n"
+            'fn main(input: Int, opaque) { let count: Int = 1; let value = opaque; '
+            'count = input + 1; count = opaque; value = true; }\n'
         ),
     )
     assert assignment_diagnostics(server, uri) == []
