@@ -79,8 +79,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         return tuple(diagnostics)
 
     @staticmethod
+    def _brace_scope_at(code: str, offset: int) -> tuple[int, ...]:
+        """Return the structural brace ancestry containing ``offset``."""
+        scope: list[int] = []
+        for index, char in enumerate(code[:offset]):
+            if char == "{":
+                scope.append(index)
+            elif char == "}" and scope:
+                scope.pop()
+        return tuple(scope)
+
+    @classmethod
     def _nova_reads_before_first_assignment(
-        semantic: SemanticSnapshot, code: str, declaration: re.Match[str]
+        cls, semantic: SemanticSnapshot, code: str, declaration: re.Match[str]
     ) -> tuple[Diagnostic, ...]:
         name_span = Span(*declaration.span("name"))
         target = next(
@@ -94,12 +105,30 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if target is None:
             return ()
 
+        references = sorted(
+            (
+                reference
+                for reference in semantic.references
+                if reference.target is target and reference.span.start > declaration.end()
+            ),
+            key=lambda reference: reference.span.start,
+        )
+        assignments: list[tuple[int, tuple[int, ...]]] = []
         diagnostics: list[Diagnostic] = []
-        for reference in semantic.references:
-            if reference.target is not target or reference.span.start <= declaration.end():
-                continue
+        for reference in references:
+            reference_scope = cls._brace_scope_at(code, reference.span.start)
             if _ASSIGNMENT_SUFFIX.match(code, reference.span.end):
-                break
+                assignments.append((reference.span.start, reference_scope))
+                continue
+
+            definitely_initialized = any(
+                assignment_start < reference.span.start
+                and len(assignment_scope) <= len(reference_scope)
+                and reference_scope[: len(assignment_scope)] == assignment_scope
+                for assignment_start, assignment_scope in assignments
+            )
+            if definitely_initialized:
+                continue
             diagnostics.append(
                 Diagnostic(
                     span=reference.span,
