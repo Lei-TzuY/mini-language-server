@@ -14,6 +14,7 @@ from .source import Span
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _ASSIGNMENT = re.compile(rf"\b(?P<name>{_IDENTIFIER})\s*=(?!=)")
 _EXPLICIT_TYPE = re.compile(rf"\s*:\s*(?P<type>{_IDENTIFIER}|!)")
+_UNANNOTATED_INITIALIZER_PREFIX = re.compile(r"\s*=\s*")
 _ASSIGNMENT_TYPE_DIAGNOSTIC = "nova.assignment-type"
 _SUPPORTED_TYPES = frozenset({"Int", "String", "Bool"})
 _DEFAULT_LITERAL_BY_TYPE = {
@@ -81,14 +82,24 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             )
         return tuple(diagnostics)
 
-    def _assignment_target_type(self, semantic: SemanticSnapshot, target: Any) -> str | None:
+    def _assignment_target_type(
+        self, semantic: SemanticSnapshot, target: Any
+    ) -> str | None:
         text = semantic.symbols.syntax.document.text
         explicit = self._explicit_assignment_target_type(text, target)
         if explicit is not None:
             return explicit
         if target.kind != "variable":
             return None
-        return self._local_type(semantic, target, frozenset())
+
+        prefix = _UNANNOTATED_INITIALIZER_PREFIX.match(text, target.span.end)
+        if prefix is None:
+            return None
+        initializer = self._local_initializer(text, prefix.end())
+        if initializer is None:
+            return None
+        expression, expression_span = initializer
+        return self._return_expression_type(semantic, expression, expression_span)
 
     @staticmethod
     def _explicit_assignment_target_type(text: str, target: Any) -> str | None:
