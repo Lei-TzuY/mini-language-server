@@ -63,6 +63,30 @@ def test_nested_complete_else_if_chain_proves_outer_join() -> None:
     assert uninitialized_reads(server, uri) == []
 
 
+def test_direct_return_arm_does_not_need_assignment_before_join() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) -> Int { var value: Int; "
+        "if flag { return 0; } else { value = 2; } "
+        "let copy = value; return copy; }\n"
+    )
+    open_nova(server, uri, text)
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_else_if_return_arms_can_prove_reachable_join() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(first: Bool, second: Bool) -> Int { var value: Int; "
+        "if first { return 0; } else if second { return 1; } "
+        "else { value = 2; } let copy = value; return copy; }\n"
+    )
+    open_nova(server, uri, text)
+    assert uninitialized_reads(server, uri) == []
+
+
 def test_incomplete_nested_conditional_remains_conservative() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
@@ -70,6 +94,21 @@ def test_incomplete_nested_conditional_remains_conservative() -> None:
         "fn main(left: Bool, nested: Bool) { var value: Int; "
         "if left { if nested { value = 1; } } else { value = 2; } "
         "let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = uninitialized_reads(server, uri)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].span.start == text.index("value", text.index("copy"))
+
+
+def test_nested_return_does_not_terminate_outer_branch() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(left: Bool, nested: Bool) -> Int { var value: Int; "
+        "if left { if nested { return 0; } } else { value = 2; } "
+        "let copy = value; return copy; }\n"
     )
     open_nova(server, uri, text)
 
@@ -93,18 +132,18 @@ def test_else_if_tail_is_not_treated_as_independent_complete_chain() -> None:
     assert diagnostics[0].span.start == text.index("value", text.index("copy"))
 
 
-def test_did_change_rebinds_nested_conditional_proof_to_current_snapshot() -> None:
+def test_did_change_rebinds_return_exit_proof_to_current_snapshot() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
     invalid = (
-        "fn main(left: Bool, nested: Bool) { var value: Int; "
-        "if left { if nested { value = 1; } } else { value = 2; } "
-        "let copy = value; }\n"
+        "fn main(flag: Bool) -> Int { var value: Int; "
+        "if flag { let untouched = 0; } else { value = 2; } "
+        "let copy = value; return copy; }\n"
     )
     valid = (
-        "fn main(left: Bool, nested: Bool) { var value: Int; "
-        "if left { if nested { value = 1; } else { value = 3; } } "
-        "else { value = 2; } let copy = value; }\n"
+        "fn main(flag: Bool) -> Int { var value: Int; "
+        "if flag { return 0; } else { value = 2; } "
+        "let copy = value; return copy; }\n"
     )
     open_nova(server, uri, invalid, 1)
     assert len(uninitialized_reads(server, uri)) == 1

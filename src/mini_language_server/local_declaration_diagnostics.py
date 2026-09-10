@@ -17,6 +17,7 @@ _UNINITIALIZED_LOCAL = re.compile(
     rf"(?:\s*:\s*(?P<type>{_IDENTIFIER}|!))?\s*;"
 )
 _ASSIGNMENT_SUFFIX = re.compile(r"\s*=(?!=)")
+_RETURN_STATEMENT = re.compile(r"\breturn\b[^{};]*;")
 _UNINITIALIZED_LET_DIAGNOSTIC = "nova.uninitialized-let"
 _UNTYPED_VAR_DIAGNOSTIC = "nova.untyped-var"
 _UNINITIALIZED_READ_DIAGNOSTIC = "nova.uninitialized-read"
@@ -132,6 +133,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         )
 
     @classmethod
+    def _direct_scope_terminates(
+        cls,
+        code: str,
+        branch_open: int,
+        branch_close: int,
+        branch_scope: tuple[int, ...],
+    ) -> bool:
+        return any(
+            cls._brace_scope_at(code, match.start()) == branch_scope
+            for match in _RETURN_STATEMENT.finditer(code, branch_open + 1, branch_close)
+        )
+
+    @classmethod
     def _scope_definitely_assigned(
         cls,
         code: str,
@@ -142,6 +156,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     ) -> bool:
         if cls._direct_scope_assigned(
             branch_open, branch_close, branch_scope, assignments
+        ):
+            return True
+        if cls._direct_scope_terminates(
+            code, branch_open, branch_close, branch_scope
         ):
             return True
         return cls._complete_if_chain_initializes(
@@ -161,7 +179,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         reference_scope: tuple[int, ...],
         assignments: list[tuple[int, tuple[int, ...]]],
     ) -> bool:
-        """Prove a bounded complete conditional assigns in every reachable direct arm."""
+        """Prove every reachable arm either assigns or terminates before the join."""
         pairs = cls._matching_braces(code)
         for if_open, if_close in sorted(pairs.items()):
             if if_open < start_offset or if_close >= end_offset:
