@@ -130,17 +130,39 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         )
 
     @classmethod
-    def _if_else_join_initializes(
+    def _scope_definitely_assigned(
         cls,
         code: str,
-        reference_start: int,
+        branch_open: int,
+        branch_close: int,
+        branch_scope: tuple[int, ...],
+        assignments: list[tuple[int, tuple[int, ...]]],
+    ) -> bool:
+        if cls._direct_scope_assigned(
+            branch_open, branch_close, branch_scope, assignments
+        ):
+            return True
+        return cls._complete_if_chain_initializes(
+            code,
+            branch_open + 1,
+            branch_close,
+            branch_scope,
+            assignments,
+        )
+
+    @classmethod
+    def _complete_if_chain_initializes(
+        cls,
+        code: str,
+        start_offset: int,
+        end_offset: int,
         reference_scope: tuple[int, ...],
         assignments: list[tuple[int, tuple[int, ...]]],
     ) -> bool:
-        """Prove a bounded complete if/else-if/else join assigns in every direct arm."""
+        """Prove a bounded complete conditional assigns in every reachable direct arm."""
         pairs = cls._matching_braces(code)
-        for if_open, if_close in pairs.items():
-            if if_close >= reference_start:
+        for if_open, if_close in sorted(pairs.items()):
+            if if_open < start_offset or if_close >= end_offset:
                 continue
             if cls._brace_scope_at(code, if_open) != reference_scope:
                 continue
@@ -149,7 +171,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
             branch_open = if_open
             branch_close = if_close
-            all_assigned = cls._direct_scope_assigned(
+            all_assigned = cls._scope_definitely_assigned(
+                code,
                 branch_open,
                 branch_close,
                 reference_scope + (branch_open,),
@@ -157,17 +180,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             )
             cursor = branch_close + 1
 
-            while cursor < reference_start:
-                remainder = code[cursor:reference_start]
+            while cursor < end_offset:
+                remainder = code[cursor:end_offset]
                 else_if_match = re.match(r"\s*else\s+if\b[^{};]*\{", remainder)
                 if else_if_match is not None:
                     branch_open = cursor + else_if_match.end() - 1
                     branch_close = pairs.get(branch_open, -1)
-                    if branch_close < branch_open or branch_close >= reference_start:
+                    if branch_close < branch_open or branch_close >= end_offset:
                         break
                     if cls._brace_scope_at(code, branch_open) != reference_scope:
                         break
-                    all_assigned = all_assigned and cls._direct_scope_assigned(
+                    all_assigned = all_assigned and cls._scope_definitely_assigned(
+                        code,
                         branch_open,
                         branch_close,
                         reference_scope + (branch_open,),
@@ -181,11 +205,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     break
                 branch_open = cursor + else_match.end() - 1
                 branch_close = pairs.get(branch_open, -1)
-                if branch_close < branch_open or branch_close >= reference_start:
+                if branch_close < branch_open or branch_close >= end_offset:
                     break
                 if cls._brace_scope_at(code, branch_open) != reference_scope:
                     break
-                all_assigned = all_assigned and cls._direct_scope_assigned(
+                all_assigned = all_assigned and cls._scope_definitely_assigned(
+                    code,
                     branch_open,
                     branch_close,
                     reference_scope + (branch_open,),
@@ -195,6 +220,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     return True
                 break
         return False
+
+    @classmethod
+    def _if_else_join_initializes(
+        cls,
+        code: str,
+        reference_start: int,
+        reference_scope: tuple[int, ...],
+        assignments: list[tuple[int, tuple[int, ...]]],
+    ) -> bool:
+        """Prove a bounded complete if/else-if/else join before the reference."""
+        return cls._complete_if_chain_initializes(
+            code, 0, reference_start, reference_scope, assignments
+        )
 
     @classmethod
     def _nova_reads_before_first_assignment(
