@@ -42,6 +42,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if split is None:
             split = self._top_level_operator(expression, _MULTIPLICATIVE)
         if split is None:
+            unary = self._unary_sign_operand(expression, span)
+            if unary is not None:
+                operand, operand_span = unary
+                operand_type = self._inference_expression_type(
+                    semantic,
+                    operand,
+                    operand_span,
+                    resolving,
+                )
+                return "Int" if operand_type == "Int" else None
             return super()._inference_expression_type(
                 semantic,
                 expression,
@@ -84,6 +94,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if split is None:
             split = self._top_level_operator(expression, _MULTIPLICATIVE)
         if split is None:
+            unary = self._unary_sign_operand(expression, span)
+            if unary is not None:
+                operand, operand_span = unary
+                operand_type = self._integer_arithmetic_type(
+                    semantic,
+                    operand,
+                    operand_span,
+                )
+                return "Int" if operand_type == "Int" else None
             return super()._return_expression_type(semantic, expression, span)
 
         operator, offset = split
@@ -153,6 +172,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 continue
             candidate = (char, offset)
         return candidate
+
+    def _unary_sign_operand(
+        self, expression: str, span: Span
+    ) -> tuple[str, Span] | None:
+        code = self.nova_adapter.code_view(expression)
+        if not code or code[0] not in _ADDITIVE:
+            return None
+        operand, operand_span = self._trim_expression(
+            expression[1:], Span(span.start + 1, span.end)
+        )
+        if not operand:
+            return None
+        return operand, operand_span
 
     @staticmethod
     def _is_unary_sign(expression: str, offset: int) -> bool:
