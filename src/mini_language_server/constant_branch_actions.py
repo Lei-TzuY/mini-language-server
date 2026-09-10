@@ -76,37 +76,36 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             )
         return actions
 
-    @classmethod
     def _constant_dead_branch_repair(
-        cls, code: str, diagnostic: Diagnostic
+        self, code: str, diagnostic: Diagnostic
     ) -> tuple[str, Span] | None:
         for match in _CONTROL_FLOW_CONDITION.finditer(code):
             opening = match.end() - 1
-            closing = cls._matching_paren(code, opening)
+            closing = self._matching_paren(code, opening)
             if closing is None:
                 continue
 
             expression = code[opening + 1 : closing]
             expression_span = Span(opening + 1, closing)
-            expression, expression_span = cls._trim_expression(
+            expression, expression_span = self._trim_expression(
                 expression, expression_span
             )
-            expression, expression_span = cls._unwrap_expression_with_span(
+            expression, expression_span = self._unwrap_expression_with_span(
                 expression, expression_span
             )
             if expression not in _BOOLEAN_LITERALS:
                 continue
 
-            body_open = cls._next_non_space(code, closing + 1)
+            body_open = self._next_non_space(code, closing + 1)
             if body_open is None or code[body_open] != "{":
                 continue
-            body_close = cls._matching_delimiter(code, body_open, "{", "}")
+            body_close = self._matching_delimiter(code, body_open, "{", "}")
             if body_close is None:
                 continue
 
             kind = match.group("kind")
             if expression == "false":
-                body_span = cls._trim_dead_body_span(code, body_open + 1, body_close)
+                body_span = self._trim_dead_body_span(code, body_open + 1, body_close)
                 if body_span != diagnostic.span:
                     continue
                 if kind == "while":
@@ -114,10 +113,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         "Remove unreachable constant-false while",
                         Span(match.start(), body_close + 1),
                     )
-                if cls._is_else_if(code, match.start()):
+                if self._is_else_if(code, match.start()):
                     return None
-                else_keyword = cls._next_non_space(code, body_close + 1)
-                if else_keyword is not None and cls._keyword_at(
+                else_keyword = self._next_non_space(code, body_close + 1)
+                if else_keyword is not None and self._keyword_at(
                     code, else_keyword, "else"
                 ):
                     return None
@@ -128,18 +127,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
             if kind != "if":
                 continue
-            else_keyword = cls._next_non_space(code, body_close + 1)
-            if else_keyword is None or not cls._keyword_at(code, else_keyword, "else"):
+            else_keyword = self._next_non_space(code, body_close + 1)
+            if else_keyword is None or not self._keyword_at(code, else_keyword, "else"):
                 continue
-            else_body_open = cls._next_non_space(code, else_keyword + len("else"))
+            else_body_open = self._next_non_space(code, else_keyword + len("else"))
             if else_body_open is None or code[else_body_open] != "{":
                 continue
-            else_body_close = cls._matching_delimiter(
+            else_body_close = self._matching_delimiter(
                 code, else_body_open, "{", "}"
             )
             if else_body_close is None:
                 continue
-            else_span = cls._trim_dead_body_span(
+            else_span = self._trim_dead_body_span(
                 code, else_body_open + 1, else_body_close
             )
             if else_span != diagnostic.span:
