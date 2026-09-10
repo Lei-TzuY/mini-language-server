@@ -114,6 +114,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             code.rfind("}", 0, open_brace),
         )
         prefix = code[boundary + 1 : open_brace]
+        if re.search(r"\belse\s+if\b[^{};]*$", prefix) is not None:
+            return False
         return re.search(r"\bif\b[^{};]*$", prefix) is not None
 
     @staticmethod
