@@ -38,10 +38,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     @classmethod
     def _scope_is_inside_while(cls, code: str, scope: tuple[int, ...]) -> bool:
-        return any(cls._brace_opens_while(code, opening) for opening in scope)
+        return any(cls._local_scope_brace_opens_while(code, opening) for opening in scope)
 
     @staticmethod
-    def _brace_opens_while(code: str, opening: int) -> bool:
+    def _local_scope_brace_opens_while(code: str, opening: int) -> bool:
         boundary = max(
             code.rfind(";", 0, opening),
             code.rfind("{", 0, opening),
