@@ -14,8 +14,10 @@ from .source import Span
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _ASSIGNMENT = re.compile(rf"\b(?P<name>{_IDENTIFIER})\s*=(?!=)")
 _EXPLICIT_TYPE = re.compile(rf"\s*:\s*(?P<type>{_IDENTIFIER}|!)")
+_LOCAL_DECLARATION_PREFIX = re.compile(r"\b(?P<keyword>let|var)\s+$")
 _UNANNOTATED_INITIALIZER_PREFIX = re.compile(r"\s*=\s*")
 _ASSIGNMENT_TYPE_DIAGNOSTIC = "nova.assignment-type"
+_IMMUTABLE_ASSIGNMENT_DIAGNOSTIC = "nova.immutable-assignment"
 _SUPPORTED_TYPES = frozenset({"Int", "String", "Bool"})
 _DEFAULT_LITERAL_BY_TYPE = {
     "Int": "0",
@@ -28,7 +30,7 @@ _ASSIGNMENT_TYPE_MESSAGE = re.compile(
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
-    """Final Nova product with conservative typed-assignment validation."""
+    """Final Nova product with conservative assignment validation."""
 
     def publish_diagnostics(
         self, semantic: SemanticSnapshot, diagnostics: Iterable[Diagnostic]
@@ -37,13 +39,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         materialized = tuple(
             diagnostic
             for diagnostic in diagnostics
-            if diagnostic.code != _ASSIGNMENT_TYPE_DIAGNOSTIC
+            if diagnostic.code
+            not in {_ASSIGNMENT_TYPE_DIAGNOSTIC, _IMMUTABLE_ASSIGNMENT_DIAGNOSTIC}
         )
         if document.language_id == self.nova_adapter.language_id:
-            materialized += self._nova_assignment_type_diagnostics(semantic)
+            materialized += self._nova_assignment_diagnostics(semantic)
         return super().publish_diagnostics(semantic, materialized)
 
-    def _nova_assignment_type_diagnostics(
+    def _nova_assignment_diagnostics(
         self, semantic: SemanticSnapshot
     ) -> tuple[Diagnostic, ...]:
         text = semantic.symbols.syntax.document.text
@@ -59,6 +62,22 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             target = references.get((lhs_span.start, lhs_span.end))
             if target is None or target.kind not in {"variable", "parameter"}:
                 continue
+
+            declaration = self._local_declaration_keyword(text, target)
+            if target.kind == "variable" and declaration is not None:
+                keyword, _ = declaration
+                if keyword == "let":
+                    diagnostics.append(
+                        Diagnostic(
+                            span=lhs_span,
+                            message=(
+                                f"cannot assign to immutable local '{match.group('name')}'"
+                            ),
+                            code=_IMMUTABLE_ASSIGNMENT_DIAGNOSTIC,
+                            source="nova",
+                        )
+                    )
+
             expected = self._assignment_target_type(semantic, target)
             if expected not in _SUPPORTED_TYPES:
                 continue
@@ -108,6 +127,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return None
         return suffix.group("type")
 
+    @staticmethod
+    def _local_declaration_keyword(
+        text: str, target: Any
+    ) -> tuple[str, Span] | None:
+        if target.kind != "variable":
+            return None
+        prefix = text[: target.span.start]
+        match = _LOCAL_DECLARATION_PREFIX.search(prefix)
+        if match is None:
+            return None
+        return match.group("keyword"), Span(*match.span("keyword"))
+
     def _nova_code_actions(
         self,
         uri: str,
@@ -124,9 +155,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if current is None or current.semantic.symbols.syntax.document is not document:
             return actions
 
+        references = {
+            (reference.span.start, reference.span.end): reference.target
+            for reference in current.semantic.references
+        }
         for diagnostic in diagnostics:
-            if diagnostic.code != _ASSIGNMENT_TYPE_DIAGNOSTIC:
-                continue
             if not any(item is diagnostic for item in current.diagnostics):
                 continue
             if start_offset == end_offset:
@@ -137,6 +170,38 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     and start_offset < diagnostic.span.end
                 )
             if not overlaps:
+                continue
+
+            if diagnostic.code == _IMMUTABLE_ASSIGNMENT_DIAGNOSTIC:
+                target = references.get((diagnostic.span.start, diagnostic.span.end))
+                if target is None or target.kind != "variable":
+                    continue
+                declaration = self._local_declaration_keyword(document.text, target)
+                if declaration is None:
+                    continue
+                keyword, keyword_span = declaration
+                if keyword != "let":
+                    continue
+                actions.append(
+                    {
+                        "title": "Change immutable local declaration to var",
+                        "kind": "quickfix",
+                        "diagnostics": [self._diagnostic(source, diagnostic)],
+                        "edit": {
+                            "changes": {
+                                uri: [
+                                    {
+                                        "range": self._range(source, keyword_span),
+                                        "newText": "var",
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                )
+                continue
+
+            if diagnostic.code != _ASSIGNMENT_TYPE_DIAGNOSTIC:
                 continue
             match = _ASSIGNMENT_TYPE_MESSAGE.fullmatch(diagnostic.message)
             if match is None:
