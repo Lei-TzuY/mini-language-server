@@ -1,6 +1,6 @@
 """mini-language-server package."""
 
-from .assignment_diagnostics import NovaProductLanguageServer
+from .local_declaration_diagnostics import NovaProductLanguageServer
 from .cancellation import (
     RequestCancelled,
     RequestContext,
