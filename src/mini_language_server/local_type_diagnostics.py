@@ -113,11 +113,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     @staticmethod
     def _starts_same_line_local(code: str, offset: int) -> bool:
-        if not code.startswith("let", offset):
+        keyword = next(
+            (candidate for candidate in ("let", "var") if code.startswith(candidate, offset)),
+            None,
+        )
+        if keyword is None:
             return False
         if offset == 0 or not code[offset - 1].isspace():
             return False
-        end = offset + 3
+        end = offset + len(keyword)
         return end == len(code) or not (code[end].isalnum() or code[end] == "_")
 
     def _nova_code_actions(
