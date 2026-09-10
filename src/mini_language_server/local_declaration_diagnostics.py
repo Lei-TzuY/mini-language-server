@@ -89,6 +89,71 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 scope.pop()
         return tuple(scope)
 
+    @staticmethod
+    def _matching_braces(code: str) -> dict[int, int]:
+        """Return matched structural brace pairs from the trivia-masked code view."""
+        stack: list[int] = []
+        pairs: dict[int, int] = {}
+        for index, char in enumerate(code):
+            if char == "{":
+                stack.append(index)
+            elif char == "}" and stack:
+                pairs[stack.pop()] = index
+        return pairs
+
+    @staticmethod
+    def _is_if_block(code: str, open_brace: int) -> bool:
+        boundary = max(
+            code.rfind(";", 0, open_brace),
+            code.rfind("{", 0, open_brace),
+            code.rfind("}", 0, open_brace),
+        )
+        prefix = code[boundary + 1 : open_brace]
+        return re.search(r"\bif\b[^{};]*$", prefix) is not None
+
+    @classmethod
+    def _if_else_join_initializes(
+        cls,
+        code: str,
+        reference_start: int,
+        reference_scope: tuple[int, ...],
+        assignments: list[tuple[int, tuple[int, ...]]],
+    ) -> bool:
+        """Prove a bounded plain if/else join assigns in both direct arms."""
+        pairs = cls._matching_braces(code)
+        for if_open, if_close in pairs.items():
+            if if_close >= reference_start:
+                continue
+            if cls._brace_scope_at(code, if_open) != reference_scope:
+                continue
+            if not cls._is_if_block(code, if_open):
+                continue
+
+            between = code[if_close + 1 : reference_start]
+            else_match = re.match(r"\s*else\s*\{", between)
+            if else_match is None:
+                continue
+            else_open = if_close + 1 + else_match.end() - 1
+            else_close = pairs.get(else_open)
+            if else_close is None or else_close >= reference_start:
+                continue
+            if cls._brace_scope_at(code, else_open) != reference_scope:
+                continue
+
+            if_scope = reference_scope + (if_open,)
+            else_scope = reference_scope + (else_open,)
+            if_assigned = any(
+                if_open < assignment_start < if_close and assignment_scope == if_scope
+                for assignment_start, assignment_scope in assignments
+            )
+            else_assigned = any(
+                else_open < assignment_start < else_close and assignment_scope == else_scope
+                for assignment_start, assignment_scope in assignments
+            )
+            if if_assigned and else_assigned:
+                return True
+        return False
+
     @classmethod
     def _nova_reads_before_first_assignment(
         cls, semantic: SemanticSnapshot, code: str, declaration: re.Match[str]
@@ -126,6 +191,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 and len(assignment_scope) <= len(reference_scope)
                 and reference_scope[: len(assignment_scope)] == assignment_scope
                 for assignment_start, assignment_scope in assignments
+            ) or cls._if_else_join_initializes(
+                code, reference.span.start, reference_scope, assignments
             )
             if definitely_initialized:
                 continue
