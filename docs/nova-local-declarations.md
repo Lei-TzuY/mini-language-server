@@ -10,6 +10,8 @@ For a typed uninitialized `var`, the adapter reports `nova.uninitialized-read` o
 
 The bounded analysis also proves structurally complete `if`/`else if`/`else` joins when every direct arm contains a resolved assignment to the same exact local symbol before the later read. A missing final `else`, a missing assignment in any arm, or an assignment hidden inside a deeper nested conditional does not prove the join. The adapter intentionally remains conservative for loops, early exits, and other cases that require a fuller control-flow graph.
 
+For a current `nova.uninitialized-read` on a typed uninitialized `var`, the Nova product offers an exact-snapshot quick fix that initializes the resolved declaration in place when its explicit type has a bounded deterministic default: `Int` inserts `0`, `String` inserts `""`, and `Bool` inserts `false`. Unsupported or user-defined types receive no speculative initializer. The action is derived from the exact current diagnostic/reference target and edits only the declaration terminator boundary, so a stale same-version diagnostic cannot repair a replacement snapshot.
+
 The diagnostics are computed from the trivia-masked Nova code view, so declaration-like text and braces in comments and strings are ignored while source offsets remain exact. A typed uninitialized `let` offers a deterministic quick fix that changes only the declaration keyword to `var`; an untyped `var` intentionally has no speculative type-insertion fix.
 
 Like the rest of the Nova product composition, these diagnostics and repairs are published only through the exact current semantic/document snapshot. The generic document, syntax, symbol, semantic, diagnostic, and protocol stores remain language-independent.
