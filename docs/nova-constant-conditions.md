@@ -8,6 +8,10 @@ The same literal proof now feeds bounded `nova.unreachable-code` diagnostics for
 
 If an older return/control-flow unreachable diagnostic already subsumes a constant-dead region, the broader existing diagnostic owns the span. Conversely, a constant-dead body subsumes narrower unreachable diagnostics wholly contained inside that body. This keeps publication deterministic and avoids overlapping duplicate `nova.unreachable-code` reports for the same dead source.
 
+Exact-snapshot code actions now add structural repairs where deleting an entire control-flow fragment is semantics-preserving without CFG speculation. A constant-false `while` can be removed as a whole, a constant-false `if` can be removed as a whole only when it has no direct `else`, and a direct `else { ... }` attached to a constant-true `if` can be removed as a whole. Constant-false `if` statements with an `else` and constant-false `else if` arms deliberately keep only the existing body-level `Remove unreachable code` repair because deleting their surrounding syntax would require a rewrite rather than a safe bounded deletion.
+
+Structural repairs are tied to the exact current `DiagnosticSnapshot` and its exact semantic parent. A superseded same-version diagnostic cannot produce an edit, `didChange` recomputes availability from the new document snapshot, and close/reopen cannot reuse an action tied to an older snapshot chain.
+
 Diagnostics are produced from the current `SemanticSnapshot` publication path. Same-version semantic replacement therefore republishes against the new semantic identity, and close/reopen cannot retain a diagnostic tied to an older document/syntax/symbol/semantic chain.
 
 Examples:
