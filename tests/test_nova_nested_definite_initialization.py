@@ -78,6 +78,21 @@ def test_incomplete_nested_conditional_remains_conservative() -> None:
     assert diagnostics[0].span.start == text.index("value", text.index("copy"))
 
 
+def test_else_if_tail_is_not_treated_as_independent_complete_chain() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(first: Bool, second: Bool) { var value: Int; "
+        "if first { let untouched = 1; } else if second { value = 2; } "
+        "else { value = 3; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = uninitialized_reads(server, uri)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].span.start == text.index("value", text.index("copy"))
+
+
 def test_did_change_rebinds_nested_conditional_proof_to_current_snapshot() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
