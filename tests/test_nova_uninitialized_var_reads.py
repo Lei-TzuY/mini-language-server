@@ -135,6 +135,62 @@ def test_nested_conditional_assignment_in_arm_does_not_prove_if_else_join() -> N
     assert diagnostics[0].span.start == text.index("value", text.index("copy"))
 
 
+def test_complete_else_if_chain_initializes_later_outer_read() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(first: Bool, second: Bool) { var value: Int; "
+        "if first { value = 1; } else if second { value = 2; } else { value = 3; } "
+        "let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_missing_assignment_in_else_if_arm_does_not_prove_join() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(first: Bool, second: Bool) { var value: Int; "
+        "if first { value = 1; } else if second { let other = 2; } else { value = 3; } "
+        "let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = uninitialized_reads(server, uri)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].span.start == text.index("value", text.index("copy"))
+
+
+def test_else_if_chain_without_final_else_remains_uninitialized() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(first: Bool, second: Bool) { var value: Int; "
+        "if first { value = 1; } else if second { value = 2; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = uninitialized_reads(server, uri)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].span.start == text.index("value", text.index("copy"))
+
+
+def test_nested_assignment_in_else_if_arm_does_not_prove_join() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(first: Bool, second: Bool, nested: Bool) { var value: Int; "
+        "if first { value = 1; } else if second { if nested { value = 2; } } "
+        "else { value = 3; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = uninitialized_reads(server, uri)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].span.start == text.index("value", text.index("copy"))
+
+
 def test_multiple_reads_before_first_assignment_are_deterministic() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
@@ -203,6 +259,33 @@ def test_did_change_rebinds_if_else_join_to_current_snapshot() -> None:
     valid = (
         "fn main(flag: Bool) { var value: Int; "
         "if flag { value = 1; } else { value = 2; } let copy = value; }\n"
+    )
+    open_nova(server, uri, invalid, 1)
+    assert len(uninitialized_reads(server, uri)) == 1
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": valid}],
+            },
+        )
+    )
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_did_change_rebinds_else_if_join_to_current_snapshot() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    invalid = (
+        "fn main(first: Bool, second: Bool) { var value: Int; "
+        "if first { value = 1; } else if second { value = 2; } let copy = value; }\n"
+    )
+    valid = (
+        "fn main(first: Bool, second: Bool) { var value: Int; "
+        "if first { value = 1; } else if second { value = 2; } else { value = 3; } "
+        "let copy = value; }\n"
     )
     open_nova(server, uri, invalid, 1)
     assert len(uninitialized_reads(server, uri)) == 1
