@@ -26,8 +26,8 @@ _PARAMETER_PART = re.compile(r"[^,]+")
 _PARAMETER = re.compile(
     rf"^\s*({_IDENTIFIER})(?:\s*:\s*{_SIMPLE_TYPE_REF})?\s*$"
 )
-_LOCAL_DECLARATION = re.compile(rf"\blet\s+({_IDENTIFIER})\b")
-_KEYWORDS = frozenset({"fn", "let"})
+_LOCAL_DECLARATION = re.compile(rf"\b(?:let|var)\s+({_IDENTIFIER})\b")
+_KEYWORDS = frozenset({"fn", "let", "var"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,13 +57,13 @@ class NovaFunctionAdapter:
 
     The adapter owns named ``fn`` declarations, identifier calls, bare legacy or
     Nova-style typed parameters with simple identifier/never surface types, optional
-    explicit simple return types, and function-scoped ``let`` variables. Parameter and
-    local references
-    resolve only inside the owning function body. A local takes precedence after its
-    declaration when exactly one preceding local with that name exists; otherwise a
-    unique parameter remains visible. Function calls resolve only when exactly one
-    function declaration with that name exists. Bare identifiers that cannot resolve
-    to a visible parameter or local are published as deterministic diagnostics.
+    explicit simple return types, and function-scoped ``let``/``var`` variables.
+    Parameter and local references resolve only inside the owning function body. A
+    local takes precedence after its declaration when exactly one preceding local with
+    that name exists; otherwise a unique parameter remains visible. Function calls
+    resolve only when exactly one function declaration with that name exists. Bare
+    identifiers that cannot resolve to a visible parameter or local are published as
+    deterministic diagnostics.
     """
 
     language_id = "nova"
