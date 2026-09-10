@@ -58,7 +58,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             target = references.get((lhs_span.start, lhs_span.end))
             if target is None or target.kind not in {"variable", "parameter"}:
                 continue
-            expected = self._explicit_assignment_target_type(text, target)
+            expected = self._assignment_target_type(semantic, target)
             if expected not in _SUPPORTED_TYPES:
                 continue
 
@@ -80,6 +80,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 )
             )
         return tuple(diagnostics)
+
+    def _assignment_target_type(self, semantic: SemanticSnapshot, target: Any) -> str | None:
+        text = semantic.symbols.syntax.document.text
+        explicit = self._explicit_assignment_target_type(text, target)
+        if explicit is not None:
+            return explicit
+        if target.kind != "variable":
+            return None
+        return self._local_type(semantic, target, frozenset())
 
     @staticmethod
     def _explicit_assignment_target_type(text: str, target: Any) -> str | None:
