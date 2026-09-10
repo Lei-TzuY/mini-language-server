@@ -62,6 +62,40 @@ def test_nested_if_and_while_bodies_report_unreachable_suffixes() -> None:
     )
 
 
+def test_loop_control_marks_only_loop_owned_suffixes_unreachable() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) {\n"
+        "  break; let outside = 0;\n"
+        "  while (flag) { break; let after_break = 1; }\n"
+        "  while (flag) { if (flag) { continue; let after_continue = 2; } }\n"
+        "}\n"
+    )
+    open_nova(server, uri, text, 1)
+
+    assert unreachable_texts(server, uri) == (
+        "let after_break = 1;",
+        "let after_continue = 2;",
+    )
+
+
+def test_nested_loop_control_does_not_kill_outer_loop_body() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) {\n"
+        "  while (flag) {\n"
+        "    if (flag) { break; let nested_dead = 1; }\n"
+        "    let outer_live = 2;\n"
+        "  }\n"
+        "}\n"
+    )
+    open_nova(server, uri, text, 1)
+
+    assert unreachable_texts(server, uri) == ("let nested_dead = 1;",)
+
+
 def test_nested_branch_complete_statement_marks_its_body_suffix_unreachable() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
