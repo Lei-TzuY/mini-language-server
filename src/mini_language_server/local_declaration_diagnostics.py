@@ -111,6 +111,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         prefix = code[boundary + 1 : open_brace]
         return re.search(r"\bif\b[^{};]*$", prefix) is not None
 
+    @staticmethod
+    def _direct_scope_assigned(
+        branch_open: int,
+        branch_close: int,
+        branch_scope: tuple[int, ...],
+        assignments: list[tuple[int, tuple[int, ...]]],
+    ) -> bool:
+        return any(
+            branch_open < assignment_start < branch_close
+            and assignment_scope == branch_scope
+            for assignment_start, assignment_scope in assignments
+        )
+
     @classmethod
     def _if_else_join_initializes(
         cls,
@@ -119,7 +132,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         reference_scope: tuple[int, ...],
         assignments: list[tuple[int, tuple[int, ...]]],
     ) -> bool:
-        """Prove a bounded plain if/else join assigns in both direct arms."""
+        """Prove a bounded complete if/else-if/else join assigns in every direct arm."""
         pairs = cls._matching_braces(code)
         for if_open, if_close in pairs.items():
             if if_close >= reference_start:
@@ -129,29 +142,53 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if not cls._is_if_block(code, if_open):
                 continue
 
-            between = code[if_close + 1 : reference_start]
-            else_match = re.match(r"\s*else\s*\{", between)
-            if else_match is None:
-                continue
-            else_open = if_close + 1 + else_match.end() - 1
-            else_close = pairs.get(else_open)
-            if else_close is None or else_close >= reference_start:
-                continue
-            if cls._brace_scope_at(code, else_open) != reference_scope:
-                continue
+            branch_open = if_open
+            branch_close = if_close
+            all_assigned = cls._direct_scope_assigned(
+                branch_open,
+                branch_close,
+                reference_scope + (branch_open,),
+                assignments,
+            )
+            cursor = branch_close + 1
 
-            if_scope = reference_scope + (if_open,)
-            else_scope = reference_scope + (else_open,)
-            if_assigned = any(
-                if_open < assignment_start < if_close and assignment_scope == if_scope
-                for assignment_start, assignment_scope in assignments
-            )
-            else_assigned = any(
-                else_open < assignment_start < else_close and assignment_scope == else_scope
-                for assignment_start, assignment_scope in assignments
-            )
-            if if_assigned and else_assigned:
-                return True
+            while cursor < reference_start:
+                remainder = code[cursor:reference_start]
+                else_if_match = re.match(r"\s*else\s+if\b[^{};]*\{", remainder)
+                if else_if_match is not None:
+                    branch_open = cursor + else_if_match.end() - 1
+                    branch_close = pairs.get(branch_open, -1)
+                    if branch_close < branch_open or branch_close >= reference_start:
+                        break
+                    if cls._brace_scope_at(code, branch_open) != reference_scope:
+                        break
+                    all_assigned = all_assigned and cls._direct_scope_assigned(
+                        branch_open,
+                        branch_close,
+                        reference_scope + (branch_open,),
+                        assignments,
+                    )
+                    cursor = branch_close + 1
+                    continue
+
+                else_match = re.match(r"\s*else\s*\{", remainder)
+                if else_match is None:
+                    break
+                branch_open = cursor + else_match.end() - 1
+                branch_close = pairs.get(branch_open, -1)
+                if branch_close < branch_open or branch_close >= reference_start:
+                    break
+                if cls._brace_scope_at(code, branch_open) != reference_scope:
+                    break
+                all_assigned = all_assigned and cls._direct_scope_assigned(
+                    branch_open,
+                    branch_close,
+                    reference_scope + (branch_open,),
+                    assignments,
+                )
+                if all_assigned:
+                    return True
+                break
         return False
 
     @classmethod
