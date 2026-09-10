@@ -7,9 +7,9 @@ from .cancellation import (
     RequestTracker,
     StaleRequest,
 )
+from .constant_condition_diagnostics import NovaProductLanguageServer
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
 from .documents import Document, DocumentError, DocumentStore
-from .loop_exit_initialization import NovaProductLanguageServer
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
 from .semantic import Reference, SemanticDatabase, SemanticError, SemanticSnapshot
 from .server import LanguageServer, ServerState
