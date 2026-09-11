@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+from threading import Event, Thread
+from typing import Any
+
+from mini_language_server import NovaProductLanguageServer
+
+
+def request(method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+
+
+def notify(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "method": method, "params": params}
+
+
+def initialize(server: NovaProductLanguageServer) -> None:
+    assert server.handle(request("initialize", 1, {"capabilities": {}})) is not None
+
+
+def open_nova(server: NovaProductLanguageServer, uri: str, version: int, text: str) -> None:
+    server.handle(
+        notify(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "nova",
+                    "version": version,
+                    "text": text,
+                }
+            },
+        )
+    )
+
+
+def hover_response(
+    server: NovaProductLanguageServer, uri: str, request_id: int, marked: str
+) -> dict[str, Any]:
+    marker = marked.index("/*cursor*/")
+    visible = marked.replace("/*cursor*/", "")
+    document = server.documents.get(uri)
+    assert document is not None
+    assert document.text == visible
+    line = visible.count("\n", 0, marker)
+    line_start = visible.rfind("\n", 0, marker) + 1
+    result = server.handle(
+        request(
+            "textDocument/hover",
+            request_id,
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": marker - line_start},
+            },
+        )
+    )
+    assert result is not None
+    return result
+
+
+def hover_value(server: NovaProductLanguageServer, uri: str, request_id: int, marked: str) -> str:
+    response = hover_response(server, uri, request_id, marked)
+    assert response.get("result") is not None
+    return response["result"]["contents"]["value"]
+
+
+def test_numeric_intrinsic_hover_exposes_constants_and_conversion_signatures() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    marked = "fn main() -> Unit { let a = UInt::M/*cursor*/IN; return (); }\n"
+    open_nova(server, uri, 1, marked.replace("/*cursor*/", ""))
+    assert hover_value(server, uri, 2, marked) == "constant UInt::MIN: UInt"
+
+    changed = "fn main() -> Unit { let a = Int::from_/*cursor*/uint(UInt::MAX); return (); }\n"
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": changed.replace("/*cursor*/", "")}],
+            },
+        )
+    )
+    assert hover_value(server, uri, 3, changed) == "fn Int::from_uint(value: UInt) -> Int"
+
+
+def test_numeric_intrinsic_hover_close_reopen_uses_new_snapshot() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    old = "fn main() -> Unit { let a = UInt::M/*cursor*/AX; return (); }\n"
+    open_nova(server, uri, 1, old.replace("/*cursor*/", ""))
+    assert hover_value(server, uri, 2, old) == "constant UInt::MAX: UInt"
+    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
+    new = "fn main() -> Unit { let a = UInt::fr/*cursor*/om(1); return (); }\n"
+    open_nova(server, uri, 1, new.replace("/*cursor*/", ""))
+    assert hover_value(server, uri, 3, new) == "fn UInt::from(value: Int) -> UInt"
+
+
+def test_same_version_workspace_replacement_suppresses_stale_intrinsic_hover() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    marked = "fn main() -> Unit { let a = UInt::M/*cursor*/IN; return (); }\n"
+    open_nova(server, uri, 1, marked.replace("/*cursor*/", ""))
+    original = server.workspace_symbols.get(uri)
+    assert original is not None
+    real_commit = server.workspace_symbols.commit_snapshots_if_current
+
+    def replace_then_commit(snapshots, callback):
+        document = server.documents.get(uri)
+        assert document is not None
+        replacement = server.nova_adapter.publish(server, document)
+        server.workspace_symbols.replace(replacement, expected=original)
+        return real_commit(snapshots, callback)
+
+    server.workspace_symbols.commit_snapshots_if_current = replace_then_commit  # type: ignore[method-assign]
+    assert hover_response(server, uri, 41, marked) == {
+        "jsonrpc": "2.0",
+        "id": 41,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+
+def test_numeric_intrinsic_hover_honors_cancellation_checkpoint() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    marked = "fn main() -> Unit { let a = UInt::M/*cursor*/IN; return (); }\n"
+    open_nova(server, uri, 1, marked.replace("/*cursor*/", ""))
+    entered = Event()
+    release = Event()
+    responses: list[dict[str, Any] | None] = []
+    original = server.requests.checkpoint
+    blocked = False
+
+    def blocked_checkpoint(context):
+        nonlocal blocked
+        if not blocked:
+            blocked = True
+            entered.set()
+            assert release.wait(timeout=5)
+        return original(context)
+
+    server.requests.checkpoint = blocked_checkpoint  # type: ignore[method-assign]
+    thread = Thread(target=lambda: responses.append(hover_response(server, uri, 42, marked)))
+    thread.start()
+    assert entered.wait(timeout=5)
+    server.handle(notify("$/cancelRequest", {"id": 42}))
+    release.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert responses == [
+        {
+            "jsonrpc": "2.0",
+            "id": 42,
+            "error": {"code": -32800, "message": "Request cancelled"},
+        }
+    ]
