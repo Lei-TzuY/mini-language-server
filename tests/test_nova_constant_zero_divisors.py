@@ -90,7 +90,7 @@ def test_constant_expression_zero_divisors_report_exact_repair_spans() -> None:
     assert len(diagnostics) == 3
     assert [
         text[item.span.start : item.span.end] for item in diagnostics
-    ] == ["1 - 1", "2 * 3 - 6", "7 % 7"]
+    ] == ["1 - 1", "2 * 3 - 6", "(7 % 7)"]
 
 
 def test_constant_expression_evaluation_obeys_precedence_and_truncation() -> None:
