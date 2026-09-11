@@ -9,7 +9,7 @@ from .source import Span
 
 _EQUALITY = frozenset({"==", "!="})
 _ORDERING = frozenset({"<", "<=", ">", ">="})
-_BOUNDED_EQUALITY_TYPES = frozenset({"Int", "String", "Bool"})
+_BOUNDED_EQUALITY_TYPES = frozenset({"Int", "String", "Bool", "Unit"})
 _COMPARISON_TOKENS = ("==", "!=", "<=", ">=", "<", ">")
 
 
