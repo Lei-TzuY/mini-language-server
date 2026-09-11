@@ -9,7 +9,9 @@ from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .uint_conversion_actions import NovaProductLanguageServer as _NovaProductLanguageServer
 from .workspace import WorkspaceIndexError
 
-_MEMBER_PREFIX = re.compile(r"(?P<type>UInt|Int)\s*::\s*(?P<prefix>[A-Za-z_][A-Za-z0-9_]*)?$")
+_MEMBER_PREFIX = re.compile(
+    r"(?P<type>UInt|Int)\s*::\s*(?P<prefix>[A-Za-z_][A-Za-z0-9_]*)?$"
+)
 _INTRINSICS: dict[str, tuple[tuple[str, str], ...]] = {
     "UInt": (
         ("MIN", "constant: UInt"),
