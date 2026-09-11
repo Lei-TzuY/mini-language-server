@@ -132,14 +132,14 @@ def test_arithmetic_argument_mismatch_exposes_existing_quick_fix() -> None:
     assert any(action["kind"] == "quickfix" for action in actions)
 
 
-def test_unary_integer_signs_reach_return_and_argument_validation() -> None:
+def test_unary_integer_negation_reaches_return_and_argument_validation() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
     open_nova(
         server,
         uri,
         "fn sink(value: Bool) {}\n"
-        "fn main(input: Int) -> Bool { sink(+input); return -(input + 1); }\n",
+        "fn main(input: Int) -> Bool { sink(-input); return -(input + 1); }\n",
     )
 
     codes = diagnostic_codes(server, uri)
@@ -147,19 +147,41 @@ def test_unary_integer_signs_reach_return_and_argument_validation() -> None:
     assert "nova.return-type" in codes
 
 
-def test_unary_integer_signs_feed_local_expression_typing() -> None:
+def test_unary_integer_negation_feeds_local_expression_typing() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
     open_nova(
         server,
         uri,
-        "fn main(input: Int) { let value: Bool = -(+input); }\n",
+        "fn main(input: Int) { let value: Bool = -(-input); }\n",
     )
 
     assert "nova.local-type" in diagnostic_codes(server, uri)
 
 
-def test_unary_sign_over_non_integer_remains_conservative() -> None:
+def test_unsupported_unary_plus_remains_conservative_across_consumers() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        "fn sink(value: Bool) {}\n"
+        "fn inferred(input: Int) { +input }\n"
+        "fn main(input: Int) -> Bool {\n"
+        "  sink(+input);\n"
+        "  sink(inferred(input));\n"
+        "  let value: Bool = +input;\n"
+        "  return +input;\n"
+        "}\n",
+    )
+
+    codes = diagnostic_codes(server, uri)
+    assert "nova.argument-type" not in codes
+    assert "nova.local-type" not in codes
+    assert "nova.return-type" not in codes
+
+
+def test_unary_negation_over_non_integer_remains_conservative() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
     open_nova(
@@ -171,7 +193,7 @@ def test_unary_sign_over_non_integer_remains_conservative() -> None:
     assert "nova.argument-type" not in diagnostic_codes(server, uri)
 
 
-def test_cross_file_unary_sign_rebinds_after_result_type_change() -> None:
+def test_cross_file_unary_negation_rebinds_after_result_type_change() -> None:
     server = initialized_server()
     source_uri = "file:///workspace/source.nova"
     main_uri = "file:///workspace/main.nova"
