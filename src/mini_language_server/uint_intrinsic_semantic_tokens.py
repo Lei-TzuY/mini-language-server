@@ -85,12 +85,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         requested_span: Span | None = None,
     ) -> list[int]:
         source = SourceText(text)
-        decoded = self._decode_semantic_tokens(encode_semantic_tokens(symbols, requested_span=requested_span))
+        data = encode_semantic_tokens(symbols, requested_span=requested_span)
+        decoded = self._decode_semantic_tokens(data)
         occupied = {(line, character, length) for line, character, length, _, _ in decoded}
 
         code = self.nova_adapter.code_view(text)
         for match in _INTRINSIC_MEMBER.finditer(code):
-            token_type = _VALID_INTRINSICS.get((match.group("type"), match.group("member")))
+            key = (match.group("type"), match.group("member"))
+            token_type = _VALID_INTRINSICS.get(key)
             if token_type is None:
                 continue
             for group, kind in (("type", "type"), ("member", token_type)):
@@ -119,7 +121,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         return self._encode_absolute_semantic_tokens(decoded)
 
     @staticmethod
-    def _decode_semantic_tokens(data: list[int]) -> list[tuple[int, int, int, int, int]]:
+    def _decode_semantic_tokens(
+        data: list[int],
+    ) -> list[tuple[int, int, int, int, int]]:
         decoded: list[tuple[int, int, int, int, int]] = []
         line = 0
         character = 0
