@@ -65,7 +65,30 @@ def test_conversion_range_diagnostics_cover_provable_checked_failures() -> None:
     ]
     assert "constant Int value -1" in diagnostics[0].message
     assert "constant Int value -2" in diagnostics[1].message
-    assert "UInt::MAX" in diagnostics[2].message
+    assert "constant UInt value" in diagnostics[2].message
+
+
+def test_conversion_range_diagnostics_use_known_uint_intrinsic_constants() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() -> Unit {\n"
+        "  let a = Int::from_uint(UInt::MAX);\n"
+        "  let b = Int::from_uint((( UInt :: MAX )));\n"
+        "  let c = Int::from_uint(UInt::MIN);\n"
+        "  let d = UInt::from(UInt::MAX);\n"
+        "  return ();\n"
+        "}\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = range_diagnostics(server, uri)
+    assert len(diagnostics) == 2
+    assert [text[item.span.start : item.span.end] for item in diagnostics] == [
+        "UInt::MAX",
+        "(( UInt :: MAX ))",
+    ]
+    assert all(str((1 << 64) - 1) in item.message for item in diagnostics)
 
 
 def test_conversion_range_diagnostics_stay_fail_closed_for_safe_or_unknown_values() -> None:
