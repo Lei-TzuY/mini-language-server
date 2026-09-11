@@ -45,13 +45,16 @@ def open_nova(
 def hover_target(
     server: NovaProductLanguageServer, uri: str, request_id: int
 ) -> dict[str, Any]:
+    document = server.documents.get(uri)
+    assert document is not None
+    offset = document.text.rindex("target")
     response = server.handle(
         request(
             "textDocument/hover",
             request_id,
             {
                 "textDocument": {"uri": uri},
-                "position": {"line": 0, "character": 15},
+                "position": {"line": 0, "character": offset},
             },
         )
     )
