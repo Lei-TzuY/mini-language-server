@@ -32,9 +32,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         tail = self._bounded_tail_expression(text, code, opening + 1, closing)
         body_code = code[opening + 1 : closing]
         if _RETURN.search(body_code) is not None:
-            if tail is not None:
-                return None
-            return super()._bounded_function_return_type(declaration, resolving)
+            if tail is None:
+                return super()._bounded_function_return_type(declaration, resolving)
+            expression, _ = tail
+            if _RETURN.match(self.nova_adapter.code_view(expression)) is not None:
+                return super()._bounded_function_return_type(declaration, resolving)
+            return None
 
         inherited = super()._bounded_function_return_type(declaration, resolving)
         if inherited is not None or tail is None:
