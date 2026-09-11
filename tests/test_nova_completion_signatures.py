@@ -56,7 +56,7 @@ def test_completion_exposes_unique_same_and_cross_file_function_signatures() -> 
 
     details = completion_details(server, main_uri)
     assert details["helper"] == "fn helper(value: Int) -> Int"
-    assert details["main"] == "fn main(input: String)"
+    assert details["main"] == "fn main(input: String) -> String"
     assert details["input"] == "parameter: String"
 
 
