@@ -62,6 +62,31 @@ def return_diagnostics(server: NovaProductLanguageServer, uri: str):
     return [item for item in diagnostics(server, uri) if item.code == "nova.return-type"]
 
 
+def code_action(
+    server: NovaProductLanguageServer,
+    uri: str,
+    request_id: int,
+    start: int,
+    end: int,
+) -> dict[str, Any]:
+    result = server.handle(
+        request(
+            "textDocument/codeAction",
+            request_id,
+            {
+                "textDocument": {"uri": uri},
+                "range": {
+                    "start": {"line": 0, "character": start},
+                    "end": {"line": 0, "character": end},
+                },
+                "context": {"diagnostics": [], "only": ["quickfix"]},
+            },
+        )
+    )
+    assert result is not None
+    return result
+
+
 def test_matching_literal_tail_satisfies_explicit_return_type() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
@@ -199,23 +224,33 @@ def test_tail_mismatch_reuses_exact_snapshot_return_quick_fix() -> None:
     text = 'fn value() -> Int { "bad" }\n'
     open_nova(server, uri, text)
     start = text.index('"bad"')
-    result = server.handle(
-        request(
-            "textDocument/codeAction",
-            2,
-            {
-                "textDocument": {"uri": uri},
-                "range": {
-                    "start": {"line": 0, "character": start},
-                    "end": {"line": 0, "character": start + len('"bad"')},
-                },
-                "context": {"diagnostics": [], "only": ["quickfix"]},
-            },
-        )
-    )
-    assert result is not None
-    actions = result["result"]
+
+    actions = code_action(server, uri, 2, start, start + len('"bad"'))["result"]
     assert len(actions) == 1
     assert actions[0]["title"] == "Replace return expression with Int literal"
     edit = actions[0]["edit"]["changes"][uri][0]
     assert edit["newText"] == "0"
+
+
+def test_tail_quick_fix_honors_cancellation_checkpoint() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = 'fn value() -> Int { "bad" }\n'
+    open_nova(server, uri, text)
+    start = text.index('"bad"')
+    real_checkpoint = server.requests.checkpoint
+    cancelled = False
+
+    def cancel_then_checkpoint(context):
+        nonlocal cancelled
+        if not cancelled:
+            cancelled = True
+            server.requests.cancel(context.request_id)
+        real_checkpoint(context)
+
+    server.requests.checkpoint = cancel_then_checkpoint  # type: ignore[method-assign]
+    assert code_action(server, uri, 2, start, start + len('"bad"')) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
