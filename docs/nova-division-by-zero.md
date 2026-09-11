@@ -1,9 +1,13 @@
 # Bounded Nova zero-divisor diagnostics
 
-The Nova product reports `nova.division-by-zero` when the trivia-masked source contains an integer `/` or `%` operation whose divisor is the statically literal zero token `0`, `+0`, or `-0`. The same diagnostic applies when that exact signed-zero literal is wrapped only in balanced parentheses and whitespace, including forms such as `(0)`, `(+0)`, and `(( -0 ))`.
+The Nova product reports `nova.division-by-zero` when the trivia-masked source contains an integer `/` or `%` operation whose divisor is statically known to be zero inside the bounded integer-constant grammar.
 
-The diagnostic is deliberately conservative. It does not attempt constant folding, alias evaluation, or speculative value analysis, and comments or quoted strings cannot manufacture a diagnostic. Parenthesized compound expressions such as `(0 + 1)` and structurally incomplete parenthesized expressions are not treated as zero divisors. The diagnostic span owns only the exact signed-zero literal in the original source, not its surrounding parentheses.
+Direct signed-zero tokens `0`, `+0`, and `-0` remain supported, including forms wrapped only in balanced parentheses and whitespace such as `(0)`, `(+0)`, and `(( -0 ))`. The bounded evaluator also accepts parenthesized integer expressions composed only from decimal integer literals, unary `+`/`-`, balanced parentheses, and `+`, `-`, `*`, `/`, `%`, with normal arithmetic precedence and truncating integer division. This allows deterministic cases such as `(1 - 1)`, `(8 - 2 * 4)`, and `((7 % 7))` to be diagnosed.
 
-For an exact current diagnostic snapshot, `textDocument/codeAction` exposes `Replace zero divisor with 1`. The edit replaces only the diagnosed divisor span, preserving any surrounding parentheses. Publication follows the existing diagnostic-snapshot identity checks, so a same-version semantic replacement, document change, close/reopen transition, or other superseding publication cannot reuse an obsolete diagnostic to manufacture an edit.
+The analysis remains fail-closed. Identifiers, calls, unsupported tokens, malformed expressions, and expressions whose own evaluation would divide or take a remainder by zero are not folded speculatively. An inner independently provable zero divisor can still receive its own diagnostic. Comments and quoted strings cannot manufacture diagnostics because evaluation runs over the Nova trivia-masked source view.
 
-The language-independent document, syntax, symbol, semantic, diagnostic, and protocol stores remain unchanged; this policy is composed only in the final Nova product layer.
+For a direct or purely parenthesized signed-zero divisor, the diagnostic span continues to own only the exact signed-zero token. For a compound constant expression, it owns the smallest complete evaluated expression inside its surrounding divisor parentheses. This keeps the repair range syntactically bounded while preserving outer parentheses.
+
+For an exact current diagnostic snapshot, `textDocument/codeAction` exposes `Replace zero divisor with 1`. The edit replaces only the diagnosed divisor span. Publication follows the existing diagnostic-snapshot identity checks, so a same-version semantic replacement, document change, close/reopen transition, or other superseding publication cannot reuse an obsolete diagnostic to manufacture an edit.
+
+The language-independent document, syntax, symbol, semantic, diagnostic, and protocol stores remain unchanged; this policy and evaluator are composed only in the final Nova product layer.
