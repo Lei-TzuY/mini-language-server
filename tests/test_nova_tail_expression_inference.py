@@ -131,7 +131,7 @@ def test_explicit_return_plus_tail_remains_conservative() -> None:
     open_nova(server, main_uri, text)
 
     assert hover_target(server, main_uri, 2)["result"]["contents"]["value"] == (
-        "fn target"
+        "fn target()"
     )
 
 
@@ -145,7 +145,7 @@ def test_recursive_tail_inference_remains_cycle_safe() -> None:
     )
     open_nova(server, uri, text)
 
-    assert hover_target(server, uri, 2)["result"]["contents"]["value"] == "fn target"
+    assert hover_target(server, uri, 2)["result"]["contents"]["value"] == "fn target()"
 
 
 def test_same_version_workspace_replacement_suppresses_tail_hover(monkeypatch) -> None:
