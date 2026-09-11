@@ -16,10 +16,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         declaration: Any,
         resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> str | None:
-        inherited = super()._bounded_function_return_type(declaration, resolving)
-        if inherited is not None:
-            return inherited
-
         identity = self._inference_identity(declaration)
         if identity in resolving:
             return None
@@ -33,13 +29,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if closing is None:
             return None
 
+        tail = self._bounded_tail_expression(text, code, opening + 1, closing)
         body_code = code[opening + 1 : closing]
         if _RETURN.search(body_code) is not None:
-            return None
+            if tail is not None:
+                return None
+            return super()._bounded_function_return_type(declaration, resolving)
 
-        tail = self._bounded_tail_expression(text, code, opening + 1, closing)
-        if tail is None:
-            return None
+        inherited = super()._bounded_function_return_type(declaration, resolving)
+        if inherited is not None or tail is None:
+            return inherited
+
         expression, expression_span = tail
         return self._inference_expression_type(
             declaration.snapshot,
