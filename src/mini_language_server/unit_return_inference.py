@@ -44,9 +44,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             else:
                 saw_bare_return = True
 
-        inferred = super()._bounded_function_return_type(declaration, resolving)
         if not saw_bare_return:
-            return inferred
-        if not saw_value_return:
-            return "Unit"
-        return "Unit" if inferred == "Unit" else None
+            return super()._bounded_function_return_type(declaration, resolving)
+        if saw_value_return:
+            return None
+        return "Unit"
