@@ -78,11 +78,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     ) -> tuple[str, Span] | None:
         """Return one top-level final expression after the last statement terminator.
 
-        This intentionally does not parse arbitrary Nova blocks. It only isolates the
-        final top-level source region after the last top-level semicolon, then lets the
-        existing exact-snapshot expression typing decide whether that region is a
-        supported expression. Nested delimiters are ignored while locating statement
-        boundaries so semicolons inside nested blocks cannot manufacture a tail.
+        Structural scanning uses the trivia-masked view so semicolons inside strings
+        and comments cannot manufacture statement boundaries. Final edge trimming uses
+        the original source, preserving string literals for exact expression typing.
+        Comments adjacent to a candidate therefore remain conservative rather than
+        being reinterpreted as expression text.
         """
         candidate_start = start
         brace_depth = 0
@@ -110,10 +110,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             ):
                 candidate_start = offset + 1
 
-        while candidate_start < end and code[candidate_start].isspace():
+        while candidate_start < end and text[candidate_start].isspace():
             candidate_start += 1
         candidate_end = end
-        while candidate_end > candidate_start and code[candidate_end - 1].isspace():
+        while candidate_end > candidate_start and text[candidate_end - 1].isspace():
             candidate_end -= 1
         if candidate_start >= candidate_end:
             return None
