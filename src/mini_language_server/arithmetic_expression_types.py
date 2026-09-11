@@ -42,7 +42,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if split is None:
             split = self._top_level_operator(expression, _MULTIPLICATIVE)
         if split is None:
-            unary = self._unary_sign_operand(expression, span)
+            unary = self._unary_negation_operand(expression, span)
             if unary is not None:
                 operand, operand_span = unary
                 operand_type = self._inference_expression_type(
@@ -94,7 +94,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if split is None:
             split = self._top_level_operator(expression, _MULTIPLICATIVE)
         if split is None:
-            unary = self._unary_sign_operand(expression, span)
+            unary = self._unary_negation_operand(expression, span)
             if unary is not None:
                 operand, operand_span = unary
                 operand_type = self._integer_arithmetic_type(
@@ -173,11 +173,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             candidate = (char, offset)
         return candidate
 
-    def _unary_sign_operand(
+    def _unary_negation_operand(
         self, expression: str, span: Span
     ) -> tuple[str, Span] | None:
+        """Return Nova's unary `-` operand while rejecting unsupported unary `+`."""
         code = self.nova_adapter.code_view(expression)
-        if not code or code[0] not in _ADDITIVE:
+        if not code or code[0] != "-":
             return None
         operand, operand_span = self._trim_expression(
             expression[1:], Span(span.start + 1, span.end)
