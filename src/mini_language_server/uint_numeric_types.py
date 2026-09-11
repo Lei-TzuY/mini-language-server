@@ -95,6 +95,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         expression, span = self._trim_expression(expression, span)
         expression, span = self._unwrap_expression_with_span(expression, span)
 
+        # Logical composition has lower precedence than comparisons. Preserve the
+        # existing logical layer as the owner of expressions containing &&, ||,
+        # or unary ! instead of claiming an embedded comparison too early.
+        if self._has_logical_operator(expression):
+            return super()._inference_expression_type(
+                semantic,
+                expression,
+                span,
+                resolving,
+            )
+
         operators = self._top_level_comparison_operators(expression)
         if operators:
             if len(operators) != 1:
