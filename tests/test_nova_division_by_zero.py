@@ -93,6 +93,34 @@ def test_literal_zero_divisors_report_exact_spans_and_ignore_trivia() -> None:
     ] == ["0", "-0"]
 
 
+def test_parenthesized_zero_divisors_report_inner_exact_spans() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() { let a = 10 / (0); let b = 11 % (( -0 )); "
+        "let c = 12 / (+0); }\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = zero_diagnostics(server, uri)
+    assert len(diagnostics) == 3
+    assert [
+        text[item.span.start : item.span.end] for item in diagnostics
+    ] == ["0", "-0", "+0"]
+
+
+def test_incomplete_or_nonzero_parenthesized_divisors_remain_conservative() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() { let a = 10 / (0 + 1); let b = 11 % (1); "
+        "let c = 12 / ((0); }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert zero_diagnostics(server, uri) == []
+
+
 def test_zero_divisor_quick_fix_replaces_only_diagnosed_literal() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
@@ -113,11 +141,31 @@ def test_zero_divisor_quick_fix_replaces_only_diagnosed_literal() -> None:
     ]
 
 
+def test_parenthesized_zero_divisor_quick_fix_preserves_parentheses() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn main() { let value = 10 / ((-0)); }\n"
+    open_nova(server, uri, text)
+    start = text.index("-0")
+
+    actions = replacement_actions(server, uri, start, start + 2, 2)
+    assert len(actions) == 1
+    assert actions[0]["edit"]["changes"][uri] == [
+        {
+            "range": {
+                "start": {"line": 0, "character": start},
+                "end": {"line": 0, "character": start + 2},
+            },
+            "newText": "1",
+        }
+    ]
+
+
 def test_zero_divisor_diagnostics_track_change_close_and_reopen() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    invalid = "fn main() { let value = 10 / 0; }\n"
-    valid = "fn main() { let value = 10 / 2; }\n"
+    invalid = "fn main() { let value = 10 / (0); }\n"
+    valid = "fn main() { let value = 10 / (2); }\n"
     open_nova(server, uri, invalid, 1)
     assert len(zero_diagnostics(server, uri)) == 1
 
@@ -143,7 +191,7 @@ def test_zero_divisor_diagnostics_track_change_close_and_reopen() -> None:
 def test_zero_divisor_quick_fix_rejects_superseded_same_version_diagnostic() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    text = "fn main() { let value = 10 / 0; }\n"
+    text = "fn main() { let value = 10 / ((0)); }\n"
     open_nova(server, uri, text, 1)
 
     first_snapshot = server.diagnostics.get(uri)
