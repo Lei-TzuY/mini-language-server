@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-
 from .diagnostics import Diagnostic
 from .return_types import _TYPED_FUNCTION
 from .semantic import SemanticSnapshot
