@@ -47,7 +47,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             code = self.nova_adapter.code_view(argument).strip()
 
             if call.name == "UInt::from":
-                value = bounded_integer_constant_value(code)
+                value = _known_integer_constant_value(code)
                 if value is None or 0 <= value <= _UINT_MAX:
                     continue
                 diagnostics.append(
@@ -63,23 +63,37 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 )
                 continue
 
-            member = _strip_balanced_outer_parentheses(code)
-            if _UINT_MIN_MEMBER.fullmatch(member):
-                continue
-            if not _UINT_MAX_MEMBER.fullmatch(member):
+            value = _known_uint_constant_value(code)
+            if value is None or value <= _INT_MAX:
                 continue
             diagnostics.append(
                 Diagnostic(
                     span=argument_span,
                     message=(
                         "checked conversion 'Int::from_uint' cannot represent "
-                        f"UInt::MAX ({_UINT_MAX}) as Int; maximum is {_INT_MAX}"
+                        f"constant UInt value {value} as Int; maximum is {_INT_MAX}"
                     ),
                     code=_CONVERSION_RANGE_DIAGNOSTIC,
                     source="nova",
                 )
             )
         return tuple(diagnostics)
+
+
+def _known_integer_constant_value(expression: str) -> int | None:
+    value = bounded_integer_constant_value(expression)
+    if value is not None:
+        return value
+    return _known_uint_constant_value(expression)
+
+
+def _known_uint_constant_value(expression: str) -> int | None:
+    member = _strip_balanced_outer_parentheses(expression)
+    if _UINT_MIN_MEMBER.fullmatch(member):
+        return 0
+    if _UINT_MAX_MEMBER.fullmatch(member):
+        return _UINT_MAX
+    return None
 
 
 def _strip_balanced_outer_parentheses(expression: str) -> str:
