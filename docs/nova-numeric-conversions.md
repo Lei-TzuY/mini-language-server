@@ -10,4 +10,6 @@ Known-invalid conversions now produce exact-snapshot diagnostics instead of sile
 
 The editor completion surface mirrors only the numeric intrinsics that Nova currently implements. At a trivia-aware `UInt::` member prefix it offers `MIN`, `MAX`, and `from`; at `Int::` it offers `from_uint`. Prefix filtering is deterministic, and completion publication is guarded by both the exact semantic snapshot and the exact workspace snapshot set so same-version replacement, close/reopen, and cancellation cannot publish stale intrinsic items. This is intentionally a bounded Nova product feature rather than a generic member-access subsystem.
 
+Hover mirrors the same bounded intrinsic surface: `UInt::MIN` and `UInt::MAX` expose their `UInt` constant type, while `UInt::from` and `Int::from_uint` expose their exact implemented signatures. Hover matches only trivia-aware intrinsic member spans and commits through the current semantic snapshot plus exact workspace snapshot set, preserving didChange, close/reopen, cancellation, and same-version stale-result suppression.
+
 Conversion results compose with the existing argument, return, local, assignment, arithmetic/comparison, and unannotated function-result consumers. Workspace rebinding after edits and same-version snapshot replacement continue to use the generic compare-and-commit publication guards.
