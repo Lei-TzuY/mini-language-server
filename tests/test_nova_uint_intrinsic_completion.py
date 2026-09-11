@@ -18,11 +18,20 @@ def initialize(server: NovaProductLanguageServer) -> None:
     assert server.handle(request("initialize", 1, {"capabilities": {}})) is not None
 
 
-def open_nova(server: NovaProductLanguageServer, uri: str, version: int, text: str) -> None:
+def open_nova(
+    server: NovaProductLanguageServer, uri: str, version: int, text: str
+) -> None:
     server.handle(
         notify(
             "textDocument/didOpen",
-            {"textDocument": {"uri": uri, "languageId": "nova", "version": version, "text": text}},
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "nova",
+                    "version": version,
+                    "text": text,
+                }
+            },
         )
     )
 
@@ -39,14 +48,19 @@ def completion_response(
         request(
             "textDocument/completion",
             request_id,
-            {"textDocument": {"uri": uri}, "position": {"line": 0, "character": marker}},
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": marker},
+            },
         )
     )
     assert result is not None
     return result
 
 
-def completion_items(server: NovaProductLanguageServer, uri: str, request_id: int, text: str) -> list[dict[str, str]]:
+def completion_items(
+    server: NovaProductLanguageServer, uri: str, request_id: int, text: str
+) -> list[dict[str, str]]:
     response = completion_response(server, uri, request_id, text)
     assert "result" in response
     return response["result"]
@@ -83,7 +97,9 @@ def test_member_completion_filters_prefix_and_int_receiver() -> None:
             "textDocument/didChange",
             {
                 "textDocument": {"uri": uri, "version": 2},
-                "contentChanges": [{"text": changed.replace("/*cursor*/", "")}],
+                "contentChanges": [
+                    {"text": changed.replace("/*cursor*/", "")}
+                ],
             },
         )
     )
@@ -98,9 +114,14 @@ def test_member_completion_close_reopen_does_not_reuse_old_receiver() -> None:
     uri = "file:///workspace/main.nova"
     uint_marked = "fn main() -> Unit { UInt::/*cursor*/ return (); }\n"
     open_nova(server, uri, 1, uint_marked.replace("/*cursor*/", ""))
-    assert {item["label"] for item in completion_items(server, uri, 2, uint_marked)} == {"MIN", "MAX", "from"}
+    uint_labels = {
+        item["label"] for item in completion_items(server, uri, 2, uint_marked)
+    }
+    assert uint_labels == {"MIN", "MAX", "from"}
 
-    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
+    server.handle(
+        notify("textDocument/didClose", {"textDocument": {"uri": uri}})
+    )
     int_marked = "fn main() -> Unit { Int::/*cursor*/ return (); }\n"
     open_nova(server, uri, 1, int_marked.replace("/*cursor*/", ""))
     assert completion_items(server, uri, 3, int_marked) == [
@@ -155,7 +176,11 @@ def test_member_completion_honors_cancellation_checkpoint() -> None:
         return original(context)
 
     server.requests.checkpoint = blocked_checkpoint  # type: ignore[method-assign]
-    thread = Thread(target=lambda: responses.append(completion_response(server, uri, 42, marked)))
+    thread = Thread(
+        target=lambda: responses.append(
+            completion_response(server, uri, 42, marked)
+        )
+    )
     thread.start()
     assert entered.wait(timeout=5)
     server.handle(notify("$/cancelRequest", {"id": 42}))
@@ -164,5 +189,9 @@ def test_member_completion_honors_cancellation_checkpoint() -> None:
 
     assert not thread.is_alive()
     assert responses == [
-        {"jsonrpc": "2.0", "id": 42, "error": {"code": -32800, "message": "Request cancelled"}}
+        {
+            "jsonrpc": "2.0",
+            "id": 42,
+            "error": {"code": -32800, "message": "Request cancelled"},
+        }
     ]
