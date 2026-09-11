@@ -180,3 +180,94 @@ def test_same_version_workspace_replacement_suppresses_stale_unit_call_result() 
     current_helper = server.workspace_symbols.get(helper_uri)
     assert current_helper is not None and current_helper is not original_helper
     assert server.diagnostics.get(main_uri) is original_diagnostics
+
+
+def test_unit_equality_produces_bool_for_literal_operands() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        "fn consume(value: Bool) {}\n"
+        "fn main() { consume(() == ()); consume(() != ()); }\n",
+    )
+
+    assert diagnostics(server, uri, "nova.argument-type") == []
+
+
+def test_unit_equality_reuses_exact_reference_and_cross_file_call_types() -> None:
+    server = initialized_server()
+    helper_uri = "file:///workspace/helper.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(server, helper_uri, "fn noop() -> Unit { return (); }\n")
+    open_nova(
+        server,
+        main_uri,
+        "fn consume(value: Bool) {}\n"
+        "fn main() { let value: Unit = (); consume(value == noop()); }\n",
+    )
+
+    assert diagnostics(server, main_uri, "nova.argument-type") == []
+
+
+def test_unit_ordering_and_mixed_equality_remain_conservative() -> None:
+    for index, expression in enumerate(("() < ()", "() == 1")):
+        server = initialized_server()
+        uri = f"file:///workspace/conservative-unit-{index}.nova"
+        open_nova(
+            server,
+            uri,
+            f"fn consume(value: Int) {{}}\nfn main() {{ consume({expression}); }}\n",
+        )
+        assert diagnostics(server, uri, "nova.argument-type") == []
+
+
+def test_cross_file_unit_equality_rebinds_after_result_type_change() -> None:
+    server = initialized_server()
+    helper_uri = "file:///workspace/helper.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(server, helper_uri, "fn noop() -> Unit { return (); }\n")
+    open_nova(
+        server,
+        main_uri,
+        "fn consume(value: Int) {}\nfn main() { consume(noop() == ()); }\n",
+    )
+    assert len(diagnostics(server, main_uri, "nova.argument-type")) == 1
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": helper_uri, "version": 2},
+                "contentChanges": [{"text": "fn noop() -> Int { return 1; }\n"}],
+            },
+        )
+    )
+
+    assert diagnostics(server, main_uri, "nova.argument-type") == []
+
+
+def test_unit_equality_close_reopen_uses_new_snapshot_identity() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        "fn consume(value: Int) {}\nfn main() { consume(() == ()); }\n",
+    )
+    original = server.diagnostics.get(uri)
+    assert original is not None
+    assert len(diagnostics(server, uri, "nova.argument-type")) == 1
+
+    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
+    assert server.diagnostics.get(uri) is None
+
+    open_nova(
+        server,
+        uri,
+        "fn consume(value: Bool) {}\nfn main() { consume(() == ()); }\n",
+        version=1,
+    )
+    current = server.diagnostics.get(uri)
+    assert current is not None and current is not original
+    assert diagnostics(server, uri, "nova.argument-type") == []
