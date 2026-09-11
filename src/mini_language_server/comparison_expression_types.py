@@ -9,7 +9,7 @@ from .source import Span
 
 _EQUALITY = frozenset({"==", "!="})
 _ORDERING = frozenset({"<", "<=", ">", ">="})
-_BOUNDED_EQUALITY_TYPES = frozenset({"Int", "String", "Bool"})
+_BOUNDED_EQUALITY_TYPES = frozenset({"Int", "String", "Bool", "Unit"})
 _COMPARISON_TOKENS = ("==", "!=", "<=", ">=", "<", ">")
 
 
@@ -64,13 +64,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         left_span = Span(span.start, span.start + offset)
         right_span = Span(span.start + offset + len(operator), span.end)
 
-        left_type = super()._inference_expression_type(
+        left_type = self._comparison_inference_operand_type(
             semantic,
             left_text,
             left_span,
             resolving,
         )
-        right_type = super()._inference_expression_type(
+        right_type = self._comparison_inference_operand_type(
             semantic,
             right_text,
             right_span,
@@ -84,6 +84,23 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if operator in _ORDERING and left_type == right_type == "Int":
             return "Bool"
         return None
+
+    def _comparison_inference_operand_type(
+        self,
+        semantic: Any,
+        expression: str,
+        span: Span,
+        resolving: frozenset[tuple[int, int, int]],
+    ) -> str | None:
+        """Preserve Nova's Unit literal before grouping-parenthesis unwrapping."""
+        if expression.strip() == "()":
+            return "Unit"
+        return super()._inference_expression_type(
+            semantic,
+            expression,
+            span,
+            resolving,
+        )
 
     def _comparison_type_if_present(
         self, semantic: Any, expression: str, span: Span
@@ -104,8 +121,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         left_span = Span(span.start, span.start + offset)
         right_span = Span(span.start + offset + len(operator), span.end)
 
-        left_type = self._integer_arithmetic_type(semantic, left_text, left_span)
-        right_type = self._integer_arithmetic_type(semantic, right_text, right_span)
+        left_type = self._comparison_operand_type(semantic, left_text, left_span)
+        right_type = self._comparison_operand_type(semantic, right_text, right_span)
 
         if operator in _EQUALITY:
             if left_type == right_type and left_type in _BOUNDED_EQUALITY_TYPES:
@@ -114,6 +131,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if operator in _ORDERING and left_type == right_type == "Int":
             return True, "Bool"
         return True, None
+
+    def _comparison_operand_type(
+        self, semantic: Any, expression: str, span: Span
+    ) -> str | None:
+        """Type one bounded comparison operand without erasing Unit's `()` literal."""
+        if expression.strip() == "()":
+            return "Unit"
+        return self._integer_arithmetic_type(semantic, expression, span)
 
     def _top_level_comparison_operators(
         self, expression: str
