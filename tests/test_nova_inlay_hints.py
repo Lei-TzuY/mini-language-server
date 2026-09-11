@@ -88,7 +88,7 @@ def test_inlay_hints_use_exact_cross_file_parameter_names() -> None:
         library_uri,
         "fn target(value: Int, flag: Bool) -> String { value }\n",
     )
-    text = "fn caller() { target(1, true) }\n"
+    text = "fn caller() { target(1, true); }\n"
     open_nova(server, main_uri, text)
 
     assert inlay_hints(server, main_uri, text)["result"] == [
@@ -152,7 +152,7 @@ def test_inlay_hints_track_change_close_and_reopen() -> None:
     initialize(server)
     library_uri = "file:///workspace/library.nova"
     main_uri = "file:///workspace/main.nova"
-    text = "fn caller() { target(1) }\n"
+    text = "fn caller() { target(1); }\n"
     open_nova(server, library_uri, "fn target(value: Int) -> Int { value }\n")
     open_nova(server, main_uri, text)
     assert inlay_hints(server, main_uri, text)["result"][0]["label"] == "value:"
@@ -188,7 +188,7 @@ def test_inlay_hints_suppress_same_version_workspace_replacement() -> None:
     initialize(server)
     library_uri = "file:///workspace/library.nova"
     main_uri = "file:///workspace/main.nova"
-    text = "fn caller() { target(1) }\n"
+    text = "fn caller() { target(1); }\n"
     open_nova(server, library_uri, "fn target(value: Int) -> Int { value }\n")
     open_nova(server, main_uri, text)
     original = server.workspace_symbols.get(library_uri)
@@ -215,7 +215,7 @@ def test_inlay_hints_honor_cancellation_checkpoint() -> None:
     server = NovaProductLanguageServer()
     initialize(server)
     uri = "file:///workspace/main.nova"
-    text = "fn target(value: Int) {} fn caller() { target(1) }\n"
+    text = "fn target(value: Int) {} fn caller() { target(1); }\n"
     open_nova(server, uri, text)
     real_checkpoint = server.requests.checkpoint
     cancelled = False
