@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 from .diagnostics import Diagnostic
@@ -16,7 +17,7 @@ _DIVISION_BY_ZERO_DIAGNOSTIC = "nova.division-by-zero"
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
-    """Final Nova product with conservative literal-zero divisor diagnostics."""
+    """Final Nova product with conservative constant-zero divisor diagnostics."""
 
     def publish_diagnostics(
         self, semantic: SemanticSnapshot, diagnostics: Iterable[Diagnostic]
@@ -87,7 +88,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         code = self.nova_adapter.code_view(text)
         diagnostics: list[Diagnostic] = []
         for match in _DIVISION_OPERATOR.finditer(code):
-            divisor_span = _literal_zero_divisor_span(code, match.end())
+            divisor_span = _constant_zero_divisor_span(code, match.end())
             if divisor_span is None:
                 continue
             operator = match.group()
@@ -103,31 +104,122 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         return tuple(diagnostics)
 
 
-def _literal_zero_divisor_span(code: str, offset: int) -> tuple[int, int] | None:
-    """Return the exact signed-zero span for a bounded parenthesized divisor."""
+@dataclass(frozen=True)
+class _Constant:
+    value: int
+    start: int
+    end: int
+    atomic: bool
+
+
+def _constant_zero_divisor_span(code: str, offset: int) -> tuple[int, int] | None:
+    """Return an exact repair span for a bounded constant-zero divisor."""
+    parsed = _parse_primary(code, _skip_whitespace(code, offset))
+    if parsed is None:
+        return None
+    constant, _ = parsed
+    if constant.value != 0:
+        return None
+    return constant.start, constant.end
+
+
+def _parse_primary(code: str, offset: int) -> tuple[_Constant, int] | None:
     cursor = _skip_whitespace(code, offset)
-    parentheses = 0
-    while cursor < len(code) and code[cursor] == "(":
-        parentheses += 1
+    sign = 1
+    signed_start = cursor
+    if cursor < len(code) and code[cursor] in "+-":
+        if code[cursor] == "-":
+            sign = -1
         cursor = _skip_whitespace(code, cursor + 1)
 
-    start = cursor
-    if cursor < len(code) and code[cursor] in "+-":
-        cursor += 1
-    if cursor >= len(code) or code[cursor] != "0":
-        return None
-    cursor += 1
-    if cursor < len(code) and (code[cursor].isalnum() or code[cursor] in "_."):
-        return None
-    end = cursor
-
-    for _ in range(parentheses):
-        cursor = _skip_whitespace(code, cursor)
-        if cursor >= len(code) or code[cursor] != ")":
+    if cursor < len(code) and code[cursor].isdigit():
+        literal_start = cursor
+        while cursor < len(code) and code[cursor].isdigit():
+            cursor += 1
+        if cursor < len(code) and (code[cursor].isalnum() or code[cursor] in "_."):
             return None
-        cursor += 1
+        start = signed_start if signed_start != literal_start else literal_start
+        return _Constant(sign * int(code[literal_start:cursor]), start, cursor, True), cursor
 
-    return start, end
+    if sign != 1 or signed_start != cursor:
+        return None
+    if cursor >= len(code) or code[cursor] != "(":
+        return None
+
+    open_paren = cursor
+    parsed = _parse_expression(code, cursor + 1)
+    if parsed is None:
+        return None
+    constant, cursor = parsed
+    cursor = _skip_whitespace(code, cursor)
+    if cursor >= len(code) or code[cursor] != ")":
+        return None
+    close_paren = cursor
+    cursor += 1
+
+    if constant.atomic:
+        return _Constant(constant.value, constant.start, constant.end, True), cursor
+
+    inner_start = _skip_whitespace(code, open_paren + 1)
+    inner_end = close_paren
+    while inner_end > inner_start and code[inner_end - 1].isspace():
+        inner_end -= 1
+    return _Constant(constant.value, inner_start, inner_end, False), cursor
+
+
+def _parse_expression(code: str, offset: int) -> tuple[_Constant, int] | None:
+    parsed = _parse_term(code, offset)
+    if parsed is None:
+        return None
+    left, cursor = parsed
+
+    while True:
+        operator_offset = _skip_whitespace(code, cursor)
+        if operator_offset >= len(code) or code[operator_offset] not in "+-":
+            break
+        operator = code[operator_offset]
+        parsed = _parse_term(code, operator_offset + 1)
+        if parsed is None:
+            return None
+        right, cursor = parsed
+        value = left.value + right.value if operator == "+" else left.value - right.value
+        left = _Constant(value, left.start, right.end, False)
+
+    return left, cursor
+
+
+def _parse_term(code: str, offset: int) -> tuple[_Constant, int] | None:
+    parsed = _parse_primary(code, offset)
+    if parsed is None:
+        return None
+    left, cursor = parsed
+
+    while True:
+        operator_offset = _skip_whitespace(code, cursor)
+        if operator_offset >= len(code) or code[operator_offset] not in "*/%":
+            break
+        operator = code[operator_offset]
+        parsed = _parse_primary(code, operator_offset + 1)
+        if parsed is None:
+            return None
+        right, cursor = parsed
+        if operator in "/%" and right.value == 0:
+            return None
+        if operator == "*":
+            value = left.value * right.value
+        elif operator == "/":
+            value = _truncating_division(left.value, right.value)
+        else:
+            quotient = _truncating_division(left.value, right.value)
+            value = left.value - quotient * right.value
+        left = _Constant(value, left.start, right.end, False)
+
+    return left, cursor
+
+
+def _truncating_division(left: int, right: int) -> int:
+    quotient = abs(left) // abs(right)
+    return -quotient if (left < 0) != (right < 0) else quotient
 
 
 def _skip_whitespace(code: str, offset: int) -> int:
