@@ -16,10 +16,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         declaration: Any,
         resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> str | None:
-        inferred = super()._bounded_function_return_type(declaration, resolving)
-        if inferred is not None:
-            return inferred
-
         identity = self._inference_identity(declaration)
         if identity in resolving:
             return None
@@ -33,7 +29,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if closing is None:
             return None
 
-        saw_return = False
+        saw_bare_return = False
+        saw_value_return = False
         body_code = code[opening + 1 : closing]
         for statement in _RETURN.finditer(body_code):
             keyword_end = opening + 1 + statement.end()
@@ -43,7 +40,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 if found >= 0:
                     boundary = min(boundary, found)
             if text[keyword_end:boundary].strip():
-                return None
-            saw_return = True
+                saw_value_return = True
+            else:
+                saw_bare_return = True
 
-        return "Unit" if saw_return else None
+        inferred = super()._bounded_function_return_type(declaration, resolving)
+        if not saw_bare_return:
+            return inferred
+        if not saw_value_return:
+            return "Unit"
+        return "Unit" if inferred == "Unit" else None
