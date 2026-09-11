@@ -42,10 +42,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         ordinary = None
         if isinstance(tree, NovaFunctionSyntax):
             ordinary = self._containing_call(document.text, tree, offset)
-        if ordinary is not None and ordinary[1] > intrinsic[1]:
+        if ordinary is not None and ordinary[1] > intrinsic[2]:
             return super()._handle_signature_help(request_id, params)
 
-        label, parameter, opening = intrinsic
+        label, parameter, _ = intrinsic
         snapshots = self.workspace_symbols.snapshots()
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
@@ -62,7 +62,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     }
                 ],
                 "activeSignature": 0,
-                "activeParameter": 0 if offset > opening else 0,
+                "activeParameter": 0,
             }
             self.requests.checkpoint(context)
             try:
