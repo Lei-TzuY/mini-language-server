@@ -39,7 +39,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         conversion = self._conversion_bounds(expression, span)
         if conversion is not None:
             target, argument, argument_span = conversion
-            argument_type = super()._integer_arithmetic_type(
+            argument_type = self._integer_arithmetic_type(
                 semantic,
                 argument,
                 argument_span,
@@ -61,7 +61,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         conversion = self._conversion_bounds(expression, span)
         if conversion is not None:
             target, argument, argument_span = conversion
-            argument_type = super()._inference_expression_type(
+            argument_type = self._inference_expression_type(
                 semantic,
                 argument,
                 argument_span,
