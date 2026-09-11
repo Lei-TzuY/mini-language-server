@@ -11,7 +11,7 @@ from .loop_control import NovaProductLanguageServer as _NovaProductLanguageServe
 from .semantic import SemanticSnapshot
 from .source import Span
 
-_ZERO_DIVISOR = re.compile(r"(?P<operator>/|%)\s*(?P<divisor>[+-]?0)(?![A-Za-z0-9_.])")
+_DIVISION_OPERATOR = re.compile(r"/|%")
 _DIVISION_BY_ZERO_DIAGNOSTIC = "nova.division-by-zero"
 
 
@@ -86,16 +86,51 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         text = semantic.symbols.syntax.document.text
         code = self.nova_adapter.code_view(text)
         diagnostics: list[Diagnostic] = []
-        for match in _ZERO_DIVISOR.finditer(code):
-            divisor_start, divisor_end = match.span("divisor")
-            operator = match.group("operator")
+        for match in _DIVISION_OPERATOR.finditer(code):
+            divisor_span = _literal_zero_divisor_span(code, match.end())
+            if divisor_span is None:
+                continue
+            operator = match.group()
             operation = "division" if operator == "/" else "remainder"
             diagnostics.append(
                 Diagnostic(
-                    span=Span(divisor_start, divisor_end),
+                    span=Span(*divisor_span),
                     message=f"integer {operation} by zero is invalid",
                     code=_DIVISION_BY_ZERO_DIAGNOSTIC,
                     source="nova",
                 )
             )
         return tuple(diagnostics)
+
+
+def _literal_zero_divisor_span(code: str, offset: int) -> tuple[int, int] | None:
+    """Return the exact signed-zero span for a bounded parenthesized divisor."""
+    cursor = _skip_whitespace(code, offset)
+    parentheses = 0
+    while cursor < len(code) and code[cursor] == "(":
+        parentheses += 1
+        cursor = _skip_whitespace(code, cursor + 1)
+
+    start = cursor
+    if cursor < len(code) and code[cursor] in "+-":
+        cursor += 1
+    if cursor >= len(code) or code[cursor] != "0":
+        return None
+    cursor += 1
+    if cursor < len(code) and (code[cursor].isalnum() or code[cursor] in "_."):
+        return None
+    end = cursor
+
+    for _ in range(parentheses):
+        cursor = _skip_whitespace(code, cursor)
+        if cursor >= len(code) or code[cursor] != ")":
+            return None
+        cursor += 1
+
+    return start, end
+
+
+def _skip_whitespace(code: str, offset: int) -> int:
+    while offset < len(code) and code[offset].isspace():
+        offset += 1
+    return offset
