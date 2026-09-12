@@ -12,6 +12,7 @@ from .source import SourceText, Span
 
 _SUPPORTED_MODIFIERS = (
     "declaration",
+    "definition",
     "readonly",
     "modification",
     "defaultLibrary",
@@ -148,6 +149,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 continue
             line, character, length, token_type, modifiers = decoded[index]
             names = ["declaration"]
+            if symbol.kind == "function":
+                names.append("definition")
             if symbol.kind == "variable" and self._is_immutable_local(code, symbol.span):
                 names.append("readonly")
             decoded[index] = (
