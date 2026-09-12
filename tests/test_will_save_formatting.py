@@ -64,7 +64,9 @@ def test_initialize_negotiates_will_save_wait_until() -> None:
 
 
 def test_initialize_preserves_incremental_sync_when_unsupported() -> None:
-    capabilities = initialize(NovaProductLanguageServer(), supported=False)["result"]["capabilities"]
+    capabilities = initialize(NovaProductLanguageServer(), supported=False)["result"][
+        "capabilities"
+    ]
     assert capabilities["textDocumentSync"] == 2
 
 
@@ -83,7 +85,10 @@ def test_will_save_returns_deterministic_trivia_aware_formatting_edit() -> None:
                 "start": {"line": 0, "character": 0},
                 "end": {"line": 6, "character": 0},
             },
-            "newText": "fn main() {\n    let x = \"}\"\n    if true {\n        return x\n    }\n}\n",
+            "newText": (
+                "fn main() {\n    let x = \"}\"\n    if true {\n"
+                "        return x\n    }\n}\n"
+            ),
         }
     ]
 
