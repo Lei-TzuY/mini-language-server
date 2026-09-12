@@ -96,8 +96,11 @@ def decode(
 
 def test_nova_reference_tokens_and_mutability_modifiers_are_negotiated() -> None:
     server = NovaProductLanguageServer()
-    legend = initialize(server, modifiers=["readonly", "declaration", "static"])
-    assert legend == ["declaration", "readonly"]
+    legend = initialize(
+        server,
+        modifiers=["modification", "readonly", "declaration", "static"],
+    )
+    assert legend == ["declaration", "readonly", "modification"]
     uri = "file:///workspace/main.nova"
     text = (
         "fn main(input: Int) {\n"
@@ -113,6 +116,7 @@ def test_nova_reference_tokens_and_mutability_modifiers_are_negotiated() -> None
     declaration = frozenset({"declaration"})
     immutable = frozenset({"declaration", "readonly"})
     readonly = frozenset({"readonly"})
+    modification = frozenset({"modification"})
 
     assert (0, 3, 4, "function", declaration) in tokens
     assert (0, 8, 5, "parameter", declaration) in tokens
@@ -120,8 +124,20 @@ def test_nova_reference_tokens_and_mutability_modifiers_are_negotiated() -> None
     assert (1, 16, 5, "parameter", frozenset()) in tokens
     assert (2, 8, 7, "variable", declaration) in tokens
     assert (2, 18, 5, "variable", readonly) in tokens
-    assert (3, 4, 7, "variable", frozenset()) in tokens
+    assert (3, 4, 7, "variable", modification) in tokens
     assert (3, 14, 5, "variable", readonly) in tokens
+
+
+def test_invalid_immutable_assignment_is_readonly_and_modification() -> None:
+    server = NovaProductLanguageServer()
+    legend = initialize(server, modifiers=["readonly", "modification"])
+    assert legend == ["readonly", "modification"]
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() { let fixed = 1; fixed = 2; }\n")
+
+    response = semantic_tokens(server, uri, 2)
+    tokens = set(decode(response["result"]["data"], legend))
+    assert (0, 27, 5, "variable", frozenset({"readonly", "modification"})) in tokens
 
 
 def test_reference_tokens_exist_without_modifier_support() -> None:
@@ -139,12 +155,15 @@ def test_reference_tokens_exist_without_modifier_support() -> None:
 
 def test_reference_tokens_and_modifiers_respect_range_requests() -> None:
     server = NovaProductLanguageServer()
-    legend = initialize(server, modifiers=["declaration", "readonly"])
+    legend = initialize(
+        server, modifiers=["declaration", "readonly", "modification"]
+    )
     uri = "file:///workspace/main.nova"
     text = (
         "fn main() {\n"
         "    let fixed = 1;\n"
         "    var mutable = fixed;\n"
+        "    mutable = fixed;\n"
         "}\n"
     )
     open_nova(server, uri, text)
@@ -154,20 +173,20 @@ def test_reference_tokens_and_modifiers_respect_range_requests() -> None:
         uri,
         2,
         source_range={
-            "start": {"line": 2, "character": 0},
-            "end": {"line": 3, "character": 0},
+            "start": {"line": 3, "character": 0},
+            "end": {"line": 4, "character": 0},
         },
     )
     tokens = decode(response["result"]["data"], legend)
     assert tokens == [
-        (2, 8, 7, "variable", frozenset({"declaration"})),
-        (2, 18, 5, "variable", frozenset({"readonly"})),
+        (3, 4, 7, "variable", frozenset({"modification"})),
+        (3, 14, 5, "variable", frozenset({"readonly"})),
     ]
 
 
 def test_same_version_workspace_replacement_rejects_stale_reference_tokens() -> None:
     server = NovaProductLanguageServer()
-    initialize(server, modifiers=["declaration", "readonly"])
+    initialize(server, modifiers=["declaration", "readonly", "modification"])
     uri = "file:///workspace/main.nova"
     open_nova(server, uri, "fn main() { let value = 1; value; }\n")
     original = server.workspace_symbols.get(uri)
@@ -191,7 +210,7 @@ def test_same_version_workspace_replacement_rejects_stale_reference_tokens() -> 
 
 def test_reference_semantic_tokens_honor_cancellation() -> None:
     server = NovaProductLanguageServer()
-    initialize(server, modifiers=["declaration", "readonly"])
+    initialize(server, modifiers=["declaration", "readonly", "modification"])
     uri = "file:///workspace/main.nova"
     open_nova(server, uri, "fn main() { let value = 1; value; }\n")
     entered = Event()
