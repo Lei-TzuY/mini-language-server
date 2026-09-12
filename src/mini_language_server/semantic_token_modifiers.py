@@ -10,10 +10,19 @@ from .semantic_tokens import TOKEN_TYPES
 from .server import ServerState
 from .source import SourceText, Span
 
-_SUPPORTED_MODIFIERS = ("declaration", "readonly", "modification")
+_SUPPORTED_MODIFIERS = ("declaration", "readonly", "modification", "defaultLibrary")
 _TOKEN_TYPE_INDEX = {name: index for index, name in enumerate(TOKEN_TYPES)}
 _LOCAL_KEYWORD = re.compile(r"\b(let|var)\s+\Z")
 _ASSIGNMENT_SUFFIX = re.compile(r"\s*=(?!=)")
+_INTRINSIC_MEMBER = re.compile(
+    r"(?P<type>UInt|Int)\s*::\s*(?P<member>MIN|MAX|from_uint|from)\b"
+)
+_VALID_INTRINSICS = {
+    ("UInt", "MIN"),
+    ("UInt", "MAX"),
+    ("UInt", "from"),
+    ("Int", "from_uint"),
+}
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -94,6 +103,31 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             (line, character, length): index
             for index, (line, character, length, _, _) in enumerate(decoded)
         }
+
+        default_library = self._modifier_bits("defaultLibrary")
+        if default_library:
+            for match in _INTRINSIC_MEMBER.finditer(code):
+                if (match.group("type"), match.group("member")) not in _VALID_INTRINSICS:
+                    continue
+                for group in ("type", "member"):
+                    identity = self._token_identity(
+                        source,
+                        Span(match.start(group), match.end(group)),
+                        requested_span,
+                    )
+                    if identity is None:
+                        continue
+                    index = by_identity.get(identity)
+                    if index is None:
+                        continue
+                    line, character, length, token_type, modifiers = decoded[index]
+                    decoded[index] = (
+                        line,
+                        character,
+                        length,
+                        token_type,
+                        modifiers | default_library,
+                    )
 
         for symbol in symbols.symbols:
             identity = self._token_identity(source, symbol.span, requested_span)
