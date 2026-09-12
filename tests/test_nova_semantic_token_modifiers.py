@@ -98,7 +98,7 @@ def test_nova_reference_tokens_and_mutability_modifiers_are_negotiated() -> None
     server = NovaProductLanguageServer()
     legend = initialize(
         server,
-        modifiers=["modification", "readonly", "declaration", "static"],
+        modifiers=["modification", "readonly", "declaration", "documentation"],
     )
     assert legend == ["declaration", "readonly", "modification"]
     uri = "file:///workspace/main.nova"
