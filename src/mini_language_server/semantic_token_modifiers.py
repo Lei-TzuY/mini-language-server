@@ -10,9 +10,10 @@ from .semantic_tokens import TOKEN_TYPES
 from .server import ServerState
 from .source import SourceText, Span
 
-_SUPPORTED_MODIFIERS = ("declaration", "readonly")
+_SUPPORTED_MODIFIERS = ("declaration", "readonly", "modification")
 _TOKEN_TYPE_INDEX = {name: index for index, name in enumerate(TOKEN_TYPES)}
 _LOCAL_KEYWORD = re.compile(r"\b(let|var)\s+\Z")
+_ASSIGNMENT_SUFFIX = re.compile(r"\s*=(?!=)")
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -87,6 +88,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return data
 
         source = SourceText(text)
+        code = self.nova_adapter.code_view(text)
         decoded = self._decode_semantic_tokens(data)
         by_identity = {
             (line, character, length): index
@@ -102,7 +104,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 continue
             line, character, length, token_type, modifiers = decoded[index]
             names = ["declaration"]
-            if symbol.kind == "variable" and self._is_immutable_local(text, symbol.span):
+            if symbol.kind == "variable" and self._is_immutable_local(code, symbol.span):
                 names.append("readonly")
             decoded[index] = (
                 line,
@@ -121,9 +123,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 continue
             modifiers = 0
             if reference.target.kind == "variable" and self._is_immutable_local(
-                text, reference.target.span
+                code, reference.target.span
             ):
                 modifiers |= self._modifier_bits("readonly")
+            if self._is_assignment_target(code, reference.span):
+                modifiers |= self._modifier_bits("modification")
             decoded.append((*identity, token_type, modifiers))
             by_identity[identity] = len(decoded) - 1
 
@@ -143,8 +147,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return None
         return start.line, start.character, end.character - start.character
 
-    def _is_immutable_local(self, text: str, span: Span) -> bool:
-        code = self.nova_adapter.code_view(text)
+    @staticmethod
+    def _is_immutable_local(code: str, span: Span) -> bool:
         prefix = code[: span.start]
         match = _LOCAL_KEYWORD.search(prefix)
         return match is not None and match.group(1) == "let"
+
+    @staticmethod
+    def _is_assignment_target(code: str, span: Span) -> bool:
+        return _ASSIGNMENT_SUFFIX.match(code, span.end) is not None
