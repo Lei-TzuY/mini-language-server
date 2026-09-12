@@ -31,15 +31,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if split is None:
             split = self._top_level_operator(expression, _MULTIPLICATIVE)
         if split is None:
-            unary = self._unary_negation_operand(expression, span)
+            unary = self._unary_sign_operand(expression, span)
             if unary is not None:
-                operand, operand_span = unary
+                operator, operand, operand_span = unary
                 operand_type = self._integer_arithmetic_type(
                     semantic,
                     operand,
                     operand_span,
                 )
-                return "Int" if operand_type == "Int" else None
+                if operator == "-":
+                    return "Int" if operand_type == "Int" else None
+                return operand_type if operand_type in _UINT_NUMERIC_TYPES else None
             return super()._integer_arithmetic_type(semantic, expression, span)
 
         operator, offset = split
@@ -166,16 +168,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 return "String"
             return None
 
-        unary = self._unary_negation_operand(expression, span)
+        unary = self._unary_sign_operand(expression, span)
         if unary is not None:
-            operand, operand_span = unary
+            operator, operand, operand_span = unary
             operand_type = self._inference_expression_type(
                 semantic,
                 operand,
                 operand_span,
                 resolving,
             )
-            return "Int" if operand_type == "Int" else None
+            if operator == "-":
+                return "Int" if operand_type == "Int" else None
+            return operand_type if operand_type in _UINT_NUMERIC_TYPES else None
 
         return super()._inference_expression_type(
             semantic,
