@@ -59,7 +59,11 @@ def tokens(
     request_id: int,
     source_range: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    method = "textDocument/semanticTokens/range" if source_range else "textDocument/semanticTokens/full"
+    method = (
+        "textDocument/semanticTokens/range"
+        if source_range
+        else "textDocument/semanticTokens/full"
+    )
     params: dict[str, Any] = {"textDocument": {"uri": uri}}
     if source_range is not None:
         params["range"] = source_range
@@ -68,7 +72,9 @@ def tokens(
     return response
 
 
-def decode(data: list[int], legend: list[str]) -> list[tuple[int, int, int, str, frozenset[str]]]:
+def decode(
+    data: list[int], legend: list[str]
+) -> list[tuple[int, int, int, str, frozenset[str]]]:
     result = []
     line = 0
     character = 0
@@ -151,7 +157,9 @@ def test_same_version_replacement_rejects_stale_static_tokens() -> None:
         server.workspace_symbols.replace(replacement, expected=original)
         return real_commit(snapshots, callback)
 
-    server.workspace_symbols.commit_snapshots_if_current = replace_then_commit  # type: ignore[method-assign]
+    server.workspace_symbols.commit_snapshots_if_current = (  # type: ignore[method-assign]
+        replace_then_commit
+    )
     assert tokens(server, uri, 4) == {
         "jsonrpc": "2.0",
         "id": 4,
