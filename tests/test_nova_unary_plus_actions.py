@@ -16,7 +16,11 @@ def notify(method: str, params: dict[str, Any]) -> dict[str, Any]:
 def initialized_server() -> NovaProductLanguageServer:
     server = NovaProductLanguageServer()
     result = server.handle(
-        request("initialize", 1, {"capabilities": {"textDocument": {"codeAction": {}}}})
+        request(
+            "initialize",
+            1,
+            {"capabilities": {"textDocument": {"codeAction": {}}}},
+        )
     )
     assert result is not None
     assert result["result"]["capabilities"]["codeActionProvider"] is True
@@ -40,7 +44,10 @@ def open_nova(server: NovaProductLanguageServer, uri: str, text: str) -> None:
 
 
 def code_action(
-    server: NovaProductLanguageServer, uri: str, request_id: int, character: int
+    server: NovaProductLanguageServer,
+    uri: str,
+    request_id: int,
+    character: int,
 ) -> dict[str, Any]:
     result = server.handle(
         request(
@@ -68,7 +75,11 @@ def test_unary_plus_quick_fix_removes_only_exact_operator() -> None:
     plus = text.index("+")
 
     result = code_action(server, uri, 2, plus)
-    actions = [item for item in result["result"] if item["title"] == "Remove unsupported unary '+'"]
+    actions = [
+        item
+        for item in result["result"]
+        if item["title"] == "Remove unsupported unary '+'"
+    ]
     assert len(actions) == 1
     edit = actions[0]["edit"]["changes"][uri]
     assert edit == [
@@ -91,13 +102,28 @@ def test_binary_plus_has_no_unary_plus_quick_fix() -> None:
     plus = text.index("+")
 
     result = code_action(server, uri, 3, plus)
-    assert all(item["title"] != "Remove unsupported unary '+'" for item in result["result"])
+    assert all(
+        item["title"] != "Remove unsupported unary '+'" for item in result["result"]
+    )
 
 
 class ReplacingServer(NovaProductLanguageServer):
-    def _nova_code_actions(self, uri, document, source, diagnostics, start_offset, end_offset):
+    def _nova_code_actions(
+        self,
+        uri,
+        document,
+        source,
+        diagnostics,
+        start_offset,
+        end_offset,
+    ):
         actions = super()._nova_code_actions(
-            uri, document, source, diagnostics, start_offset, end_offset
+            uri,
+            document,
+            source,
+            diagnostics,
+            start_offset,
+            end_offset,
         )
         self.nova_adapter.publish(self, document)
         return actions
@@ -106,7 +132,11 @@ class ReplacingServer(NovaProductLanguageServer):
 def test_same_version_replacement_rejects_stale_unary_plus_action() -> None:
     server = ReplacingServer()
     result = server.handle(
-        request("initialize", 1, {"capabilities": {"textDocument": {"codeAction": {}}}})
+        request(
+            "initialize",
+            1,
+            {"capabilities": {"textDocument": {"codeAction": {}}}},
+        )
     )
     assert result is not None
     uri = "file:///workspace/main.nova"
@@ -130,7 +160,12 @@ def test_close_reopen_does_not_reuse_old_unary_plus_diagnostic() -> None:
     old = server.diagnostics.get(uri)
     assert old is not None
 
-    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
+    server.handle(
+        notify(
+            "textDocument/didClose",
+            {"textDocument": {"uri": uri}},
+        )
+    )
     new_text = "fn main(input: Int) { let value = input + 1; }\n"
     open_nova(server, uri, new_text)
     current = server.diagnostics.get(uri)
@@ -138,4 +173,6 @@ def test_close_reopen_does_not_reuse_old_unary_plus_diagnostic() -> None:
 
     plus = new_text.index("+")
     result = code_action(server, uri, 5, plus)
-    assert all(item["title"] != "Remove unsupported unary '+'" for item in result["result"])
+    assert all(
+        item["title"] != "Remove unsupported unary '+'" for item in result["result"]
+    )
