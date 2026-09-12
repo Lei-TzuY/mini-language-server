@@ -18,9 +18,7 @@ def initialize(
 ) -> dict[str, Any]:
     capabilities: dict[str, Any] = {}
     if link_support:
-        capabilities = {
-            "textDocument": {"definition": {"linkSupport": True}}
-        }
+        capabilities = {"textDocument": {"definition": {"linkSupport": True}}}
     result = server.handle(request("initialize", 1, {"capabilities": capabilities}))
     assert result is not None
     return result
@@ -119,7 +117,8 @@ def test_definition_links_track_close_and_reopen() -> None:
     open_nova(server, caller_uri, "fn caller() { target() }\n")
     assert definition(server, caller_uri)["result"] is not None
 
-    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": target_uri}}))
+    close = {"textDocument": {"uri": target_uri}}
+    server.handle(notify("textDocument/didClose", close))
     assert definition(server, caller_uri, 3)["result"] is None
 
     open_nova(server, target_uri, "fn target() {}\n", version=1)
@@ -151,7 +150,9 @@ def test_definition_link_rejects_same_version_workspace_replacement() -> None:
             server.workspace_symbols.replace(replacement, expected=original)
         return real_commit(snapshots, callback)
 
-    server.workspace_symbols.commit_snapshots_if_current = replace_on_second_commit  # type: ignore[method-assign]
+    server.workspace_symbols.commit_snapshots_if_current = (  # type: ignore[method-assign]
+        replace_on_second_commit
+    )
 
     assert definition(server, caller_uri) == {
         "jsonrpc": "2.0",
