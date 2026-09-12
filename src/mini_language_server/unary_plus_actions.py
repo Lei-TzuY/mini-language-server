@@ -6,8 +6,8 @@ from typing import Any
 
 from .diagnostics import Diagnostic
 from .unary_plus_diagnostics import (
-    NovaProductLanguageServer as _NovaProductLanguageServer,
     _UNARY_PLUS_DIAGNOSTIC,
+    NovaProductLanguageServer as _NovaProductLanguageServer,
 )
 
 
