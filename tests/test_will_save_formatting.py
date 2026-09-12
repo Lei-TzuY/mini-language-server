@@ -101,7 +101,11 @@ def test_will_save_tracks_close_and_reopen() -> None:
     assert will_save(server, uri)["result"]
 
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
-    assert will_save(server, uri, 3)["result"] == []
+    assert will_save(server, uri, 3) == {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {"code": -32602, "message": "Invalid params"},
+    }
 
     open_nova(server, uri, "fn main() {\nreturn 1\n}\n", version=1)
     assert will_save(server, uri, 4)["result"]
@@ -117,10 +121,7 @@ def test_will_save_rejects_same_version_semantic_replacement() -> None:
     real_commit = server.semantics.commit_if_current
 
     def replace_then_commit(snapshot, callback):
-        document = server.documents.get(uri)
-        assert document is not None
-        replacement = server.nova_adapter.publish(server, document)
-        server.semantics.replace(replacement, expected=original)
+        server.semantics.publish(original.symbols, original.references)
         return real_commit(snapshot, callback)
 
     server.semantics.commit_if_current = replace_then_commit  # type: ignore[method-assign]
