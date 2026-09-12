@@ -23,7 +23,7 @@ def initialize(server: NovaProductLanguageServer) -> None:
     )
     assert result is not None
     capabilities = result["result"]["capabilities"]
-    assert capabilities["codeLensProvider"] == {"resolveProvider": False}
+    assert capabilities["codeLensProvider"] == {"resolveProvider": True}
     assert capabilities["executeCommandProvider"] == {
         "commands": ["mini-language-server.showReferences"]
     }
@@ -61,7 +61,29 @@ def lenses(
     return result
 
 
-def test_reference_code_lens_counts_cross_file_calls_and_executes_locations() -> None:
+def resolve_lens(
+    server: NovaProductLanguageServer,
+    lens: dict[str, Any],
+    request_id: int,
+) -> dict[str, Any]:
+    result = server.handle(request("codeLens/resolve", request_id, lens))
+    assert result is not None
+    return result
+
+
+def resolved_title(
+    server: NovaProductLanguageServer,
+    uri: str,
+    *,
+    lens_request_id: int,
+    resolve_request_id: int,
+) -> str:
+    lens = lenses(server, uri, lens_request_id)["result"][0]
+    resolved = resolve_lens(server, lens, resolve_request_id)["result"]
+    return resolved["command"]["title"]
+
+
+def test_reference_code_lens_resolves_cross_file_count_and_executes_locations() -> None:
     server = NovaProductLanguageServer()
     initialize(server)
     library_uri = "file:///workspace/library.nova"
@@ -75,16 +97,25 @@ def test_reference_code_lens_counts_cross_file_calls_and_executes_locations() ->
 
     result = lenses(server, library_uri)["result"]
     assert len(result) == 1
-    assert result[0]["command"]["title"] == "2 references"
-    assert result[0]["data"] == {"uri": library_uri, "name": "target"}
+    assert "command" not in result[0]
+    assert result[0]["data"]["uri"] == library_uri
+    assert result[0]["data"]["name"] == "target"
+    assert isinstance(result[0]["data"]["novaCodeLensResolve"], int)
+
+    resolved = resolve_lens(server, result[0], 3)["result"]
+    assert resolved["command"] == {
+        "title": "2 references",
+        "command": "mini-language-server.showReferences",
+        "arguments": [{"uri": library_uri, "name": "target"}],
+    }
 
     locations = server.handle(
         request(
             "workspace/executeCommand",
-            3,
+            4,
             {
-                "command": "mini-language-server.showReferences",
-                "arguments": [{"uri": library_uri, "name": "target"}],
+                "command": resolved["command"]["command"],
+                "arguments": resolved["command"]["arguments"],
             },
         )
     )
@@ -115,21 +146,29 @@ def test_reference_code_lens_refuses_ambiguity_and_tracks_close_reopen() -> None
     caller_uri = "file:///workspace/main.nova"
     open_nova(server, target_uri, "fn target() {}\n")
     open_nova(server, caller_uri, "fn caller() { target() }\n")
-    assert lenses(server, target_uri)["result"][0]["command"]["title"] == "1 reference"
+    assert resolved_title(
+        server, target_uri, lens_request_id=2, resolve_request_id=3
+    ) == "1 reference"
 
     open_nova(server, duplicate_uri, "fn target() {}\n")
-    assert lenses(server, target_uri, 3)["result"] == []
+    assert lenses(server, target_uri, 4)["result"] == []
 
     server.handle(
         notify("textDocument/didClose", {"textDocument": {"uri": duplicate_uri}})
     )
-    assert lenses(server, target_uri, 4)["result"][0]["command"]["title"] == "1 reference"
+    assert resolved_title(
+        server, target_uri, lens_request_id=5, resolve_request_id=6
+    ) == "1 reference"
 
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": caller_uri}}))
-    assert lenses(server, target_uri, 5)["result"][0]["command"]["title"] == "0 references"
+    assert resolved_title(
+        server, target_uri, lens_request_id=7, resolve_request_id=8
+    ) == "0 references"
 
     open_nova(server, caller_uri, "fn caller() { target() target() }\n")
-    assert lenses(server, target_uri, 6)["result"][0]["command"]["title"] == "2 references"
+    assert resolved_title(
+        server, target_uri, lens_request_id=9, resolve_request_id=10
+    ) == "2 references"
 
 
 def test_reference_code_lens_tracks_incremental_workspace_changes() -> None:
@@ -139,7 +178,9 @@ def test_reference_code_lens_tracks_incremental_workspace_changes() -> None:
     caller_uri = "file:///workspace/main.nova"
     open_nova(server, target_uri, "fn target() {}\n")
     open_nova(server, caller_uri, "fn caller() { target() }\n")
-    assert lenses(server, target_uri)["result"][0]["command"]["title"] == "1 reference"
+    assert resolved_title(
+        server, target_uri, lens_request_id=2, resolve_request_id=3
+    ) == "1 reference"
 
     server.handle(
         notify(
@@ -150,7 +191,9 @@ def test_reference_code_lens_tracks_incremental_workspace_changes() -> None:
             },
         )
     )
-    assert lenses(server, target_uri, 3)["result"][0]["command"]["title"] == "3 references"
+    assert resolved_title(
+        server, target_uri, lens_request_id=4, resolve_request_id=5
+    ) == "3 references"
 
 
 def test_reference_code_lens_suppresses_same_version_workspace_replacement() -> None:
@@ -198,5 +241,69 @@ def test_reference_code_lens_honors_cancellation_before_publication() -> None:
     assert lenses(server, target_uri) == {
         "jsonrpc": "2.0",
         "id": 2,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
+
+
+def test_code_lens_resolve_rejects_same_version_workspace_replacement() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    target_uri = "file:///workspace/target.nova"
+    caller_uri = "file:///workspace/main.nova"
+    open_nova(server, target_uri, "fn target() {}\n")
+    open_nova(server, caller_uri, "fn caller() { target() }\n")
+    lens = lenses(server, target_uri)["result"][0]
+
+    original = server.workspace_symbols.get(caller_uri)
+    assert original is not None
+    document = server.documents.get(caller_uri)
+    assert document is not None
+    replacement = server.nova_adapter.publish(server, document)
+    server.workspace_symbols.replace(replacement, expected=original)
+
+    assert resolve_lens(server, lens, 3) == {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+
+def test_code_lens_resolve_rejects_close_reopen_same_version() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    target_uri = "file:///workspace/target.nova"
+    open_nova(server, target_uri, "fn target() {}\n")
+    lens = lenses(server, target_uri)["result"][0]
+
+    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": target_uri}}))
+    open_nova(server, target_uri, "fn target() {}\n", version=1)
+
+    assert resolve_lens(server, lens, 3) == {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+
+def test_code_lens_resolve_honors_cancellation_before_publication() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    target_uri = "file:///workspace/target.nova"
+    open_nova(server, target_uri, "fn target() {}\n")
+    lens = lenses(server, target_uri)["result"][0]
+    real_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def cancel_on_second_checkpoint(context):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            server.requests.cancel(context.request_id)
+        real_checkpoint(context)
+
+    server.requests.checkpoint = cancel_on_second_checkpoint  # type: ignore[method-assign]
+    assert resolve_lens(server, lens, 3) == {
+        "jsonrpc": "2.0",
+        "id": 3,
         "error": {"code": -32800, "message": "Request cancelled"},
     }

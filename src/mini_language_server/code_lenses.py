@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .nova import NovaFunctionSyntax
 from .pull_diagnostics import NovaProductLanguageServer as _NovaProductLanguageServer
+from .semantic import SemanticError, SemanticSnapshot
 from .server import ServerState
 from .source import SourceText
 from .workspace import WorkspaceIndexError
@@ -14,8 +16,20 @@ from .workspace import WorkspaceIndexError
 _SHOW_REFERENCES_COMMAND = "mini-language-server.showReferences"
 
 
+@dataclass(frozen=True, slots=True)
+class _CodeLensResolveRecord:
+    semantic: SemanticSnapshot
+    workspace: tuple[SemanticSnapshot, ...]
+    name: str
+
+
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product server with exact-workspace reference CodeLens."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._code_lens_resolve_next = 1
+        self._code_lens_resolve_records: dict[int, _CodeLensResolveRecord] = {}
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -25,6 +39,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             and self.state is ServerState.RUNNING
         ):
             return self._handle_code_lens(message.get("id"), message.get("params"))
+        if (
+            method == "codeLens/resolve"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            return self._handle_code_lens_resolve(
+                message.get("id"), message.get("params")
+            )
         if (
             method == "workspace/executeCommand"
             and "id" in message
@@ -43,7 +65,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         ):
             capabilities = result["result"].get("capabilities")
             if isinstance(capabilities, dict):
-                capabilities["codeLensProvider"] = {"resolveProvider": False}
+                capabilities["codeLensProvider"] = {"resolveProvider": True}
                 capabilities["executeCommandProvider"] = {
                     "commands": [_SHOW_REFERENCES_COMMAND]
                 }
@@ -84,7 +106,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         try:
             self.requests.checkpoint(context)
             source = SourceText(semantic.symbols.syntax.document.text)
-            result: list[dict[str, Any]] = []
+            pending: list[tuple[dict[str, Any], str]] = []
             for symbol in semantic.symbols.symbols:
                 if symbol.kind != "function":
                     continue
@@ -95,33 +117,109 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 )
                 if len(declarations) != 1 or declarations[0].snapshot is not semantic:
                     continue
-                references = self._workspace_call_locations(symbol.name, snapshots)
-                count = len(references)
-                suffix = "reference" if count == 1 else "references"
-                result.append(
-                    {
-                        "range": self._range(source, symbol.span),
-                        "command": {
-                            "title": f"{count} {suffix}",
-                            "command": _SHOW_REFERENCES_COMMAND,
-                            "arguments": [{"uri": uri, "name": symbol.name}],
-                        },
-                        "data": {"uri": uri, "name": symbol.name},
-                    }
+                pending.append(
+                    (
+                        {"range": self._range(source, symbol.span)},
+                        symbol.name,
+                    )
                 )
 
-            result.sort(
-                key=lambda lens: (
-                    lens["range"]["start"]["line"],
-                    lens["range"]["start"]["character"],
+            pending.sort(
+                key=lambda item: (
+                    item[0]["range"]["start"]["line"],
+                    item[0]["range"]["start"]["character"],
                 )
             )
             self.requests.checkpoint(context)
+
+            def publish() -> dict[str, Any]:
+                self.requests.checkpoint(context)
+                result: list[dict[str, Any]] = []
+                for lens, name in pending:
+                    token = self._code_lens_resolve_next
+                    self._code_lens_resolve_next += 1
+                    data = {
+                        "uri": uri,
+                        "name": name,
+                        "novaCodeLensResolve": token,
+                    }
+                    resolved_lens = dict(lens)
+                    resolved_lens["data"] = data
+                    result.append(resolved_lens)
+                    self._code_lens_resolve_records[token] = _CodeLensResolveRecord(
+                        semantic,
+                        snapshots,
+                        name,
+                    )
+                while len(self._code_lens_resolve_records) > 256:
+                    oldest = min(self._code_lens_resolve_records)
+                    del self._code_lens_resolve_records[oldest]
+                return self._result(request_id, result)
+
             try:
-                return self.workspace_symbols.commit_snapshots_if_current(
-                    snapshots, lambda: self._result(request_id, result)
+                return self.semantics.commit_if_current(
+                    semantic,
+                    lambda: self.workspace_symbols.commit_snapshots_if_current(
+                        snapshots, publish
+                    ),
                 )
-            except WorkspaceIndexError:
+            except (SemanticError, WorkspaceIndexError):
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _handle_code_lens_resolve(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            return self._error(request_id, -32602, "Invalid params")
+        data = params.get("data")
+        if not isinstance(data, dict):
+            return self._error(request_id, -32602, "Invalid params")
+        token = data.get("novaCodeLensResolve")
+        if not isinstance(token, int) or isinstance(token, bool):
+            return self._error(request_id, -32602, "Invalid params")
+        record = self._code_lens_resolve_records.get(token)
+        if record is None:
+            return self._error(request_id, -32602, "Invalid params")
+        if self.semantics.get(record.semantic.uri) is not record.semantic:
+            return self._error(request_id, -32801, "Content modified")
+
+        try:
+            context = self.requests.start(request_id, uri=record.semantic.uri)
+        except RequestError:
+            return self._error(request_id, -32801, "Content modified")
+
+        try:
+            self.requests.checkpoint(context)
+            references = self._workspace_call_locations(record.name, record.workspace)
+            count = len(references)
+            suffix = "reference" if count == 1 else "references"
+            resolved = dict(params)
+            resolved["command"] = {
+                "title": f"{count} {suffix}",
+                "command": _SHOW_REFERENCES_COMMAND,
+                "arguments": [
+                    {"uri": record.semantic.uri, "name": record.name}
+                ],
+            }
+
+            def publish() -> dict[str, Any]:
+                self.requests.checkpoint(context)
+                return self._result(request_id, resolved)
+
+            try:
+                return self.semantics.commit_if_current(
+                    record.semantic,
+                    lambda: self.workspace_symbols.commit_snapshots_if_current(
+                        record.workspace, publish
+                    ),
+                )
+            except (SemanticError, WorkspaceIndexError):
                 return self._error(request_id, -32801, "Content modified")
         except RequestCancelled:
             return self._error(request_id, -32800, "Request cancelled")
