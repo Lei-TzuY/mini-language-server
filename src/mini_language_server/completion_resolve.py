@@ -26,19 +26,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     def __init__(self) -> None:
         super().__init__()
-        self._completion_resolve_enabled = False
+        self._completion_resolve_properties: frozenset[str] = frozenset()
         self._completion_resolve_next = 1
         self._completion_resolve_records: dict[int, _CompletionResolveRecord] = {}
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
         if method == "initialize" and self.state is ServerState.PRE_INITIALIZE:
-            self._completion_resolve_enabled = self._client_supports_completion_resolve(
-                message.get("params")
+            self._completion_resolve_properties = (
+                self._client_completion_resolve_properties(message.get("params"))
             )
             result = super().handle(message)
             if (
-                self._completion_resolve_enabled
+                self._completion_resolve_properties
                 and result is not None
                 and isinstance(result.get("result"), dict)
             ):
@@ -53,7 +53,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             method == "completionItem/resolve"
             and "id" in message
             and self.state is ServerState.RUNNING
-            and self._completion_resolve_enabled
+            and self._completion_resolve_properties
         ):
             return self._handle_completion_resolve(
                 message.get("id"), message.get("params")
@@ -63,7 +63,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _handle_workspace_completion(
         self, request_id: Any, params: Any
     ) -> dict[str, Any] | None:
-        if not self._completion_resolve_enabled:
+        if not self._completion_resolve_properties:
             return super()._handle_workspace_completion(request_id, params)
 
         parsed = self._semantic_query(params)
@@ -91,6 +91,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 data["novaCompletionResolve"] = token
                 stored["data"] = data
                 item["data"] = dict(data)
+                if "detail" in self._completion_resolve_properties:
+                    item.pop("detail", None)
                 self._completion_resolve_records[token] = _CompletionResolveRecord(
                     semantics,
                     snapshots,
@@ -136,8 +138,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         try:
             self.requests.checkpoint(context)
-            resolved = dict(record.item)
-            resolved["documentation"] = self._completion_documentation(resolved)
+            resolved = dict(params)
+            if "detail" in self._completion_resolve_properties:
+                detail = record.item.get("detail")
+                if detail is not None:
+                    resolved["detail"] = detail
+            if "documentation" in self._completion_resolve_properties:
+                resolved["documentation"] = self._completion_documentation(record.item)
 
             def commit() -> dict[str, Any]:
                 self.requests.checkpoint(context)
@@ -174,23 +181,28 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         return {"kind": "markdown", "value": value}
 
     @staticmethod
-    def _client_supports_completion_resolve(params: Any) -> bool:
+    def _client_completion_resolve_properties(params: Any) -> frozenset[str]:
         if not isinstance(params, dict):
-            return False
+            return frozenset()
         capabilities = params.get("capabilities")
         if not isinstance(capabilities, dict):
-            return False
+            return frozenset()
         text_document = capabilities.get("textDocument")
         if not isinstance(text_document, dict):
-            return False
+            return frozenset()
         completion = text_document.get("completion")
         if not isinstance(completion, dict):
-            return False
+            return frozenset()
         completion_item = completion.get("completionItem")
         if not isinstance(completion_item, dict):
-            return False
+            return frozenset()
         resolve_support = completion_item.get("resolveSupport")
         if not isinstance(resolve_support, dict):
-            return False
+            return frozenset()
         properties = resolve_support.get("properties")
-        return isinstance(properties, list) and "documentation" in properties
+        if not isinstance(properties, list):
+            return frozenset()
+        supported = {"detail", "documentation"}
+        return frozenset(
+            value for value in properties if isinstance(value, str) and value in supported
+        )
