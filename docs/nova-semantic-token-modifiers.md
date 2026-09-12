@@ -10,10 +10,11 @@ When the client advertises semantic-token modifier support, the server exposes t
 - `readonly` marks `let` local declarations and every semantic reference resolved to that exact immutable local.
 - `modification` marks resolved semantic references that are assignment targets.
 - `defaultLibrary` marks only the implemented Nova numeric intrinsic surface: the `UInt`/`Int` type tokens and `MIN`, `MAX`, `from`, and `from_uint` member tokens recognized by the existing intrinsic semantic-token layer.
+- `static` marks the implemented associated numeric intrinsic members (`MIN`, `MAX`, `from`, and `from_uint`) while leaving the owning `UInt`/`Int` type token unmodified.
 
 `var` locals remain mutable and therefore do not receive `readonly`. Parameters are not labeled readonly because the current Nova mutability contract only rejects assignment to `let` locals. An attempted assignment to a `let` local is still a write in editor semantics, so its target token carries both `readonly` and `modification` even when diagnostics reject the assignment. Unsupported modifiers are not advertised and never set in the bitset.
 
-Assignment classification uses the Nova trivia-masked code view and only applies to references already resolved by the exact semantic snapshot. Identifiers inside comments or quoted strings therefore cannot become modification tokens, and equality operators are not mistaken for assignment. Default-library classification uses the same trivia-aware intrinsic recognition that creates the numeric intrinsic tokens, so lookalikes in comments and strings are not marked.
+Assignment classification uses the Nova trivia-masked code view and only applies to references already resolved by the exact semantic snapshot. Identifiers inside comments or quoted strings therefore cannot become modification tokens, and equality operators are not mistaken for assignment. Default-library/static classification uses the same trivia-aware intrinsic recognition that creates the numeric intrinsic tokens, so lookalikes in comments and strings are not marked.
 
 Clients that support semantic tokens but no modifiers still receive reference and intrinsic tokens with a zero modifier bitset.
 

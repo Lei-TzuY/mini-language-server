@@ -10,7 +10,13 @@ from .semantic_tokens import TOKEN_TYPES
 from .server import ServerState
 from .source import SourceText, Span
 
-_SUPPORTED_MODIFIERS = ("declaration", "readonly", "modification", "defaultLibrary")
+_SUPPORTED_MODIFIERS = (
+    "declaration",
+    "readonly",
+    "modification",
+    "defaultLibrary",
+    "static",
+)
 _TOKEN_TYPE_INDEX = {name: index for index, name in enumerate(TOKEN_TYPES)}
 _LOCAL_KEYWORD = re.compile(r"\b(let|var)\s+\Z")
 _ASSIGNMENT_SUFFIX = re.compile(r"\s*=(?!=)")
@@ -105,7 +111,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         }
 
         default_library = self._modifier_bits("defaultLibrary")
-        if default_library:
+        static_member = self._modifier_bits("static")
+        if default_library or static_member:
             for match in _INTRINSIC_MEMBER.finditer(code):
                 if (match.group("type"), match.group("member")) not in _VALID_INTRINSICS:
                     continue
@@ -121,12 +128,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     if index is None:
                         continue
                     line, character, length, token_type, modifiers = decoded[index]
+                    extra_modifiers = default_library
+                    if group == "member":
+                        extra_modifiers |= static_member
                     decoded[index] = (
                         line,
                         character,
                         length,
                         token_type,
-                        modifiers | default_library,
+                        modifiers | extra_modifiers,
                     )
 
         for symbol in symbols.symbols:
