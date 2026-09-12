@@ -1,4 +1,4 @@
-"""Bounded exact-snapshot typing for Nova integer arithmetic expressions."""
+"""Bounded exact-snapshot typing for Nova arithmetic and string concatenation."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ _MULTIPLICATIVE = frozenset({"*", "/", "%"})
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
-    """Final Nova product with conservative integer arithmetic typing."""
+    """Final Nova product with conservative arithmetic and concatenation typing."""
 
     def _return_expression_type(
         self, semantic: Any, expression: str, span: Span
@@ -34,7 +34,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         span: Span,
         resolving: frozenset[tuple[int, int, int]],
     ) -> str | None:
-        """Reuse bounded integer semantics without dropping recursive call identity."""
+        """Reuse bounded arithmetic semantics without dropping recursive call identity."""
         expression, span = self._trim_expression(expression, span)
         expression, span = self._unwrap_expression_with_span(expression, span)
 
@@ -81,12 +81,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         )
         if left_type == right_type == "Int":
             return "Int"
+        if operator == "+" and left_type == right_type == "String":
+            return "String"
         return None
 
     def _integer_arithmetic_type(
         self, semantic: Any, expression: str, span: Span
     ) -> str | None:
-        """Infer Int for bounded arithmetic whose operands are exactly typed Int."""
+        """Infer bounded Int arithmetic and String concatenation results."""
         expression, span = self._trim_expression(expression, span)
         expression, span = self._unwrap_expression_with_span(expression, span)
 
@@ -117,6 +119,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         right_type = self._integer_arithmetic_type(semantic, right_text, right_span)
         if left_type == right_type == "Int":
             return "Int"
+        if operator == "+" and left_type == right_type == "String":
+            return "String"
         return None
 
     @staticmethod
