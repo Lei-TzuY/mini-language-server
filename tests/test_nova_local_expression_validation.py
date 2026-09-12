@@ -78,7 +78,7 @@ def test_comparison_initializer_participates_in_explicit_local_validation() -> N
 def test_unknown_compound_initializer_remains_conservative() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    open_nova(server, uri, 'fn main() { let count: Int = "a" + "b"\n}\n')
+    open_nova(server, uri, 'fn main() { let count: Int = "a" - "b"\n}\n')
     assert local_diagnostics(server, uri) == []
 
 

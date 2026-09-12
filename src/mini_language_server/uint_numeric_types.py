@@ -23,7 +23,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _integer_arithmetic_type(
         self, semantic: Any, expression: str, span: Span
     ) -> str | None:
-        """Infer Int/UInt only for same-family bounded arithmetic operands."""
+        """Infer Int/UInt arithmetic plus bounded String concatenation."""
         expression, span = self._trim_expression(expression, span)
         expression, span = self._unwrap_expression_with_span(expression, span)
 
@@ -51,6 +51,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         right_type = self._integer_arithmetic_type(semantic, right_text, right_span)
         if left_type == right_type and left_type in _UINT_NUMERIC_TYPES:
             return left_type
+        if operator == "+" and left_type == right_type == "String":
+            return "String"
         return None
 
     def _comparison_type_if_present(
@@ -91,7 +93,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         span: Span,
         resolving: frozenset[tuple[int, int, int]],
     ) -> str | None:
-        """Propagate UInt numeric results without dropping call-cycle identity."""
+        """Propagate UInt numeric and String concatenation results."""
         expression, span = self._trim_expression(expression, span)
         expression, span = self._unwrap_expression_with_span(expression, span)
 
@@ -160,6 +162,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             )
             if left_type == right_type and left_type in _UINT_NUMERIC_TYPES:
                 return left_type
+            if operator == "+" and left_type == right_type == "String":
+                return "String"
             return None
 
         unary = self._unary_negation_operand(expression, span)
