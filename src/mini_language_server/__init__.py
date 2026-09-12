@@ -7,7 +7,7 @@ from .cancellation import (
     RequestTracker,
     StaleRequest,
 )
-from .declaration import NovaProductLanguageServer
+from .implementation import NovaProductLanguageServer
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
 from .documents import Document, DocumentError, DocumentStore
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
