@@ -7,6 +7,7 @@ from .cancellation import (
     RequestTracker,
     StaleRequest,
 )
+from .completion_resolve import NovaProductLanguageServer
 from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
 from .documents import Document, DocumentError, DocumentStore
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
@@ -15,7 +16,6 @@ from .server import LanguageServer, ServerState
 from .source import Position, SourceError, SourceText, Span
 from .symbols import Symbol, SymbolError, SymbolIndex, SymbolSnapshot
 from .syntax import SyntaxError, SyntaxSnapshot, SyntaxStore
-from .uint_conversion_operand_completion import NovaProductLanguageServer
 
 __all__ = [
     "Diagnostic",
