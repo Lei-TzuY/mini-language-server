@@ -42,15 +42,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if split is None:
             split = self._top_level_operator(expression, _MULTIPLICATIVE)
         if split is None:
-            unary = self._unary_negation_operand(expression, span)
+            unary = self._unary_sign_operand(expression, span)
             if unary is not None:
-                operand, operand_span = unary
+                operator, operand, operand_span = unary
                 operand_type = self._inference_expression_type(
                     semantic,
                     operand,
                     operand_span,
                     resolving,
                 )
+                if operator == "-":
+                    return "Int" if operand_type == "Int" else None
                 return "Int" if operand_type == "Int" else None
             return super()._inference_expression_type(
                 semantic,
@@ -96,14 +98,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if split is None:
             split = self._top_level_operator(expression, _MULTIPLICATIVE)
         if split is None:
-            unary = self._unary_negation_operand(expression, span)
+            unary = self._unary_sign_operand(expression, span)
             if unary is not None:
-                operand, operand_span = unary
+                operator, operand, operand_span = unary
                 operand_type = self._integer_arithmetic_type(
                     semantic,
                     operand,
                     operand_span,
                 )
+                if operator == "-":
+                    return "Int" if operand_type == "Int" else None
                 return "Int" if operand_type == "Int" else None
             return super()._return_expression_type(semantic, expression, span)
 
@@ -177,18 +181,28 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             candidate = (char, offset)
         return candidate
 
-    def _unary_negation_operand(
+    def _unary_sign_operand(
         self, expression: str, span: Span
-    ) -> tuple[str, Span] | None:
-        """Return Nova's unary `-` operand while rejecting unsupported unary `+`."""
+    ) -> tuple[str, str, Span] | None:
+        """Return a bounded unary sign and its exact operand span."""
         code = self.nova_adapter.code_view(expression)
-        if not code or code[0] != "-":
+        if not code or code[0] not in {"+", "-"}:
             return None
         operand, operand_span = self._trim_expression(
             expression[1:], Span(span.start + 1, span.end)
         )
         if not operand:
             return None
+        return code[0], operand, operand_span
+
+    def _unary_negation_operand(
+        self, expression: str, span: Span
+    ) -> tuple[str, Span] | None:
+        """Compatibility helper for layers that specifically own unary negation."""
+        unary = self._unary_sign_operand(expression, span)
+        if unary is None or unary[0] != "-":
+            return None
+        _, operand, operand_span = unary
         return operand, operand_span
 
     @staticmethod
