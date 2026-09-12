@@ -17,6 +17,7 @@ _UINT_MAX = (1 << 64) - 1
 _INT_MAX = (1 << 63) - 1
 _UINT_MAX_MEMBER = re.compile(r"UInt\s*::\s*MAX\Z")
 _UINT_MIN_MEMBER = re.compile(r"UInt\s*::\s*MIN\Z")
+_UINT_MEMBER = re.compile(r"UInt\s*::\s*(MIN|MAX)")
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -93,7 +94,88 @@ def _known_uint_constant_value(expression: str) -> int | None:
         return 0
     if _UINT_MAX_MEMBER.fullmatch(member):
         return _UINT_MAX
-    return None
+
+    parsed = _parse_uint_expression(member, 0)
+    if parsed is None:
+        return None
+    value, cursor = parsed
+    if _skip_whitespace(member, cursor) != len(member):
+        return None
+    return value
+
+
+def _parse_uint_expression(expression: str, offset: int) -> tuple[int, int] | None:
+    parsed = _parse_uint_term(expression, offset)
+    if parsed is None:
+        return None
+    left, cursor = parsed
+
+    while True:
+        operator_offset = _skip_whitespace(expression, cursor)
+        if operator_offset >= len(expression) or expression[operator_offset] not in "+-":
+            return left, cursor
+        operator = expression[operator_offset]
+        parsed = _parse_uint_term(expression, operator_offset + 1)
+        if parsed is None:
+            return None
+        right, cursor = parsed
+        value = left + right if operator == "+" else left - right
+        if not 0 <= value <= _UINT_MAX:
+            return None
+        left = value
+
+
+def _parse_uint_term(expression: str, offset: int) -> tuple[int, int] | None:
+    parsed = _parse_uint_primary(expression, offset)
+    if parsed is None:
+        return None
+    left, cursor = parsed
+
+    while True:
+        operator_offset = _skip_whitespace(expression, cursor)
+        if operator_offset >= len(expression) or expression[operator_offset] not in "*/%":
+            return left, cursor
+        operator = expression[operator_offset]
+        parsed = _parse_uint_primary(expression, operator_offset + 1)
+        if parsed is None:
+            return None
+        right, cursor = parsed
+        if operator in "/%" and right == 0:
+            return None
+        if operator == "*":
+            value = left * right
+        elif operator == "/":
+            value = left // right
+        else:
+            value = left % right
+        if not 0 <= value <= _UINT_MAX:
+            return None
+        left = value
+
+
+def _parse_uint_primary(expression: str, offset: int) -> tuple[int, int] | None:
+    cursor = _skip_whitespace(expression, offset)
+    member = _UINT_MEMBER.match(expression, cursor)
+    if member is not None:
+        value = 0 if member.group(1) == "MIN" else _UINT_MAX
+        return value, member.end()
+
+    if cursor >= len(expression) or expression[cursor] != "(":
+        return None
+    parsed = _parse_uint_expression(expression, cursor + 1)
+    if parsed is None:
+        return None
+    value, cursor = parsed
+    cursor = _skip_whitespace(expression, cursor)
+    if cursor >= len(expression) or expression[cursor] != ")":
+        return None
+    return value, cursor + 1
+
+
+def _skip_whitespace(expression: str, offset: int) -> int:
+    while offset < len(expression) and expression[offset].isspace():
+        offset += 1
+    return offset
 
 
 def _strip_balanced_outer_parentheses(expression: str) -> str:

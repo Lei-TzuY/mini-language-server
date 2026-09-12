@@ -91,6 +91,49 @@ def test_conversion_range_diagnostics_use_known_uint_intrinsic_constants() -> No
     assert all(str((1 << 64) - 1) in item.message for item in diagnostics)
 
 
+def test_conversion_range_diagnostics_evaluate_bounded_uint_constant_expressions() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() -> Unit {\n"
+        "  let a = Int::from_uint(UInt::MAX - UInt::MIN);\n"
+        "  let b = Int::from_uint((UInt::MAX + UInt::MIN));\n"
+        "  let c = Int::from_uint(UInt::MAX / UInt::MAX);\n"
+        "  let d = Int::from_uint(UInt::MAX % UInt::MAX);\n"
+        "  let e = Int::from_uint(UInt::MAX * UInt::MIN);\n"
+        "  return ();\n"
+        "}\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = range_diagnostics(server, uri)
+    assert len(diagnostics) == 2
+    assert [text[item.span.start : item.span.end] for item in diagnostics] == [
+        "UInt::MAX - UInt::MIN",
+        "(UInt::MAX + UInt::MIN)",
+    ]
+    assert all(str((1 << 64) - 1) in item.message for item in diagnostics)
+
+
+def test_conversion_range_diagnostics_reject_invalid_uint_constant_expressions() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() -> Unit {\n"
+        "  let a = Int::from_uint(UInt::MAX - 1);\n"
+        "  let b = Int::from_uint(UInt::MAX + UInt::MAX);\n"
+        "  let c = Int::from_uint(UInt::MIN - UInt::MAX);\n"
+        "  let d = Int::from_uint(UInt::MAX / UInt::MIN);\n"
+        "  let e = Int::from_uint(UInt::UNKNOWN);\n"
+        "  let f = Int::from_uint((UInt::MAX);\n"
+        "  return ();\n"
+        "}\n"
+    )
+    open_nova(server, uri, text)
+
+    assert range_diagnostics(server, uri) == []
+
+
 def test_conversion_range_diagnostics_stay_fail_closed_for_safe_or_unknown_values() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
@@ -131,14 +174,19 @@ def test_conversion_range_diagnostics_track_change_close_and_reopen() -> None:
 
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
     assert server.diagnostics.get(uri) is None
-    open_nova(server, uri, "fn main() -> Int { return Int::from_uint(UInt::MAX); }\n", 1)
+    open_nova(
+        server,
+        uri,
+        "fn main() -> Int { return Int::from_uint(UInt::MAX - UInt::MIN); }\n",
+        1,
+    )
     assert len(range_diagnostics(server, uri)) == 1
 
 
 def test_stale_semantic_cannot_replace_newer_conversion_range_diagnostics() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
-    text = "fn main() -> UInt { return UInt::from(-1); }\n"
+    text = "fn main() -> Int { return Int::from_uint(UInt::MAX - UInt::MIN); }\n"
     open_nova(server, uri, text, 1)
 
     original = server.diagnostics.get(uri)
