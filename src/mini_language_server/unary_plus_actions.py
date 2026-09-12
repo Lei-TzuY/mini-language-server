@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from .diagnostics import Diagnostic
+from .unary_plus_diagnostics import _UNARY_PLUS_DIAGNOSTIC
 from .unary_plus_diagnostics import (
-    _UNARY_PLUS_DIAGNOSTIC,
     NovaProductLanguageServer as _NovaProductLanguageServer,
 )
 
