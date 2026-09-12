@@ -1,17 +1,20 @@
-# Nova reference semantic tokens and mutability modifiers
+# Nova reference semantic tokens and binding modifiers
 
-The final Nova product extends semantic tokens beyond declaration-only symbol snapshots. Exact semantic references now receive the token type of their resolved target, so function calls, parameter uses, and local-variable uses are highlighted from the same `SemanticSnapshot` that powers definition and references.
+The final Nova product extends semantic tokens beyond declaration-only symbol snapshots. Exact semantic references receive the token type of their resolved target, so function calls, parameter uses, and local-variable uses are highlighted from the same `SemanticSnapshot` that powers definition and references.
 
 ## Negotiated modifiers
 
-When the client advertises semantic-token modifier support, the server exposes the supported intersection in a deterministic legend order:
+When the client advertises semantic-token modifier support, the server exposes the supported intersection in deterministic legend order:
 
 - `declaration` marks Nova function, parameter, and local declarations.
 - `readonly` marks `let` local declarations and every semantic reference resolved to that exact immutable local.
+- `modification` marks resolved semantic references that are assignment targets.
 
-`var` locals remain mutable and therefore do not receive `readonly`. Parameters are not labeled readonly because the current Nova mutability contract only rejects assignment to `let` locals. Unsupported modifiers are not advertised and never set in the bitset.
+`var` locals remain mutable and therefore do not receive `readonly`. Parameters are not labeled readonly because the current Nova mutability contract only rejects assignment to `let` locals. An attempted assignment to a `let` local is still a write in editor semantics, so its target token carries both `readonly` and `modification` even when diagnostics reject the assignment. Unsupported modifiers are not advertised and never set in the bitset.
 
-Clients that support semantic tokens but no modifiers still receive the new reference tokens with a zero modifier bitset.
+Assignment classification uses the Nova trivia-masked code view and only applies to references already resolved by the exact semantic snapshot. Identifiers inside comments or quoted strings therefore cannot become modification tokens, and equality operators are not mistaken for assignment.
+
+Clients that support semantic tokens but no modifiers still receive reference tokens with a zero modifier bitset.
 
 ## Snapshot and range guarantees
 
