@@ -15,9 +15,7 @@ def notify(method: str, params: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialize(
-    server: NovaProductLanguageServer, *, modifiers: list[str]
-) -> list[str]:
+def initialize(server: NovaProductLanguageServer, modifiers: list[str]) -> list[str]:
     response = server.handle(
         request(
             "initialize",
@@ -55,140 +53,99 @@ def open_nova(server: NovaProductLanguageServer, uri: str, text: str) -> None:
     )
 
 
-def semantic_tokens(
+def tokens(
     server: NovaProductLanguageServer,
     uri: str,
     request_id: int,
-    *,
     source_range: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     method = (
         "textDocument/semanticTokens/range"
-        if source_range is not None
+        if source_range
         else "textDocument/semanticTokens/full"
     )
     params: dict[str, Any] = {"textDocument": {"uri": uri}}
     if source_range is not None:
         params["range"] = source_range
-    result = server.handle(request(method, request_id, params))
-    assert result is not None
-    return result
+    response = server.handle(request(method, request_id, params))
+    assert response is not None
+    return response
 
 
 def decode(
-    data: list[int], modifier_legend: list[str]
+    data: list[int], legend: list[str]
 ) -> list[tuple[int, int, int, str, frozenset[str]]]:
-    result: list[tuple[int, int, int, str, frozenset[str]]] = []
+    result = []
     line = 0
     character = 0
     for index in range(0, len(data), 5):
         delta_line, delta_start, length, token_type, modifiers = data[index : index + 5]
         line += delta_line
         character = character + delta_start if delta_line == 0 else delta_start
-        names = frozenset(
-            name
-            for bit, name in enumerate(modifier_legend)
-            if modifiers & (1 << bit)
-        )
+        names = frozenset(name for bit, name in enumerate(legend) if modifiers & (1 << bit))
         result.append((line, character, length, TOKEN_TYPES[token_type], names))
     return result
 
 
-def test_nova_reference_tokens_and_mutability_modifiers_are_negotiated() -> None:
+def test_static_modifier_marks_only_implemented_associated_members() -> None:
     server = NovaProductLanguageServer()
-    legend = initialize(
-        server,
-        modifiers=["modification", "readonly", "declaration", "documentation"],
-    )
-    assert legend == ["declaration", "readonly", "modification"]
+    legend = initialize(server, ["static", "defaultLibrary", "documentation"])
+    assert legend == ["defaultLibrary", "static"]
     uri = "file:///workspace/main.nova"
     text = (
-        "fn main(input: Int) {\n"
-        "    let fixed = input;\n"
-        "    var mutable = fixed;\n"
-        "    mutable = fixed;\n"
+        "fn main() -> Unit {\n"
+        "    let low = UInt::MIN;\n"
+        "    let value = UInt::from(1);\n"
+        "    let signed = Int::from_uint(value);\n"
         "}\n"
     )
     open_nova(server, uri, text)
-
-    response = semantic_tokens(server, uri, 2)
-    tokens = set(decode(response["result"]["data"], legend))
-    declaration = frozenset({"declaration"})
-    immutable = frozenset({"declaration", "readonly"})
-    readonly = frozenset({"readonly"})
-    modification = frozenset({"modification"})
-
-    assert (0, 3, 4, "function", declaration) in tokens
-    assert (0, 8, 5, "parameter", declaration) in tokens
-    assert (1, 8, 5, "variable", immutable) in tokens
-    assert (1, 16, 5, "parameter", frozenset()) in tokens
-    assert (2, 8, 7, "variable", declaration) in tokens
-    assert (2, 18, 5, "variable", readonly) in tokens
-    assert (3, 4, 7, "variable", modification) in tokens
-    assert (3, 14, 5, "variable", readonly) in tokens
+    response = tokens(server, uri, 2)
+    decoded = set(decode(response["result"]["data"], legend))
+    library = frozenset({"defaultLibrary"})
+    static_library = frozenset({"defaultLibrary", "static"})
+    assert (1, 14, 4, "type", library) in decoded
+    assert (1, 20, 3, "enumMember", static_library) in decoded
+    assert (2, 16, 4, "type", library) in decoded
+    assert (2, 22, 4, "method", static_library) in decoded
+    assert (3, 17, 3, "type", library) in decoded
+    assert (3, 22, 9, "method", static_library) in decoded
 
 
-def test_invalid_immutable_assignment_is_readonly_and_modification() -> None:
+def test_static_modifier_falls_back_when_unsupported() -> None:
     server = NovaProductLanguageServer()
-    legend = initialize(server, modifiers=["readonly", "modification"])
-    assert legend == ["readonly", "modification"]
+    legend = initialize(server, ["defaultLibrary"])
     uri = "file:///workspace/main.nova"
-    open_nova(server, uri, "fn main() { let fixed = 1; fixed = 2; }\n")
-
-    response = semantic_tokens(server, uri, 2)
-    tokens = set(decode(response["result"]["data"], legend))
-    assert (0, 27, 5, "variable", frozenset({"readonly", "modification"})) in tokens
+    open_nova(server, uri, "fn main() -> Unit { let value = UInt::MAX; }\n")
+    decoded = decode(tokens(server, uri, 2)["result"]["data"], legend)
+    assert (0, 38, 3, "enumMember", frozenset({"defaultLibrary"})) in decoded
 
 
-def test_reference_tokens_exist_without_modifier_support() -> None:
+def test_static_modifier_respects_range_requests() -> None:
     server = NovaProductLanguageServer()
-    legend = initialize(server, modifiers=[])
-    assert legend == []
+    legend = initialize(server, ["static"])
     uri = "file:///workspace/main.nova"
-    open_nova(server, uri, "fn helper() {}\nfn main() { helper(); }\n")
-
-    response = semantic_tokens(server, uri, 2)
-    tokens = set(decode(response["result"]["data"], legend))
-    assert (1, 12, 6, "function", frozenset()) in tokens
-    assert all(not modifiers for *_, modifiers in tokens)
-
-
-def test_reference_tokens_and_modifiers_respect_range_requests() -> None:
-    server = NovaProductLanguageServer()
-    legend = initialize(
-        server, modifiers=["declaration", "readonly", "modification"]
-    )
-    uri = "file:///workspace/main.nova"
-    text = (
-        "fn main() {\n"
-        "    let fixed = 1;\n"
-        "    var mutable = fixed;\n"
-        "    mutable = fixed;\n"
-        "}\n"
-    )
-    open_nova(server, uri, text)
-
-    response = semantic_tokens(
+    open_nova(
         server,
         uri,
-        2,
-        source_range={
-            "start": {"line": 3, "character": 0},
-            "end": {"line": 4, "character": 0},
-        },
+        "fn main() -> Unit {\n    let low = UInt::MIN;\n    let high = UInt::MAX;\n}\n",
     )
-    tokens = decode(response["result"]["data"], legend)
-    assert tokens == [
-        (3, 4, 7, "variable", frozenset({"modification"})),
-        (3, 14, 5, "variable", frozenset({"readonly"})),
-    ]
+    response = tokens(
+        server,
+        uri,
+        3,
+        {"start": {"line": 2, "character": 0}, "end": {"line": 3, "character": 0}},
+    )
+    decoded = decode(response["result"]["data"], legend)
+    assert (2, 21, 3, "enumMember", frozenset({"static"})) in decoded
+    assert all(item[0] == 2 for item in decoded)
 
 
-def test_same_version_workspace_replacement_rejects_stale_reference_tokens() -> None:
+def test_same_version_replacement_rejects_stale_static_tokens() -> None:
     server = NovaProductLanguageServer()
-    initialize(server, modifiers=["declaration", "readonly", "modification"])
+    initialize(server, ["static"])
     uri = "file:///workspace/main.nova"
-    open_nova(server, uri, "fn main() { let value = 1; value; }\n")
+    open_nova(server, uri, "fn main() -> Unit { let value = UInt::MAX; }\n")
     original = server.workspace_symbols.get(uri)
     assert original is not None
     real_commit = server.workspace_symbols.commit_snapshots_if_current
@@ -200,19 +157,21 @@ def test_same_version_workspace_replacement_rejects_stale_reference_tokens() -> 
         server.workspace_symbols.replace(replacement, expected=original)
         return real_commit(snapshots, callback)
 
-    server.workspace_symbols.commit_snapshots_if_current = replace_then_commit  # type: ignore[method-assign]
-    assert semantic_tokens(server, uri, 4) == {
+    server.workspace_symbols.commit_snapshots_if_current = (  # type: ignore[method-assign]
+        replace_then_commit
+    )
+    assert tokens(server, uri, 4) == {
         "jsonrpc": "2.0",
         "id": 4,
         "error": {"code": -32801, "message": "Content modified"},
     }
 
 
-def test_reference_semantic_tokens_honor_cancellation() -> None:
+def test_static_semantic_tokens_honor_cancellation() -> None:
     server = NovaProductLanguageServer()
-    initialize(server, modifiers=["declaration", "readonly", "modification"])
+    initialize(server, ["static"])
     uri = "file:///workspace/main.nova"
-    open_nova(server, uri, "fn main() { let value = 1; value; }\n")
+    open_nova(server, uri, "fn main() -> Unit { let value = UInt::MAX; }\n")
     entered = Event()
     release = Event()
     responses: list[dict[str, Any] | None] = []
@@ -228,15 +187,12 @@ def test_reference_semantic_tokens_honor_cancellation() -> None:
         return original(context)
 
     server.requests.checkpoint = blocked_checkpoint  # type: ignore[method-assign]
-    thread = Thread(
-        target=lambda: responses.append(semantic_tokens(server, uri, 5))
-    )
+    thread = Thread(target=lambda: responses.append(tokens(server, uri, 5)))
     thread.start()
     assert entered.wait(timeout=5)
     server.handle(notify("$/cancelRequest", {"id": 5}))
     release.set()
     thread.join(timeout=5)
-    assert not thread.is_alive()
     assert responses == [
         {
             "jsonrpc": "2.0",
