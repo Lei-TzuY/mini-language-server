@@ -63,7 +63,10 @@ def completion_items(
 ) -> list[dict[str, str]]:
     response = completion_response(server, uri, request_id, text)
     assert "result" in response
-    return response["result"]
+    return [
+        {"label": item["label"], "detail": item["detail"]}
+        for item in response["result"]
+    ]
 
 
 def test_uint_member_completion_exposes_only_implemented_intrinsics() -> None:
@@ -97,9 +100,7 @@ def test_member_completion_filters_prefix_and_int_receiver() -> None:
             "textDocument/didChange",
             {
                 "textDocument": {"uri": uri, "version": 2},
-                "contentChanges": [
-                    {"text": changed.replace("/*cursor*/", "")}
-                ],
+                "contentChanges": [{"text": changed.replace("/*cursor*/", "")}],
             },
         )
     )
@@ -119,9 +120,7 @@ def test_member_completion_close_reopen_does_not_reuse_old_receiver() -> None:
     }
     assert uint_labels == {"MIN", "MAX", "from"}
 
-    server.handle(
-        notify("textDocument/didClose", {"textDocument": {"uri": uri}})
-    )
+    server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
     int_marked = "fn main() -> Unit { Int::/*cursor*/ return (); }\n"
     open_nova(server, uri, 1, int_marked.replace("/*cursor*/", ""))
     assert completion_items(server, uri, 3, int_marked) == [
@@ -177,9 +176,7 @@ def test_member_completion_honors_cancellation_checkpoint() -> None:
 
     server.requests.checkpoint = blocked_checkpoint  # type: ignore[method-assign]
     thread = Thread(
-        target=lambda: responses.append(
-            completion_response(server, uri, 42, marked)
-        )
+        target=lambda: responses.append(completion_response(server, uri, 42, marked))
     )
     thread.start()
     assert entered.wait(timeout=5)
