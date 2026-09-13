@@ -85,7 +85,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return None
         parameters = detail[opening + 1 : closing].strip()
         if not parameters:
-            return f"{label}()"
+            return f"{label}()$0"
 
         names: list[str] = []
         for parameter in parameters.split(","):
@@ -96,4 +96,4 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         placeholders = ", ".join(
             f"${{{index}:{name}}}" for index, name in enumerate(names, start=1)
         )
-        return f"{label}({placeholders})"
+        return f"{label}({placeholders})$0"
