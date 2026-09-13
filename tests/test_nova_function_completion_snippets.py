@@ -83,6 +83,8 @@ def test_function_completion_uses_exact_parameter_snippet_when_supported() -> No
         "detail": "fn target(value: Int, text: String) -> Bool",
         "insertText": "target(${1:value}, ${2:text})$0",
         "insertTextFormat": 2,
+        "kind": 3,
+        "sortText": "2:target",
     }
 
 
@@ -96,7 +98,7 @@ def test_zero_parameter_and_cross_file_functions_get_call_snippets() -> None:
     assert by_label(completion(server, uri, 2), "ping")["insertText"] == "ping()$0"
 
 
-def test_plain_clients_keep_existing_function_completion_shape() -> None:
+def test_plain_clients_get_classified_function_completion_shape() -> None:
     server = NovaProductLanguageServer()
     initialize(server, snippets=False)
     uri = "file:///workspace/main.nova"
@@ -110,6 +112,8 @@ def test_plain_clients_keep_existing_function_completion_shape() -> None:
     assert by_label(completion(server, uri, 2), "target") == {
         "label": "target",
         "detail": "fn target(value: Int) -> Int",
+        "kind": 3,
+        "sortText": "2:target",
     }
 
 
