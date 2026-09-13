@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from mini_language_server import NovaProductLanguageServer
+from mini_language_server import NovaProductLanguageServer, Span
 
 
 def request(method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
@@ -136,22 +136,36 @@ def test_classification_composes_with_insert_replace_and_snippets() -> None:
 
 def test_stale_completion_remains_rejected_before_classification() -> None:
     server = NovaProductLanguageServer()
-    initialize(server)
+    initialized = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "textDocument": {
+                        "completion": {
+                            "completionItem": {"insertReplaceSupport": True}
+                        }
+                    }
+                }
+            },
+        )
+    )
+    assert initialized is not None
     uri = "file:///workspace/main.nova"
     open_nova(server, uri, "fn helper() -> Unit {}\nfn main() -> Unit {\n  hel\n}\n")
     original = server.workspace_symbols.get(uri)
     assert original is not None
-    real_snapshots = server.workspace_symbols.snapshots
+    real_span = server._completion_identifier_span
 
-    def replace_then_snapshots():
-        snapshots = real_snapshots()
+    def replace_then_span(text: str, offset: int) -> Span:
         document = server.documents.get(uri)
         assert document is not None
         replacement = server.nova_adapter.publish(server, document)
         server.workspace_symbols.replace(replacement, expected=original)
-        return snapshots
+        return real_span(text, offset)
 
-    server.workspace_symbols.snapshots = replace_then_snapshots  # type: ignore[method-assign]
+    server._completion_identifier_span = replace_then_span  # type: ignore[method-assign]
     assert completion(server, uri, 5, 2, 5) == {
         "jsonrpc": "2.0",
         "id": 5,
