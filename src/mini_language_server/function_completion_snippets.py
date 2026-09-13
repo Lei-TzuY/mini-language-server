@@ -31,7 +31,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         parsed = self._semantic_query(params)
         if parsed is None or parsed[0] is None:
             return super()._handle_workspace_completion(request_id, params)
-        semantics = parsed[0]
         snapshots = self.workspace_symbols.snapshots()
         response = super()._handle_workspace_completion(request_id, params)
         if response is None or not isinstance(response.get("result"), list):
