@@ -76,7 +76,7 @@ def test_callable_intrinsics_use_snippets_only_when_client_supports_them() -> No
         {
             "label": "from",
             "detail": "fn UInt::from(value: Int) -> UInt",
-            "insertText": "from(${1:value})",
+            "insertText": "from(${1:value})$0",
             "insertTextFormat": 2,
         },
     ]
@@ -97,7 +97,7 @@ def test_snippet_completion_rebinds_after_receiver_change() -> None:
     uint_marked = "fn main() -> Unit { UInt::/*cursor*/ return (); }\n"
     open_nova(server, uri, uint_marked.replace("/*cursor*/", ""))
     assert completion(server, uri, 2, uint_marked)["result"][-1]["insertText"] == (
-        "from(${1:value})"
+        "from(${1:value})$0"
     )
 
     int_marked = "fn main() -> Unit { Int::/*cursor*/ return (); }\n"
@@ -114,7 +114,7 @@ def test_snippet_completion_rebinds_after_receiver_change() -> None:
         {
             "label": "from_uint",
             "detail": "fn Int::from_uint(value: UInt) -> Int",
-            "insertText": "from_uint(${1:value})",
+            "insertText": "from_uint(${1:value})$0",
             "insertTextFormat": 2,
         }
     ]

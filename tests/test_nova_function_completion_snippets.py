@@ -81,7 +81,7 @@ def test_function_completion_uses_exact_parameter_snippet_when_supported() -> No
     assert by_label(completion(server, uri, 2), "target") == {
         "label": "target",
         "detail": "fn target(value: Int, text: String) -> Bool",
-        "insertText": "target(${1:value}, ${2:text})",
+        "insertText": "target(${1:value}, ${2:text})$0",
         "insertTextFormat": 2,
     }
 
@@ -93,7 +93,7 @@ def test_zero_parameter_and_cross_file_functions_get_call_snippets() -> None:
     uri = "file:///workspace/main.nova"
     open_nova(server, uri, "fn main() -> Unit {\n  return ();\n}\n")
 
-    assert by_label(completion(server, uri, 2), "ping")["insertText"] == "ping()"
+    assert by_label(completion(server, uri, 2), "ping")["insertText"] == "ping()$0"
 
 
 def test_plain_clients_keep_existing_function_completion_shape() -> None:
@@ -126,7 +126,7 @@ def test_snippets_compose_with_completion_detail_resolve() -> None:
 
     item = by_label(completion(server, uri, 2), "target")
     assert "detail" not in item
-    assert item["insertText"] == "target(${1:value})"
+    assert item["insertText"] == "target(${1:value})$0"
     assert item["insertTextFormat"] == 2
 
     resolved = server.handle(request("completionItem/resolve", 3, item))
