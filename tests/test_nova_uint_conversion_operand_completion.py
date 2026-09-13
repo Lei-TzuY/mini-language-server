@@ -63,7 +63,10 @@ def completion_items(
 ) -> list[dict[str, str]]:
     response = completion_response(server, uri, request_id, marked)
     assert "result" in response
-    return response["result"]
+    return [
+        {"label": item["label"], "detail": item["detail"]}
+        for item in response["result"]
+    ]
 
 
 def test_uint_from_operand_completion_filters_visible_int_symbols() -> None:
@@ -120,9 +123,7 @@ def test_conversion_operand_completion_prefix_and_nested_call_fallback() -> None
             },
         )
     )
-    labels = {
-        item["label"] for item in completion_items(server, uri, 3, nested)
-    }
+    labels = {item["label"] for item in completion_items(server, uri, 3, nested)}
     assert {"i", "u", "helper", "main"} <= labels
 
 
