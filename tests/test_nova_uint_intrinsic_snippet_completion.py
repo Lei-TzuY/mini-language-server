@@ -71,13 +71,25 @@ def test_callable_intrinsics_use_snippets_only_when_client_supports_them() -> No
     open_nova(server, uri, marked.replace("/*cursor*/", ""))
     result = completion(server, uri, 2, marked)["result"]
     assert result == [
-        {"label": "MIN", "detail": "constant: UInt"},
-        {"label": "MAX", "detail": "constant: UInt"},
+        {
+            "label": "MIN",
+            "detail": "constant: UInt",
+            "kind": 21,
+            "sortText": "1:MIN",
+        },
+        {
+            "label": "MAX",
+            "detail": "constant: UInt",
+            "kind": 21,
+            "sortText": "1:MAX",
+        },
         {
             "label": "from",
             "detail": "fn UInt::from(value: Int) -> UInt",
             "insertText": "from(${1:value})$0",
             "insertTextFormat": 2,
+            "kind": 3,
+            "sortText": "2:from",
         },
     ]
 
@@ -87,6 +99,8 @@ def test_callable_intrinsics_use_snippets_only_when_client_supports_them() -> No
     assert completion(plain, uri, 3, marked)["result"][-1] == {
         "label": "from",
         "detail": "fn UInt::from(value: Int) -> UInt",
+        "kind": 3,
+        "sortText": "2:from",
     }
 
 
@@ -116,6 +130,8 @@ def test_snippet_completion_rebinds_after_receiver_change() -> None:
             "detail": "fn Int::from_uint(value: UInt) -> Int",
             "insertText": "from_uint(${1:value})$0",
             "insertTextFormat": 2,
+            "kind": 3,
+            "sortText": "2:from_uint",
         }
     ]
 
