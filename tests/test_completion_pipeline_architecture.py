@@ -13,3 +13,14 @@ def test_completion_capabilities_share_one_runtime_product_layer() -> None:
             "mini_language_server.completion_prefix",
         }
     )
+
+def test_unary_plus_diagnostic_and_action_share_one_runtime_layer() -> None:
+    modules = {base.__module__ for base in NovaProductLanguageServer.__mro__}
+
+    assert "mini_language_server.unary_plus" in modules
+    assert modules.isdisjoint(
+        {
+            "mini_language_server.unary_plus_diagnostics",
+            "mini_language_server.unary_plus_actions",
+        }
+    )
