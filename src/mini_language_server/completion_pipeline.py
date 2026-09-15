@@ -12,7 +12,7 @@ from typing import Any
 from .semantic import SemanticError
 from .server import ServerState
 from .source import Span
-from .unary_plus_actions import NovaProductLanguageServer as _LegacyProductLanguageServer
+from .unary_plus import NovaProductLanguageServer as _ProductLanguageServer
 from .workspace import WorkspaceIndexError
 
 _COMPLETION_KIND_FUNCTION = 3
@@ -20,7 +20,7 @@ _COMPLETION_KIND_VARIABLE = 6
 _COMPLETION_KIND_CONSTANT = 21
 
 
-class NovaProductLanguageServer(_LegacyProductLanguageServer):
+class NovaProductLanguageServer(_ProductLanguageServer):
     """Nova product with one guarded completion presentation pipeline."""
 
     def __init__(self) -> None:
