@@ -69,6 +69,11 @@ class NovaProductLanguageServer(_LegacyProductLanguageServer):
             insert_range = self._range(source, Span(span.start, offset))
             replace_range = self._range(source, span)
 
+        prefix = None
+        if semantics is not None and offset is not None:
+            text = semantics.symbols.syntax.document.text
+            prefix = self._completion_identifier_prefix(text, offset)
+
         def publish() -> dict[str, Any]:
             items = response["result"]
 
@@ -119,17 +124,14 @@ class NovaProductLanguageServer(_LegacyProductLanguageServer):
                 item["kind"] = kind
                 item["sortText"] = f"{rank}:{label}"
 
-            if semantics is not None and offset is not None:
-                text = semantics.symbols.syntax.document.text
-                prefix = self._completion_identifier_prefix(text, offset)
-                if prefix:
-                    response["result"] = [
-                        item
-                        for item in items
-                        if isinstance(item, dict)
-                        and isinstance(item.get("label"), str)
-                        and item["label"].startswith(prefix)
-                    ]
+            if prefix:
+                response["result"] = [
+                    item
+                    for item in items
+                    if isinstance(item, dict)
+                    and isinstance(item.get("label"), str)
+                    and item["label"].startswith(prefix)
+                ]
             return response
 
         if semantics is None:
