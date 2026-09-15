@@ -70,7 +70,7 @@ def test_completion_items_expose_standard_kinds_and_role_ranking() -> None:
         ),
     )
 
-    response = completion(server, uri, 2, 3, 5)
+    response = completion(server, uri, 2, 3, 2)
     parameter = by_label(response, "input")
     local = by_label(response, "local")
     function = by_label(response, "helper")
