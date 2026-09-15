@@ -58,7 +58,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         start = offset
         while start > 0:
             char = text[start - 1]
-            if not (char == "_" or char.isascii() and char.isalnum()):
+            if not (char == "_" or (char.isascii() and char.isalnum())):
                 break
             start -= 1
         return text[start:offset]
