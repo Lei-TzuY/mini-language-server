@@ -78,7 +78,7 @@ def test_completion_filters_same_file_candidates_by_typed_prefix() -> None:
         ),
     )
 
-    assert labels(completion(server, uri, 2, 5, 4)) == ["tally", "target"]
+    assert labels(complete(server, uri, 2, 5, 4)) == ["tally", "target"]
 
 
 def test_completion_filters_cross_file_functions_by_typed_prefix() -> None:
@@ -93,7 +93,7 @@ def test_completion_filters_cross_file_functions_by_typed_prefix() -> None:
     )
     open_nova(server, main, "fn main() -> Unit {\n  tar\n}\n")
 
-    assert labels(completion(server, main, 3, 1, 5)) == ["target"]
+    assert labels(complete(server, main, 3, 1, 5)) == ["target"]
 
 
 def test_empty_prefix_keeps_existing_completion_set() -> None:
@@ -106,7 +106,7 @@ def test_empty_prefix_keeps_existing_completion_set() -> None:
         "fn helper() -> Unit {}\nfn main(value: Int) -> Unit {\n  \n}\n",
     )
 
-    result = labels(completion(server, uri, 4, 2, 2))
+    result = labels(complete(server, uri, 4, 2, 2))
     assert "helper" in result
     assert "value" in result
 
@@ -120,7 +120,7 @@ def test_close_reopen_uses_new_exact_prefix_snapshot() -> None:
         uri,
         "fn target() -> Unit {}\nfn helper() -> Unit {}\nfn main() -> Unit {\n  tar\n}\n",
     )
-    assert labels(completion(server, uri, 5, 3, 5)) == ["target"]
+    assert labels(complete(server, uri, 5, 3, 5)) == ["target"]
 
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": uri}}))
     open_nova(
@@ -130,7 +130,7 @@ def test_close_reopen_uses_new_exact_prefix_snapshot() -> None:
         version=1,
     )
 
-    assert labels(completion(server, uri, 6, 3, 5)) == ["helper"]
+    assert labels(complete(server, uri, 6, 3, 5)) == ["helper"]
 
 
 def test_same_version_replacement_rejects_prefix_filtered_completion() -> None:
