@@ -55,7 +55,7 @@ def completion(server: NovaProductLanguageServer, uri: str, request_id: int) -> 
             request_id,
             {
                 "textDocument": {"uri": uri},
-                "position": {"line": 1, "character": 2},
+                "position": {"line": 1, "character": 0},
             },
         )
     )

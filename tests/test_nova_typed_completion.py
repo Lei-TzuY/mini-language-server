@@ -101,7 +101,7 @@ def test_completion_respects_function_scope_and_local_declaration_order() -> Non
         "fn second(right: String) { let visible = right visible let later = 1 }\n"
     )
     open_nova(server, uri, 1, text)
-    cursor = text.index(" let later")
+    cursor = text.index(" let later") + 1
 
     details = complete(server, uri, 2, character=cursor)
     assert details["right"] == "parameter: String"
