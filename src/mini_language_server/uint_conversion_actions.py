@@ -26,12 +26,20 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             uri, document, source, diagnostics, start_offset, end_offset
         )
         snapshot = self.workspace_symbols.get(uri)
-        if snapshot is None or snapshot.symbols.syntax.document is not document:
+        current = self.diagnostics.get(uri)
+        if (
+            snapshot is None
+            or snapshot.symbols.syntax.document is not document
+            or current is None
+            or current.semantic.symbols.syntax.document is not document
+        ):
             return actions
 
         semantic = snapshot
         for diagnostic in diagnostics:
             if diagnostic.code != _CONVERSION_TYPE_DIAGNOSTIC:
+                continue
+            if not any(item is diagnostic for item in current.diagnostics):
                 continue
             if not self._diagnostic_overlaps(
                 diagnostic, start_offset=start_offset, end_offset=end_offset
