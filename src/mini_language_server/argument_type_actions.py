@@ -30,8 +30,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         actions = super()._nova_code_actions(
             uri, document, source, diagnostics, start_offset, end_offset
         )
+        current = self.diagnostics.get(uri)
+        if current is None or current.semantic.symbols.syntax.document is not document:
+            return actions
+
         for diagnostic in diagnostics:
             if diagnostic.code != "nova.argument-type":
+                continue
+            if not any(item is diagnostic for item in current.diagnostics):
                 continue
             if not self._diagnostic_overlaps(
                 diagnostic, start_offset=start_offset, end_offset=end_offset
