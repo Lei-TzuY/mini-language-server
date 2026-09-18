@@ -36,3 +36,15 @@ def test_uint_type_semantics_share_one_runtime_layer() -> None:
             "mini_language_server.uint_conversion_types",
         }
     )
+
+
+def test_uint_conversion_diagnostic_and_action_share_one_runtime_layer() -> None:
+    modules = {base.__module__ for base in NovaProductLanguageServer.__mro__}
+
+    assert "mini_language_server.uint_conversion" in modules
+    assert modules.isdisjoint(
+        {
+            "mini_language_server.uint_conversion_diagnostics",
+            "mini_language_server.uint_conversion_actions",
+        }
+    )

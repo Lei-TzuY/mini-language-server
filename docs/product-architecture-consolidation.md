@@ -25,13 +25,20 @@ now share `uint_types.NovaProductLanguageServer`. The combined boundary keeps
 conversion recursion ahead of numeric fallback without spending three serial
 product subclasses.
 
+Explicit Int/UInt conversion diagnostics and their published-diagnostic-bound
+quick fix form the fourth consolidated boundary in
+`uint_conversion.NovaProductLanguageServer`. Detection, publication, and repair
+share one product layer while the repair still rejects stale or reconstructed
+diagnostics.
+
 ## Rule for new work
 
 New completion behavior must be added as a transformation inside
 `completion_pipeline.py` or as a pure helper called by that pipeline. It must
 not introduce another serial final-product subclass. Unary-plus behavior must
 remain in `unary_plus.py` (or pure helpers it calls) rather than being split
-back into separate product subclasses.
+back into separate product subclasses. Numeric conversion diagnostics and actions
+must remain together in `uint_conversion.py` or pure helpers called by it.
 
 The remaining historical product layers are acknowledged migration debt, not a
 template for continued expansion. Future consolidation should proceed one
