@@ -19,6 +19,12 @@ diagnostic/action pair. The feature still delegates diagnostic publication and
 code-action collection through the preceding product base, preserving ordering
 and stale-document rejection.
 
+UInt typing is the third consolidated domain. Constant and explicit-result
+typing, same-family arithmetic/comparisons, and explicit Int/UInt conversions
+now share `uint_types.NovaProductLanguageServer`. The combined boundary keeps
+conversion recursion ahead of numeric fallback without spending three serial
+product subclasses.
+
 ## Rule for new work
 
 New completion behavior must be added as a transformation inside

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from .diagnostics import Diagnostic
 from .semantic import SemanticSnapshot
 from .source import Span
-from .uint_conversion_types import NovaProductLanguageServer as _NovaProductLanguageServer
+from .uint_types import NovaProductLanguageServer as _NovaProductLanguageServer
 
 _CONVERSION_HEAD = re.compile(
     r"\b(?P<name>UInt\s*::\s*from|Int\s*::\s*from_uint)\s*\("
