@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
-from .uint_conversion_actions import NovaProductLanguageServer as _NovaProductLanguageServer
+from .uint_conversion import NovaProductLanguageServer as _NovaProductLanguageServer
 from .workspace import WorkspaceIndexError
 
 _MEMBER_PREFIX = re.compile(

@@ -1,15 +1,16 @@
-"""Exact-snapshot diagnostics for bounded Nova explicit numeric conversions."""
+"""Unified exact-snapshot diagnostics and quick fixes for Nova conversions."""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from typing import Any
 
 from .diagnostics import Diagnostic
 from .semantic import SemanticSnapshot
 from .source import Span
-from .uint_conversion_types import NovaProductLanguageServer as _NovaProductLanguageServer
+from .uint_types import NovaProductLanguageServer as _NovaProductLanguageServer
 
 _CONVERSION_HEAD = re.compile(
     r"\b(?P<name>UInt\s*::\s*from|Int\s*::\s*from_uint)\s*\("
@@ -28,7 +29,7 @@ class _ConversionCall:
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
-    """Final Nova product with deterministic explicit-conversion diagnostics."""
+    """Nova product with one deterministic conversion diagnostic/action boundary."""
 
     def publish_diagnostics(
         self, semantic: SemanticSnapshot, diagnostics: Iterable[Diagnostic]
@@ -156,3 +157,80 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 (text[value_start:value_end], Span(value_start, value_end))
             )
         return tuple(arguments)
+
+    def _nova_code_actions(
+        self,
+        uri: str,
+        document: Any,
+        source: Any,
+        diagnostics: tuple[Diagnostic, ...],
+        start_offset: int,
+        end_offset: int,
+    ) -> list[dict[str, Any]]:
+        actions = super()._nova_code_actions(
+            uri, document, source, diagnostics, start_offset, end_offset
+        )
+        snapshot = self.workspace_symbols.get(uri)
+        current = self.diagnostics.get(uri)
+        if (
+            snapshot is None
+            or snapshot.symbols.syntax.document is not document
+            or current is None
+            or current.semantic.symbols.syntax.document is not document
+        ):
+            return actions
+
+        semantic = snapshot
+        for diagnostic in diagnostics:
+            if diagnostic.code != _CONVERSION_TYPE_DIAGNOSTIC:
+                continue
+            if not any(item is diagnostic for item in current.diagnostics):
+                continue
+            if not self._diagnostic_overlaps(
+                diagnostic, start_offset=start_offset, end_offset=end_offset
+            ):
+                continue
+            repair = self._redundant_conversion_repair(
+                semantic, document.text, diagnostic
+            )
+            if repair is None:
+                continue
+            call_span, argument = repair
+            actions.append(
+                {
+                    "title": "Remove redundant numeric conversion",
+                    "kind": "quickfix",
+                    "diagnostics": [self._diagnostic(source, diagnostic)],
+                    "edit": {
+                        "changes": {
+                            uri: [
+                                {
+                                    "range": self._range(source, call_span),
+                                    "newText": argument,
+                                }
+                            ]
+                        }
+                    },
+                }
+            )
+        return actions
+
+    def _redundant_conversion_repair(
+        self, semantic: Any, text: str, diagnostic: Diagnostic
+    ) -> tuple[Any, str] | None:
+        matches: list[tuple[Any, str]] = []
+        for call in self._conversion_calls(text):
+            if len(call.arguments) != 1:
+                continue
+            argument, argument_span = call.arguments[0]
+            if argument_span != diagnostic.span:
+                continue
+            argument_type = self._integer_arithmetic_type(
+                semantic, argument, argument_span
+            )
+            if argument_type != call.target_type:
+                continue
+            matches.append((call.span, argument))
+        if len(matches) != 1:
+            return None
+        return matches[0]
