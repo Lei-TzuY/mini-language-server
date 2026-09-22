@@ -188,9 +188,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 continue
             body_code = code[opening + 1 : closing]
             body_text = text[opening + 1 : closing]
-            termination_end = self._first_guaranteed_termination_end(body_code, body_text)
-            if termination_end is None:
+            termination = self._first_guaranteed_termination(body_code, body_text)
+            if termination is None:
                 continue
+            termination_end, termination_kind = termination
             unreachable_start = self._next_non_space(body_code, termination_end)
             if unreachable_start is None:
                 continue
@@ -207,7 +208,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         opening + 1 + unreachable_start,
                         opening + 1 + unreachable_end,
                     ),
-                    message="unreachable code after guaranteed return",
+                    message=f"unreachable code after {termination_kind}",
                     code=_UNREACHABLE_CODE_DIAGNOSTIC,
                     source="nova",
                     tags=("unnecessary",),
