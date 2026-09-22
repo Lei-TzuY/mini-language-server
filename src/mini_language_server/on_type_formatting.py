@@ -6,7 +6,7 @@ from typing import Any
 
 from .cancellation import RequestCancelled, StaleRequest
 from .server import ServerState
-from .source import Position, SourceError, SourceText
+from .source import Position, SourceError
 from .typed_local_annotations import NovaProductLanguageServer as _NovaProductLanguageServer
 
 
