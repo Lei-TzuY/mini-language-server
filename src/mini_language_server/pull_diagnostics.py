@@ -10,7 +10,6 @@ from .diagnostics import DiagnosticError, DiagnosticSnapshot
 from .documents import Document, DocumentError
 from .folding_ranges import NovaProductLanguageServer as _NovaProductLanguageServer
 from .server import ServerState
-from .source import SourceText
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -91,7 +90,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 self.requests.checkpoint(context)
                 return self._error(request_id, -32801, "Content modified")
 
-            source = SourceText(document.text)
+            source = self._source_text(document.text)
             items = [self._diagnostic(source, item) for item in snapshot.diagnostics]
             result_id = self._diagnostic_result_id(document, snapshot)
             report = self._diagnostic_report(previous_result_id, result_id, items)
@@ -132,7 +131,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     if snapshot.semantic.symbols.syntax.document is not document:
                         return self._error(request_id, -32801, "Content modified")
                     diagnostic_snapshots.append(snapshot)
-                    source = SourceText(document.text)
+                    source = self._source_text(document.text)
                     items = [self._diagnostic(source, item) for item in snapshot.diagnostics]
                 else:
                     items = []

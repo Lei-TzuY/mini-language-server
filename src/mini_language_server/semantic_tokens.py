@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .source import SourceText, Span
+from .source import DEFAULT_POSITION_ENCODING, SourceText, Span
 from .symbols import SymbolSnapshot
 
 TOKEN_TYPES: tuple[str, ...] = (
@@ -51,7 +51,10 @@ _KIND_ALIASES = {
 
 
 def encode_semantic_tokens(
-    symbols: SymbolSnapshot, *, requested_span: Span | None = None
+    symbols: SymbolSnapshot,
+    *,
+    requested_span: Span | None = None,
+    position_encoding: str = DEFAULT_POSITION_ENCODING,
 ) -> list[int]:
     """Encode deterministic single-line symbol tokens using LSP delta encoding.
 
@@ -61,7 +64,10 @@ def encode_semantic_tokens(
     fall back to ``variable`` rather than leaking language-specific kinds into the
     protocol.
     """
-    source = SourceText(symbols.syntax.document.text)
+    source = SourceText(
+        symbols.syntax.document.text,
+        position_encoding=position_encoding,
+    )
     encoded: list[int] = []
     previous_line = 0
     previous_character = 0

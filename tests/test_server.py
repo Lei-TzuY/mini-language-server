@@ -1,3 +1,4 @@
+from mini_language_server.diagnostics import Diagnostic
 from mini_language_server.semantic import Reference
 from mini_language_server.server import LanguageServer, ServerState
 from mini_language_server.source import Span
@@ -29,6 +30,7 @@ def test_initialize_transitions_server_to_running() -> None:
     response = server.handle(request("initialize", params={"capabilities": {}}))
     assert response is not None
     assert response["result"]["capabilities"] == {
+        "positionEncoding": "utf-16",
         "textDocumentSync": 2,
         "definitionProvider": True,
         "referencesProvider": True,
@@ -392,3 +394,207 @@ def test_semantic_requests_reject_invalid_utf16_positions() -> None:
         "id": 1,
         "error": {"code": -32602, "message": "Invalid params"},
     }
+
+def test_initialize_negotiates_first_supported_position_encoding() -> None:
+    server = LanguageServer()
+    response = server.handle(
+        request(
+            "initialize",
+            params={
+                "capabilities": {
+                    "general": {
+                        "positionEncodings": ["utf-8", "utf-16"],
+                    }
+                }
+            },
+        )
+    )
+
+    assert response is not None
+    assert response["result"]["capabilities"]["positionEncoding"] == "utf-8"
+    assert server.position_encoding == "utf-8"
+    assert server.documents.position_encoding == "utf-8"
+
+
+def test_initialize_falls_back_to_utf16_without_supported_advertisement() -> None:
+    server = LanguageServer()
+    response = server.handle(
+        request(
+            "initialize",
+            params={
+                "capabilities": {
+                    "general": {
+                        "positionEncodings": ["utf-32"],
+                    }
+                }
+            },
+        )
+    )
+
+    assert response is not None
+    assert response["result"]["capabilities"]["positionEncoding"] == "utf-16"
+    assert server.position_encoding == "utf-16"
+
+
+def test_utf8_incremental_change_uses_negotiated_position_units() -> None:
+    server = LanguageServer()
+    server.handle(
+        request(
+            "initialize",
+            params={
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-8"]},
+                }
+            },
+        )
+    )
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "a😀b\n")
+
+    server.handle(
+        notification(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [
+                    {
+                        "range": {
+                            "start": {"line": 0, "character": 1},
+                            "end": {"line": 0, "character": 5},
+                        },
+                        "text": "X",
+                    }
+                ],
+            },
+        )
+    )
+
+    document = server.documents.get(uri)
+    assert document is not None
+    assert document.text == "aXb\n"
+
+
+def test_definition_maps_utf8_position_and_span() -> None:
+    server = LanguageServer()
+    server.handle(
+        request(
+            "initialize",
+            params={
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-8"]},
+                }
+            },
+        )
+    )
+    uri = "file:///workspace/main.nova"
+    text = "😀foo\nfoo\n"
+    open_document(server, uri, text)
+    symbol = Symbol("foo", "variable", Span(1, 4))
+    publish_semantics(
+        server,
+        uri,
+        [symbol],
+        [Reference(Span(5, 8), symbol)],
+    )
+
+    response = server.handle(
+        request(
+            "textDocument/definition",
+            params={
+                "textDocument": {"uri": uri},
+                "position": {"line": 1, "character": 1},
+            },
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "uri": uri,
+            "range": {
+                "start": {"line": 0, "character": 4},
+                "end": {"line": 0, "character": 7},
+            },
+        },
+    }
+
+
+def test_utf8_semantic_request_rejects_position_inside_code_point() -> None:
+    server = LanguageServer()
+    server.handle(
+        request(
+            "initialize",
+            params={
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-8"]},
+                }
+            },
+        )
+    )
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "😀foo")
+
+    response = server.handle(
+        request(
+            "textDocument/definition",
+            params={
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": 2},
+            },
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {"code": -32602, "message": "Invalid params"},
+    }
+
+def test_push_diagnostics_render_ranges_in_negotiated_utf8_units() -> None:
+    server = LanguageServer()
+    server.handle(
+        request(
+            "initialize",
+            params={
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-8"]},
+                }
+            },
+        )
+    )
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "😀foo")
+    symbol = Symbol("foo", "variable", Span(1, 4))
+    publish_semantics(server, uri, [symbol], [])
+    semantic = server.semantics.get(uri)
+    assert semantic is not None
+
+    assert server.publish_diagnostics(
+        semantic,
+        [Diagnostic(Span(1, 4), "example", code="example", source="test")],
+    )
+    notifications = server.drain_notifications()
+
+    assert notifications == [
+        {
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": uri,
+                "version": 1,
+                "diagnostics": [
+                    {
+                        "range": {
+                            "start": {"line": 0, "character": 4},
+                            "end": {"line": 0, "character": 7},
+                        },
+                        "severity": 1,
+                        "message": "example",
+                        "code": "example",
+                        "source": "test",
+                    }
+                ],
+            },
+        }
+    ]

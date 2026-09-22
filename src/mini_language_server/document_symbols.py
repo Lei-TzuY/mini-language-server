@@ -7,7 +7,6 @@ from typing import Any
 from .cancellation import RequestCancelled, StaleRequest
 from .product import NovaProductLanguageServer as _NovaProductLanguageServer
 from .server import ServerState
-from .source import SourceText
 
 _SYMBOL_KINDS = {
     "file": 1,
@@ -93,7 +92,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 self.requests.checkpoint(context)
                 return self._result(request_id, [])
 
-            source = SourceText(document.text)
+            source = self._source_text(document.text)
             symbols = []
             for symbol in sorted(
                 semantics.symbols.symbols,

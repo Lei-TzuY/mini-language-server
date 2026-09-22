@@ -103,7 +103,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if semantics is None or semantics.symbols is not symbols:
             return data
 
-        source = SourceText(text)
+        source = self._source_text(text)
         code = self.nova_adapter.code_view(text)
         decoded = self._decode_semantic_tokens(data)
         by_identity = {

@@ -7,7 +7,7 @@ from typing import Any
 
 from .cancellation import RequestCancelled, StaleRequest
 from .semantic_tokens import TOKEN_TYPES, encode_semantic_tokens
-from .source import SourceText, Span
+from .source import Span
 from .uint_intrinsic_signature_help import (
     NovaProductLanguageServer as _NovaProductLanguageServer,
 )
@@ -84,8 +84,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         *,
         requested_span: Span | None = None,
     ) -> list[int]:
-        source = SourceText(text)
-        data = encode_semantic_tokens(symbols, requested_span=requested_span)
+        source = self._source_text(text)
+        data = encode_semantic_tokens(
+            symbols,
+            requested_span=requested_span,
+            position_encoding=self.position_encoding,
+        )
         decoded = self._decode_semantic_tokens(data)
         occupied = {(line, character, length) for line, character, length, _, _ in decoded}
 

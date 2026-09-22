@@ -7,7 +7,7 @@ from typing import Any
 from .cancellation import RequestCancelled, StaleRequest
 from .implementation import NovaProductLanguageServer as _NovaProductLanguageServer
 from .server import ServerState
-from .source import SourceText, Span
+from .source import Span
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -80,7 +80,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if formatted == document.text:
                 return self._current_semantic_result(semantics, request_id, [])
 
-            source = SourceText(document.text)
+            source = self._source_text(document.text)
             edits = [
                 {
                     "range": self._range(source, Span(0, len(document.text))),

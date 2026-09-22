@@ -223,3 +223,32 @@ def test_numeric_intrinsic_semantic_tokens_honor_cancellation() -> None:
             "error": {"code": -32800, "message": "Request cancelled"},
         }
     ]
+
+def test_numeric_intrinsic_tokens_use_negotiated_utf8_units() -> None:
+    server = NovaProductLanguageServer()
+    result = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-8"]},
+                    "textDocument": {
+                        "semanticTokens": {
+                            "requests": {"full": True, "range": True}
+                        }
+                    },
+                }
+            },
+        )
+    )
+    assert result is not None
+    assert result["result"]["capabilities"]["positionEncoding"] == "utf-8"
+
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, 1, "😀 UInt::MAX\n")
+    response = full_tokens(server, uri, 2)
+    tokens = decode(response["result"]["data"])
+
+    assert (0, 5, 4, "type") in tokens
+    assert (0, 11, 3, "enumMember") in tokens

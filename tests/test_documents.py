@@ -301,3 +301,55 @@ def test_close_cannot_race_with_change_and_resurrect_document(
     assert not closer.is_alive()
     assert errors == []
     assert store.get(uri) is None
+
+def test_incremental_positions_can_use_utf8_code_units() -> None:
+    store = DocumentStore(position_encoding="utf-8")
+    uri = "file:///emoji.nova"
+    store.open(uri=uri, language_id="nova", version=1, text="a😀b\n")
+
+    updated = store.apply_changes(
+        uri=uri,
+        version=2,
+        changes=[
+            {
+                "range": {
+                    "start": {"line": 0, "character": 1},
+                    "end": {"line": 0, "character": 5},
+                },
+                "text": "X",
+            }
+        ],
+    )
+
+    assert updated.text == "aXb\n"
+
+
+def test_utf8_incremental_change_rejects_split_code_point_without_commit() -> None:
+    store = DocumentStore(position_encoding="utf-8")
+    uri = "file:///emoji.nova"
+    original = store.open(uri=uri, language_id="nova", version=1, text="a😀b")
+
+    with pytest.raises(DocumentError, match="UTF-8 code point"):
+        store.apply_changes(
+            uri=uri,
+            version=2,
+            changes=[
+                {
+                    "range": {
+                        "start": {"line": 0, "character": 3},
+                        "end": {"line": 0, "character": 5},
+                    },
+                    "text": "X",
+                }
+            ],
+        )
+
+    assert store.get(uri) == original
+
+
+def test_position_encoding_cannot_change_after_document_open() -> None:
+    store = DocumentStore()
+    store.open(uri="file:///a.nova", language_id="nova", version=1, text="abc")
+
+    with pytest.raises(DocumentError, match="while documents are open"):
+        store.set_position_encoding("utf-8")

@@ -8,7 +8,6 @@ from typing import Any
 from .cancellation import RequestCancelled, StaleRequest
 from .nova import NovaFunctionSyntax
 from .server import ServerState
-from .source import SourceText
 from .typed_local_arguments import NovaProductLanguageServer as _NovaProductLanguageServer
 
 _CONTROL_FLOW_KEYWORD = re.compile(r"\b(?:if|while)\b")
@@ -113,7 +112,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 self.requests.checkpoint(context)
                 return self._current_semantic_result(semantics, request_id, [])
 
-            source = SourceText(document.text)
+            source = self._source_text(document.text)
             code = self.nova_adapter.code_view(document.text)
             line_ranges: set[tuple[int, int]] = set()
 

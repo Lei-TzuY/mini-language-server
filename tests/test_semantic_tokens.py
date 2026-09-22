@@ -486,3 +486,110 @@ def test_document_change_suppresses_stale_empty_tokens(monkeypatch) -> None:
         }
     ]
     assert len(server.requests) == 0
+
+def test_semantic_tokens_use_negotiated_utf8_units() -> None:
+    server = LanguageServer()
+    initialize = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-8"]},
+                    "textDocument": {
+                        "semanticTokens": {"requests": {"full": True}}
+                    },
+                }
+            },
+        )
+    )
+    assert initialize is not None
+    assert initialize["result"]["capabilities"]["positionEncoding"] == "utf-8"
+
+    uri = "file:///workspace/utf8.nova"
+    server.handle(
+        notification(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "nova",
+                    "version": 1,
+                    "text": "😀alpha",
+                }
+            },
+        )
+    )
+    document = server.documents.get(uri)
+    assert document is not None
+    syntax = server.syntax.publish(document, tree=("module",))
+    symbols = server.symbols.publish(
+        syntax,
+        [Symbol("alpha", "variable", Span(1, 6))],
+    )
+    server.semantics.publish(symbols, [])
+
+    variable = TOKEN_TYPES.index("variable")
+    assert server.handle(
+        request("textDocument/semanticTokens/full", 2, token_params(uri))
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {"data": [0, 4, 5, variable, 0]},
+    }
+
+
+def test_semantic_token_range_parses_utf8_positions() -> None:
+    server = LanguageServer()
+    server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-8"]},
+                    "textDocument": {
+                        "semanticTokens": {"requests": {"range": True}}
+                    },
+                }
+            },
+        )
+    )
+    uri = "file:///workspace/utf8.nova"
+    server.handle(
+        notification(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "nova",
+                    "version": 1,
+                    "text": "😀alpha beta",
+                }
+            },
+        )
+    )
+    document = server.documents.get(uri)
+    assert document is not None
+    syntax = server.syntax.publish(document, tree=("module",))
+    symbols = server.symbols.publish(
+        syntax,
+        [
+            Symbol("alpha", "variable", Span(1, 6)),
+            Symbol("beta", "function", Span(7, 11)),
+        ],
+    )
+    server.semantics.publish(symbols, [])
+
+    variable = TOKEN_TYPES.index("variable")
+    assert server.handle(
+        request(
+            "textDocument/semanticTokens/range",
+            2,
+            token_range_params(uri, 0, 4, 0, 9),
+        )
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {"data": [0, 4, 5, variable, 0]},
+    }

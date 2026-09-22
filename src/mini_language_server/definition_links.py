@@ -7,7 +7,7 @@ from typing import Any
 from .nova import NovaFunctionSyntax
 from .semantic import SemanticError, SemanticSnapshot
 from .server import ServerState
-from .source import SourceText, Span
+from .source import Span
 from .will_save_formatting import NovaProductLanguageServer as _NovaProductLanguageServer
 from .workspace import WorkspaceIndexError
 
@@ -86,7 +86,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             )
             if len(declarations) == 1 and declarations[0].uri == target_uri:
                 declaration = declarations[0]
-                target_source = SourceText(
+                target_source = self._source_text(
                     declaration.snapshot.symbols.syntax.document.text
                 )
                 target_range = self._range(
@@ -100,7 +100,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         }
         origin = self._origin_span(semantics, offset)
         if origin is not None:
-            source = SourceText(semantics.symbols.syntax.document.text)
+            source = self._source_text(semantics.symbols.syntax.document.text)
             link["originSelectionRange"] = self._range(source, origin)
         return link
 
