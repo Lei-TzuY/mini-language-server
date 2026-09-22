@@ -300,3 +300,80 @@ def test_did_change_rebinds_else_if_join_to_current_snapshot() -> None:
         )
     )
     assert uninitialized_reads(server, uri) == []
+
+def test_constant_true_if_assignment_initializes_outer_read_without_else() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() { var value: Int; "
+        "if (1 < 2) { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_constant_false_if_assignment_does_not_initialize_outer_read() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() { var value: Int; "
+        "if (2 < 1) { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = uninitialized_reads(server, uri)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].span.start == text.index("value", text.index("copy"))
+
+
+def test_constant_false_if_uses_reachable_else_assignment() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() { var value: Int; "
+        "if (2 < 1) { let dead = 0; } else { value = 2; } "
+        "let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_constant_true_else_if_closes_join_without_final_else() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() { var value: Int; "
+        "if (false) { let dead = 0; } "
+        "else if (1 < 2) { value = 2; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_constant_false_else_if_without_final_else_remains_uninitialized() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() { var value: Int; "
+        "if (false) { let first = 0; } "
+        "else if (2 < 1) { value = 2; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = uninitialized_reads(server, uri)
+    assert len(diagnostics) == 1
+
+
+def test_unknown_if_condition_still_requires_complete_join() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert len(uninitialized_reads(server, uri)) == 1
