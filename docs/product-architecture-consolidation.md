@@ -31,6 +31,15 @@ quick fix form the fourth consolidated boundary in
 share one product layer while the repair still rejects stale or reconstructed
 diagnostics.
 
+Bounded expression typing is the fifth consolidated domain. Arithmetic and String
+concatenation, equality/ordering comparisons, and logical Boolean composition now
+share `expression_types.NovaProductLanguageServer`. The boundary preserves the
+existing exact-snapshot and cycle-safe inference path while making operator
+precedence explicit: `||` and `&&` compose comparisons, comparisons compose
+arithmetic operands, and unary `!` binds to its operand rather than swallowing a
+following comparison. The former arithmetic/comparison/logical runtime subclasses
+are removed.
+
 ## Rule for new work
 
 New completion behavior must be added as a transformation inside
@@ -38,7 +47,9 @@ New completion behavior must be added as a transformation inside
 not introduce another serial final-product subclass. Unary-plus behavior must
 remain in `unary_plus.py` (or pure helpers it calls) rather than being split
 back into separate product subclasses. Numeric conversion diagnostics and actions
-must remain together in `uint_conversion.py` or pure helpers called by it.
+must remain together in `uint_conversion.py` or pure helpers called by it. Bounded
+expression semantics must remain in `expression_types.py` (or pure helpers it calls)
+rather than returning to serial arithmetic/comparison/logical product subclasses.
 
 The remaining historical product layers are acknowledged migration debt, not a
 template for continued expansion. Future consolidation should proceed one

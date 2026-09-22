@@ -48,3 +48,15 @@ def test_uint_conversion_diagnostic_and_action_share_one_runtime_layer() -> None
             "mini_language_server.uint_conversion_actions",
         }
     )
+
+def test_expression_typing_capabilities_share_one_runtime_product_layer() -> None:
+    modules = {base.__module__ for base in NovaProductLanguageServer.__mro__}
+
+    assert "mini_language_server.expression_types" in modules
+    assert modules.isdisjoint(
+        {
+            "mini_language_server.arithmetic_expression_types",
+            "mini_language_server.comparison_expression_types",
+            "mini_language_server.logical_expression_types",
+        }
+    )

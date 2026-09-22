@@ -9,14 +9,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .arithmetic_expression_types import _ADDITIVE, _MULTIPLICATIVE
 from .assignment_diagnostics import _ASSIGNMENT
-from .comparison_expression_types import (
+from .diagnostics import Diagnostic
+from .expression_types import (
+    _ADDITIVE,
     _BOUNDED_EQUALITY_TYPES,
     _EQUALITY,
+    _MULTIPLICATIVE,
     _ORDERING,
 )
-from .diagnostics import Diagnostic
 from .inferred_function_returns import _LOCAL_TYPE_SUFFIX
 from .local_type_diagnostics import _ANNOTATED_INITIALIZER_PREFIX
 from .return_types import _TYPED_FUNCTION

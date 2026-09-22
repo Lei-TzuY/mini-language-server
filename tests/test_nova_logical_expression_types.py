@@ -156,3 +156,20 @@ def test_cross_file_logical_type_rebinds_on_change_close_and_reopen() -> None:
 
     open_nova(server, helper_uri, helper, version=3)
     assert "nova.argument-type" in diagnostic_codes(server, main_uri)
+
+def test_unary_not_binds_tighter_than_comparison_for_local_inference() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn main() { let value = !1 == 2; value }\n"
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value"
+
+
+def test_grouped_comparison_remains_valid_unary_not_operand() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn main() { let value = !(1 == 2); value }\n"
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: Bool"
