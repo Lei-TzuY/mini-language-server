@@ -20,8 +20,8 @@ _BOOLEAN_LITERALS = frozenset({"true", "false"})
 class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageServer):
     """Final product server with bounded exact-workspace call type checking."""
 
-    def _publish_workspace_diagnostics(self) -> None:
-        """Publish exact-workspace Nova call resolution, arity, and type diagnostics."""
+    def _publish_workspace_diagnostics(self) -> bool:
+        """Publish exact-workspace diagnostics and report whether the exact commit won."""
         snapshots = self.workspace_symbols.snapshots()
         planned: list[tuple[Any, tuple[Diagnostic, ...]]] = []
         for snapshot in snapshots:
@@ -124,7 +124,8 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
         try:
             self.workspace_symbols.commit_snapshots_if_current(snapshots, publish)
         except WorkspaceIndexError:
-            return
+            return False
+        return True
 
     def _argument_type(self, snapshot: Any, argument: Span) -> str | None:
         """Return the bounded actual type for one argument in an exact snapshot."""
