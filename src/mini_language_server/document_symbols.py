@@ -93,7 +93,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 self.requests.checkpoint(context)
                 return self._result(request_id, [])
 
-            source = SourceText(document.text)
+            source = self._source_text(document.text)
             symbols = []
             for symbol in sorted(
                 semantics.symbols.symbols,
