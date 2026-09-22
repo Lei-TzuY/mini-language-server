@@ -10,7 +10,6 @@ from .diagnostics import DiagnosticError, DiagnosticSnapshot
 from .documents import Document, DocumentError
 from .folding_ranges import NovaProductLanguageServer as _NovaProductLanguageServer
 from .server import ServerState
-from .source import SourceText
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
