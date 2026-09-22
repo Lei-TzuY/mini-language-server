@@ -140,16 +140,19 @@ def test_cross_file_literal_return_inference_rebinds_after_close_reopen() -> Non
     assert hover_value(server, main_uri, main) == "variable value: String"
 
 
-def test_conflicting_or_unknown_returns_remain_conservative() -> None:
+def test_return_after_guaranteed_return_does_not_poison_inference() -> None:
     server = initialized_server()
-    conflict_uri = "file:///workspace/conflict.nova"
-    conflict = (
+    uri = "file:///workspace/main.nova"
+    text = (
         "fn helper() { return 1; return true; } "
         "fn main() { let value = helper() value }\n"
     )
-    open_nova(server, conflict_uri, conflict)
-    assert hover_value(server, conflict_uri, conflict) == "variable value"
+    open_nova(server, uri, text)
 
+    assert hover_value(server, uri, text) == "variable value: Int"
+
+
+def test_unknown_return_expression_remains_conservative() -> None:
     server = initialized_server()
     unknown_uri = "file:///workspace/unknown.nova"
     unknown = (
@@ -437,3 +440,69 @@ def test_unknown_loop_condition_keeps_following_return_evidence() -> None:
     open_nova(server, uri, text)
 
     assert hover_value(server, uri, text) == "variable value: Int"
+
+def test_return_after_inferred_never_call_is_not_type_evidence() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() { while (true) { continue; } } "
+        "fn helper() { halt(); return 1; } "
+        "fn main() { let value = helper() value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value"
+
+
+def test_nested_return_after_inferred_never_call_does_not_conflict() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        'fn halt() { while (true) { continue; } } '
+        'fn helper(flag: Bool) { '
+        'if flag { halt(); return "dead"; } return 1; } '
+        "fn main() { let value = helper(true) value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: Int"
+
+
+def test_aggregate_termination_filters_trailing_conflicting_return() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        'fn halt() { while (true) { continue; } } '
+        'fn helper(flag: Bool) { '
+        'if flag { halt(); } else { return 1; } return "dead"; } '
+        "fn main() { let value = helper(true) value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: Int"
+
+
+def test_cross_file_semantic_return_reachability_rebinds() -> None:
+    server = initialized_server()
+    halt_uri = "file:///workspace/halt.nova"
+    helper_uri = "file:///workspace/helper.nova"
+    main_uri = "file:///workspace/main.nova"
+    helper = "fn helper() { halt(); return 1; }\n"
+    main = "fn main() { let value = helper() value }\n"
+
+    open_nova(server, halt_uri, "fn halt() { while (true) { continue; } }\n")
+    open_nova(server, helper_uri, helper)
+    open_nova(server, main_uri, main)
+    assert hover_value(server, main_uri, main) == "variable value"
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": halt_uri, "version": 2},
+                "contentChanges": [{"text": "fn halt() { return; }\n"}],
+            },
+        )
+    )
+
+    assert hover_value(server, main_uri, main) == "variable value: Int"
