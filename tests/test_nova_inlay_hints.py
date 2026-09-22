@@ -299,9 +299,8 @@ def test_inlay_hint_refresh_requested_for_cross_file_workspace_change() -> None:
     assert second[0]["method"] == "workspace/inlayHint/refresh"
     assert second[0]["id"] != request_id
 
-    assert inlay_hints(server, main_uri, text, request_id=6)["result"][0]["label"] == (
-        "flag:"
-    )
+    refreshed = inlay_hints(server, main_uri, text, request_id=6)["result"]
+    assert [item["label"] for item in refreshed] == [" -> Bool", "flag:"]
 
 
 def test_inlay_hint_refresh_error_response_rearms_future_refresh() -> None:
