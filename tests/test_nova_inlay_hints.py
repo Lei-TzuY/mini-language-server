@@ -248,6 +248,7 @@ def test_inlay_hints_honor_cancellation_checkpoint() -> None:
         "error": {"code": -32800, "message": "Request cancelled"},
     }
 
+
 def test_inlay_hint_refresh_requested_for_cross_file_workspace_change() -> None:
     server = NovaProductLanguageServer()
     initialize(server, refresh_support=True)
