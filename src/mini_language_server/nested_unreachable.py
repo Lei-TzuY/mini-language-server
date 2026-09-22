@@ -41,8 +41,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _unreachable_in_body(
         self, code: str, text: str, *, base_offset: int, loop_depth: int
     ) -> tuple[Diagnostic, ...]:
-        termination_end = self._first_guaranteed_termination_end(code, text)
-        termination_kind = "guaranteed return"
+        termination = self._first_guaranteed_termination(code, text)
+        if termination is None:
+            termination_end = None
+            termination_kind = "guaranteed return"
+        else:
+            termination_end, termination_kind = termination
         if loop_depth > 0:
             loop_control = self._first_top_level_loop_control(code)
             if loop_control is not None and (
