@@ -663,3 +663,12 @@ def test_unknown_server_response_id_is_ignored() -> None:
     assert server.handle(
         {"jsonrpc": "2.0", "id": request_id, "result": None}
     ) is None
+
+def test_missing_method_without_response_shape_remains_invalid_request() -> None:
+    server = LanguageServer()
+
+    assert server.handle({"jsonrpc": "2.0", "id": 99}) == {
+        "jsonrpc": "2.0",
+        "id": 99,
+        "error": {"code": -32600, "message": "Invalid Request"},
+    }
