@@ -406,7 +406,7 @@ class NovaLanguageServer(LanguageServer):
             if document is None or document.language_id != self.nova_adapter.language_id:
                 self.requests.checkpoint(context)
                 return self._result(request_id, [])
-            source = SourceText(document.text)
+            source = self._source_text(document.text)
             try:
                 start_offset = source.offset_at(
                     Position(line=start.get("line"), character=start.get("character"))
