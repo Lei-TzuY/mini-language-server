@@ -1,6 +1,7 @@
 from typing import Any
 
 from mini_language_server import NovaProductLanguageServer
+from mini_language_server.workspace import WorkspaceIndexError
 
 
 def request(method: str, request_id: int = 1, params: object | None = None) -> dict:
@@ -448,3 +449,42 @@ def test_closing_workspace_document_requests_refresh_for_remaining_document() ->
     refresh = server.drain_server_requests()
     assert len(refresh) == 1
     assert refresh[0]["method"] == "workspace/diagnostic/refresh"
+
+def test_stale_workspace_diagnostic_commit_does_not_request_refresh(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    caller = "file:///workspace/caller.nova"
+    library = "file:///workspace/library.nova"
+    open_document(server, caller, "fn caller() { target() }\n")
+    open_document(server, library, "fn target() {}\n")
+    first = server.drain_server_requests()[0]
+    server.handle({"jsonrpc": "2.0", "id": first["id"], "result": None})
+
+    real_commit = server.workspace_symbols.commit_snapshots_if_current
+
+    def reject_workspace_publish(*args: Any, **kwargs: Any) -> Any:
+        raise WorkspaceIndexError("stale workspace")
+
+    monkeypatch.setattr(
+        server.workspace_symbols,
+        "commit_snapshots_if_current",
+        reject_workspace_publish,
+    )
+    server.handle(
+        notification(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": library, "version": 2},
+                "contentChanges": [{"text": "fn target(value: Int) {}\n"}],
+            },
+        )
+    )
+    assert server.drain_server_requests() == []
+
+    monkeypatch.setattr(
+        server.workspace_symbols,
+        "commit_snapshots_if_current",
+        real_commit,
+    )
