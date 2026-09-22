@@ -5,7 +5,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .constant_control_flow import proven_dead_branch_spans
+from .constant_control_flow import (
+    proven_dead_branch_spans,
+    proven_unreachable_suffix_spans,
+)
 from .function_call_locals import NovaProductLanguageServer as _NovaProductLanguageServer
 from .source import Span
 
@@ -158,8 +161,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     @staticmethod
     def _reachable_return_statements(body_code: str) -> tuple[re.Match[str], ...]:
-        """Keep return evidence outside branches proven dead by constant conditions."""
-        dead_spans = proven_dead_branch_spans(body_code)
+        """Keep return evidence only from bounded-proven reachable source."""
+        dead_spans = (
+            proven_dead_branch_spans(body_code)
+            + proven_unreachable_suffix_spans(body_code)
+        )
         return tuple(
             statement
             for statement in _RETURN.finditer(body_code)
