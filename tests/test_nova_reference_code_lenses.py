@@ -487,3 +487,66 @@ def test_failed_workspace_replacement_does_not_request_code_lens_refresh(
     )
 
     assert server.drain_server_requests() == []
+
+def initialize_code_lens_with_workspace_folder(
+    server: NovaProductLanguageServer,
+) -> None:
+    result = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "textDocument": {"codeLens": {}},
+                    "workspace": {
+                        "codeLens": {"refreshSupport": True},
+                        "workspaceFolders": True,
+                    },
+                },
+                "workspaceFolders": [
+                    {"uri": "file:///workspace/a", "name": "a"},
+                ],
+            },
+        )
+    )
+    assert result is not None
+
+
+def test_workspace_folder_add_requests_code_lens_refresh_and_expands_counts() -> None:
+    server = NovaProductLanguageServer()
+    initialize_code_lens_with_workspace_folder(server)
+    target_uri = "file:///workspace/a/target.nova"
+    caller_uri = "file:///workspace/b/caller.nova"
+    open_nova(server, target_uri, "fn target() {}\n")
+    open_nova(server, caller_uri, "fn caller() { target() }\n")
+    assert server.drain_server_requests() == []
+
+    assert resolved_title(
+        server,
+        target_uri,
+        lens_request_id=2,
+        resolve_request_id=3,
+    ) == "0 references"
+
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [{"uri": "file:///workspace/b", "name": "b"}],
+                    "removed": [],
+                }
+            },
+        )
+    )
+
+    refresh = server.drain_server_requests()
+    assert len(refresh) == 1
+    assert refresh[0]["method"] == "workspace/codeLens/refresh"
+
+    assert resolved_title(
+        server,
+        target_uri,
+        lens_request_id=4,
+        resolve_request_id=5,
+    ) == "1 reference"
