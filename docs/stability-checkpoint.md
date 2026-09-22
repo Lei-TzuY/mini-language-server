@@ -16,15 +16,16 @@ The checkpoint covers:
 8. definition/reference/rename queries
 9. request cancellation
 10. tracked server-to-client JSON-RPC requests, response retirement, and validated consumer response delivery
-11. stale-result suppression across concurrent document and semantic replacement
+11. workspace-folder scope generations for cross-file tooling
+12. stale-result suppression across concurrent document, semantic, and workspace-scope replacement
 
-The core invariant is generational identity: a derived result is valid only while the exact parent snapshot that produced it remains current. Structural equality or a matching numeric document version is not enough. Workspace-wide derived results that capture the complete semantic workspace must also reject publication when a URI is added or removed after capture, even if every previously captured snapshot object remains current.
+The core invariant is generational identity: a derived result is valid only while the exact parent snapshot that produced it remains current. Structural equality or a matching numeric document version is not enough. Workspace-wide derived results that capture the complete semantic workspace must also reject publication when a URI is added, removed, or leaves/re-enters workspace-folder scope after capture, even if every previously captured snapshot object remains current.
 
 ## Responsibility boundaries
 
 | Layer | Owns | Must not silently own |
 | --- | --- | --- |
-| protocol/server | JSON-RPC lifecycle, bidirectional request routing, server-request tracking/response delivery, session position-encoding negotiation, LSP result rendering | language parsing/type rules |
+| protocol/server | JSON-RPC lifecycle, bidirectional request routing, server-request tracking/response delivery, session position-encoding negotiation, workspace-folder lifecycle, LSP result rendering | language parsing/type rules |
 | document store | current text snapshot, version/generation transitions | syntax or semantic interpretation |
 | syntax store | current parsed result for one exact document | symbol resolution |
 | symbol index | deterministic symbols for one exact syntax snapshot | reference semantics |
