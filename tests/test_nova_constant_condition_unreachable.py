@@ -183,3 +183,27 @@ def test_close_reopen_republishes_dead_branch_against_new_snapshot_identity() ->
     assert second is not first
     assert second.semantic is not first.semantic
     assert len(unreachable(server, uri)) == 1
+
+def test_folded_conditions_feed_structural_dead_branch_diagnostics() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() { "
+        "if (2 * 2 < 3) { let first = 1; } "
+        "if (1 + 1 == 2 && true) { let live = 2; } else { let second = 3; } "
+        "while (!(1 < 2)) { let third = 4; } "
+        "}\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = unreachable(server, uri)
+    assert [text[item.span.start : item.span.end] for item in diagnostics] == [
+        "let first = 1;",
+        "let second = 3;",
+        "let third = 4;",
+    ]
+    assert [item.message for item in diagnostics] == [
+        "unreachable code in constant-false if body",
+        "unreachable code in constant-true else body",
+        "unreachable code in constant-false while body",
+    ]

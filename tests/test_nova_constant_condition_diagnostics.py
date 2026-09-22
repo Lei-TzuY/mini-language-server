@@ -163,3 +163,63 @@ def test_close_reopen_republishes_against_new_snapshot_identity() -> None:
     assert second is not first
     assert second.semantic is not first.semantic
     assert len(constant_diagnostics(server, uri)) == 1
+
+def test_bounded_comparison_and_logical_conditions_fold_with_precedence() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() { "
+        "if (1 + 2 * 3 == 7 && !false) {} "
+        "while (3 < 2 || false) {} "
+        "if (true == !false) {} "
+        "}\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = constant_diagnostics(server, uri)
+    assert [text[item.span.start : item.span.end] for item in diagnostics] == [
+        "1 + 2 * 3 == 7 && !false",
+        "3 < 2 || false",
+        "true == !false",
+    ]
+    assert [item.message for item in diagnostics] == [
+        "if condition is always true",
+        "while condition is always false",
+        "if condition is always true",
+    ]
+
+
+def test_grouped_not_preserves_comparison_precedence_for_constant_folding() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn main() { if (!(1 < 2)) {} while (!false == true) {} }\n"
+    open_nova(server, uri, text)
+
+    diagnostics = constant_diagnostics(server, uri)
+    assert [text[item.span.start : item.span.end] for item in diagnostics] == [
+        "!(1 < 2)",
+        "!false == true",
+    ]
+    assert [item.message for item in diagnostics] == [
+        "if condition is always false",
+        "while condition is always true",
+    ]
+
+
+def test_unknown_calls_identifiers_and_invalid_unary_plus_do_not_fold() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        (
+            "fn source() -> Int { return 1; } "
+            "fn main(value: Int) { "
+            "if (value == 1) {} "
+            "if (source() == 1) {} "
+            "if (+1 == 1) {} "
+            "}\n"
+        ),
+    )
+
+    assert constant_diagnostics(server, uri) == ()

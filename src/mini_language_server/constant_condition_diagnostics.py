@@ -1,4 +1,4 @@
-"""Bounded exact-snapshot diagnostics for literal Nova control-flow conditions."""
+"""Bounded exact-snapshot diagnostics for provably constant Nova conditions."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import re
 from collections.abc import Iterable
 
 from .diagnostics import Diagnostic
+from .division_diagnostics import bounded_integer_constant_value
 from .loop_exit_initialization import NovaProductLanguageServer as _NovaProductLanguageServer
 from .semantic import SemanticSnapshot
 from .source import Span
@@ -13,11 +14,10 @@ from .source import Span
 _CONTROL_FLOW_CONDITION = re.compile(r"\b(?P<kind>if|while)\s*\(")
 _CONSTANT_CONDITION_DIAGNOSTIC = "nova.constant-condition"
 _UNREACHABLE_CODE_DIAGNOSTIC = "nova.unreachable-code"
-_BOOLEAN_LITERALS = frozenset({"true", "false"})
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
-    """Final Nova product with conservative literal constant-condition diagnostics."""
+    """Final Nova product with conservative constant-expression diagnostics."""
 
     def publish_diagnostics(
         self, semantic: SemanticSnapshot, diagnostics: Iterable[Diagnostic]
@@ -49,13 +49,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             span = Span(opening + 1, closing)
             expression, span = self._trim_expression(expression, span)
             expression, span = self._unwrap_expression_with_span(expression, span)
-            if expression not in _BOOLEAN_LITERALS:
+            constant = self._bounded_boolean_constant_value(
+                code[span.start : span.end]
+            )
+            if constant is None:
                 continue
+            value = "true" if constant else "false"
 
             diagnostics.append(
                 Diagnostic(
                     span=span,
-                    message=f"{match.group('kind')} condition is always {expression}",
+                    message=f"{match.group('kind')} condition is always {value}",
                     code=_CONSTANT_CONDITION_DIAGNOSTIC,
                     source="nova",
                 )
@@ -112,7 +116,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             expression, expression_span = self._unwrap_expression_with_span(
                 expression, expression_span
             )
-            if expression not in _BOOLEAN_LITERALS:
+            constant = self._bounded_boolean_constant_value(
+                code[expression_span.start : expression_span.end]
+            )
+            if constant is None:
                 continue
 
             body_open = self._next_non_space(code, closing + 1)
@@ -123,7 +130,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 continue
 
             kind = match.group("kind")
-            if expression == "false":
+            if not constant:
                 body_span = self._trim_dead_body_span(code, body_open + 1, body_close)
                 if body_span is not None:
                     diagnostics.append(
@@ -168,6 +175,107 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 )
 
         return tuple(diagnostics)
+
+    def _bounded_boolean_constant_value(self, expression: str) -> bool | None:
+        """Evaluate only the bounded constant grammar proven by current Nova syntax."""
+        if not expression.strip():
+            return None
+        expression, span = self._trim_expression(
+            expression, Span(0, len(expression))
+        )
+        expression, _ = self._unwrap_expression_with_span(expression, span)
+        if expression == "true":
+            return True
+        if expression == "false":
+            return False
+
+        parts = self._split_top_level_logical(
+            expression, Span(0, len(expression)), "||"
+        )
+        if parts is not None:
+            if not parts:
+                return None
+            values = [
+                self._bounded_boolean_constant_value(part)
+                for part, _ in parts
+            ]
+            return None if any(value is None for value in values) else any(values)
+
+        parts = self._split_top_level_logical(
+            expression, Span(0, len(expression)), "&&"
+        )
+        if parts is not None:
+            if not parts:
+                return None
+            values = [
+                self._bounded_boolean_constant_value(part)
+                for part, _ in parts
+            ]
+            return None if any(value is None for value in values) else all(values)
+
+        comparisons = self._top_level_comparison_operators(expression)
+        if comparisons:
+            if len(comparisons) != 1:
+                return None
+            operator, offset = comparisons[0]
+            left = expression[:offset]
+            right = expression[offset + len(operator) :]
+
+            left_integer = self._bounded_condition_integer_value(left)
+            right_integer = self._bounded_condition_integer_value(right)
+            if left_integer is not None and right_integer is not None:
+                if operator == "==":
+                    return left_integer == right_integer
+                if operator == "!=":
+                    return left_integer != right_integer
+                if operator == "<":
+                    return left_integer < right_integer
+                if operator == "<=":
+                    return left_integer <= right_integer
+                if operator == ">":
+                    return left_integer > right_integer
+                if operator == ">=":
+                    return left_integer >= right_integer
+                return None
+
+            if operator not in {"==", "!="}:
+                return None
+            left_boolean = self._bounded_boolean_constant_value(left)
+            right_boolean = self._bounded_boolean_constant_value(right)
+            if left_boolean is None or right_boolean is None:
+                return None
+            return (
+                left_boolean == right_boolean
+                if operator == "=="
+                else left_boolean != right_boolean
+            )
+
+        if expression.startswith("!") and not expression.startswith("!="):
+            operand = expression[1:]
+            value = self._bounded_boolean_constant_value(operand)
+            return None if value is None else not value
+
+        return None
+
+    @classmethod
+    def _bounded_condition_integer_value(cls, expression: str) -> int | None:
+        """Reject Nova-invalid unary plus before reusing bounded integer folding."""
+        if cls._contains_unsupported_unary_plus(expression):
+            return None
+        return bounded_integer_constant_value(expression)
+
+    @staticmethod
+    def _contains_unsupported_unary_plus(expression: str) -> bool:
+        unary_preceders = frozenset("({[=,:;!+-*/%&|<>")
+        for offset, character in enumerate(expression):
+            if character != "+":
+                continue
+            cursor = offset - 1
+            while cursor >= 0 and expression[cursor].isspace():
+                cursor -= 1
+            if cursor < 0 or expression[cursor] in unary_preceders:
+                return True
+        return False
 
     @staticmethod
     def _keyword_at(code: str, offset: int, keyword: str) -> bool:

@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from .constant_condition_diagnostics import (
-    _BOOLEAN_LITERALS,
     _CONTROL_FLOW_CONDITION,
     _UNREACHABLE_CODE_DIAGNOSTIC,
 )
@@ -93,7 +92,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             expression, expression_span = self._unwrap_expression_with_span(
                 expression, expression_span
             )
-            if expression not in _BOOLEAN_LITERALS:
+            constant = self._bounded_boolean_constant_value(
+                code[expression_span.start : expression_span.end]
+            )
+            if constant is None:
                 continue
 
             body_open = self._next_non_space(code, closing + 1)
@@ -104,7 +106,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 continue
 
             kind = match.group("kind")
-            if expression == "false":
+            if not constant:
                 body_span = self._trim_dead_body_span(code, body_open + 1, body_close)
                 if body_span != diagnostic.span:
                     continue

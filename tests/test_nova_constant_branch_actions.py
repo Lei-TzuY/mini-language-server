@@ -294,3 +294,37 @@ def test_structural_action_tracks_change_close_and_reopen() -> None:
         end=dead_start + len(dead),
         request_id=4,
     )
+
+def test_folded_constant_false_while_action_removes_entire_loop() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    statement = "while (2 * 3 == 7 || false) { let dead = 1; }"
+    text = f"fn main() {{ {statement} let live = 2; }}\n"
+    open_nova(server, uri, text)
+
+    dead = "let dead = 1;"
+    dead_start = text.index(dead)
+    statement_start = text.index(statement)
+    actions = structural_actions(
+        server,
+        uri,
+        line=0,
+        start=dead_start,
+        end=dead_start + len(dead),
+        request_id=2,
+    )
+
+    assert len(actions) == 1
+    assert actions[0]["title"] == "Remove unreachable constant-false while"
+    assert actions[0]["edit"]["changes"][uri] == [
+        {
+            "range": {
+                "start": {"line": 0, "character": statement_start},
+                "end": {
+                    "line": 0,
+                    "character": statement_start + len(statement),
+                },
+            },
+            "newText": "",
+        }
+    ]
