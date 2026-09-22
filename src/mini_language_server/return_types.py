@@ -126,7 +126,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 )
         return tuple(diagnostics)
 
-    def _body_guarantees_value_return(self, code: str, text: str) -> bool:
+    def _body_guarantees_value_return(
+        self,
+        code: str,
+        text: str,
+        *,
+        never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
+    ) -> bool:
         """Prove every fallthrough path is closed by a value return or divergence."""
         for statement in _RETURN.finditer(code):
             if self._brace_depth_before(code, statement.start()) != 0:
@@ -138,7 +144,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if self._brace_depth_before(code, statement.start()) != 0:
                 continue
             if self._if_statement_guarantees_value_return(
-                code, text, statement.start(), statement.end()
+                code,
+                text,
+                statement.start(),
+                statement.end(),
+                never_resolving=never_resolving,
             ):
                 return True
 
@@ -150,11 +160,23 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         return (
             not self._body_has_bare_return(code, text)
-            and bool(self._top_level_explicit_never_call_statements(code, text))
+            and bool(
+                self._top_level_never_call_statements(
+                    code,
+                    text,
+                    resolving=never_resolving,
+                )
+            )
         )
 
     def _if_statement_guarantees_value_return(
-        self, code: str, text: str, statement_start: int, condition_prefix_end: int
+        self,
+        code: str,
+        text: str,
+        statement_start: int,
+        condition_prefix_end: int,
+        *,
+        never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> bool:
         condition = self._if_condition_then_bounds(
             code, statement_start, condition_prefix_end
@@ -166,7 +188,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             code[condition_open + 1 : condition_close]
         )
         then_returns = self._body_guarantees_value_return(
-            code[then_open + 1 : then_close], text[then_open + 1 : then_close]
+            code[then_open + 1 : then_close],
+            text[then_open + 1 : then_close],
+            never_resolving=never_resolving,
         )
         if constant is True:
             return then_returns
@@ -180,24 +204,34 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if else_close is None:
                 return False
             else_returns = self._body_guarantees_value_return(
-                code[else_start + 1 : else_close], text[else_start + 1 : else_close]
+                code[else_start + 1 : else_close],
+                text[else_start + 1 : else_close],
+                never_resolving=never_resolving,
             )
         else:
             nested_if = _IF.match(code, else_start)
             if nested_if is None:
                 return False
             else_returns = self._if_statement_guarantees_value_return(
-                code, text, nested_if.start(), nested_if.end()
+                code,
+                text,
+                nested_if.start(),
+                nested_if.end(),
+                never_resolving=never_resolving,
             )
 
         if constant is False:
             return else_returns
         return then_returns and else_returns
 
-    def _top_level_explicit_never_call_statements(
-        self, code: str, text: str
+    def _top_level_never_call_statements(
+        self,
+        code: str,
+        text: str,
+        *,
+        resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> tuple[tuple[int, int], ...]:
-        """Return direct top-level call statements whose unique target is explicit never."""
+        """Return direct top-level call statements whose exact target never returns."""
         statements: list[tuple[int, int]] = []
         for match in _CALL_EXPRESSION.finditer(code):
             start = match.start("name")
@@ -228,7 +262,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     statement_boundary = min(statement_boundary, found)
             if code[call_end:statement_boundary].strip():
                 continue
-            if self._explicit_function_result_annotation(name) != "!":
+            if not self._function_name_never_returns(name, resolving):
                 continue
 
             statement_end = statement_boundary
@@ -237,6 +271,58 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             statements.append((start, statement_end))
 
         return tuple(statements)
+
+    def _function_name_never_returns(
+        self,
+        name: str,
+        resolving: frozenset[tuple[int, int, int]] = frozenset(),
+    ) -> bool:
+        declarations = tuple(
+            declaration
+            for declaration in self.workspace_symbols.declarations(name)
+            if declaration.symbol.kind == "function"
+        )
+        if len(declarations) != 1:
+            return False
+        return self._declaration_never_returns(declarations[0], resolving)
+
+    def _declaration_never_returns(
+        self,
+        declaration: object,
+        resolving: frozenset[tuple[int, int, int]] = frozenset(),
+    ) -> bool:
+        snapshot = getattr(declaration, "snapshot", None)
+        symbol = getattr(declaration, "symbol", None)
+        if snapshot is None or symbol is None:
+            return False
+        identity = (id(snapshot), symbol.span.start, symbol.span.end)
+        if identity in resolving:
+            return False
+
+        signature = self._function_signature(declaration)
+        annotation = _RETURN_ANNOTATION.search(signature)
+        if annotation is not None:
+            return annotation.group("type") == "!"
+
+        text = snapshot.symbols.syntax.document.text
+        code = self.nova_adapter.code_view(text)
+        opening = code.find("{", symbol.span.end)
+        if opening < 0:
+            return False
+        closing = self.nova_adapter._matching_brace(text, opening)
+        if closing is None:
+            return False
+
+        body_code = code[opening + 1 : closing]
+        body_text = text[opening + 1 : closing]
+        if _RETURN.search(body_code) is not None:
+            return False
+
+        return self._body_guarantees_value_return(
+            body_code,
+            body_text,
+            never_resolving=resolving | {identity},
+        )
 
     def _explicit_function_result_annotation(self, name: str) -> str | None:
         declarations = tuple(

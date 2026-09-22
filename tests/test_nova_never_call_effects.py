@@ -229,3 +229,115 @@ def test_cross_file_nested_never_effect_rebinds_after_annotation_change() -> Non
 
     assert len(diagnostics(server, main_uri, "nova.missing-return")) == 1
     assert diagnostics(server, main_uri, "nova.unreachable-code") == ()
+
+def test_unannotated_divergent_function_infers_never_effect() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() { while (true) { continue; } } "
+        "fn value() -> Int { halt(); let dead = 1; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert diagnostics(server, uri, "nova.missing-return") == ()
+    unreachable = diagnostics(server, uri, "nova.unreachable-code")
+    assert len(unreachable) == 1
+    assert unreachable[0].message == "unreachable code after never-returning call"
+    assert text[unreachable[0].span.start : unreachable[0].span.end] == "let dead = 1;"
+
+
+def test_unannotated_never_effect_propagates_transitively() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() { while (true) { continue; } } "
+        "fn wrapper() { halt(); } "
+        "fn value() -> Int { wrapper(); let dead = 1; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert diagnostics(server, uri, "nova.missing-return") == ()
+    unreachable = diagnostics(server, uri, "nova.unreachable-code")
+    assert len(unreachable) == 1
+    assert text[unreachable[0].span.start : unreachable[0].span.end] == "let dead = 1;"
+
+
+def test_never_effect_inference_is_cycle_safe() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        (
+            "fn left() { right(); } "
+            "fn right() { left(); } "
+            "fn value() -> Int { left(); }\n"
+        ),
+    )
+
+    assert len(diagnostics(server, uri, "nova.missing-return")) == 1
+    assert diagnostics(server, uri, "nova.unreachable-code") == ()
+
+
+def test_explicit_non_never_annotation_blocks_effect_inference() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        (
+            "fn halt() -> Unit { while (true) { continue; } } "
+            "fn value() -> Int { halt(); }\n"
+        ),
+    )
+
+    assert len(diagnostics(server, uri, "nova.missing-return")) == 1
+    assert diagnostics(server, uri, "nova.unreachable-code") == ()
+
+
+def test_any_syntactic_return_keeps_unannotated_effect_inference_conservative() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        (
+            "fn maybe(flag: Bool) { "
+            "if (flag) { return; } while (true) { continue; } } "
+            "fn value() -> Int { maybe(true); }\n"
+        ),
+    )
+
+    assert len(diagnostics(server, uri, "nova.missing-return")) == 1
+    assert diagnostics(server, uri, "nova.unreachable-code") == ()
+
+
+def test_cross_file_inferred_never_effect_rebinds_transitively() -> None:
+    server = initialized_server()
+    helper_uri = "file:///workspace/helper.nova"
+    wrapper_uri = "file:///workspace/wrapper.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        helper_uri,
+        "fn halt() { while (true) { continue; } }\n",
+    )
+    open_nova(server, wrapper_uri, "fn wrapper() { halt(); }\n")
+    main_text = "fn value() -> Int { wrapper(); let dead = 1; }\n"
+    open_nova(server, main_uri, main_text)
+
+    assert diagnostics(server, main_uri, "nova.missing-return") == ()
+    assert len(diagnostics(server, main_uri, "nova.unreachable-code")) == 1
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": helper_uri, "version": 2},
+                "contentChanges": [{"text": "fn halt() { return; }\n"}],
+            },
+        )
+    )
+
+    assert len(diagnostics(server, main_uri, "nova.missing-return")) == 1
+    assert diagnostics(server, main_uri, "nova.unreachable-code") == ()

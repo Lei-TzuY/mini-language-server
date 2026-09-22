@@ -157,7 +157,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         branch_text = text[branch_open + 1 : branch_close]
         return bool(
-            self._top_level_explicit_never_call_statements(
+            self._top_level_never_call_statements(
                 branch_code, branch_text
             )
         )
