@@ -239,4 +239,4 @@ def test_unknown_conditional_return_still_blocks_tail_inference() -> None:
     )
     open_nova(server, uri, text)
 
-    assert hover_target(server, uri, 51)["result"]["contents"]["value"] == "fn target()"
+    assert hover_target(server, uri, 51)["result"]["contents"]["value"] == "fn target(flag: Bool)"
