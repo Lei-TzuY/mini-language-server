@@ -857,6 +857,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         except RequestError:
             return self._error(request_id, -32602, "Invalid params")
 
+        snapshots = self.workspace_symbols.snapshots()
         try:
             self.requests.checkpoint(context)
             declarations = self.workspace_symbols.search(params["query"])
@@ -876,8 +877,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 )
             self.requests.checkpoint(context)
             try:
-                return self.workspace_symbols.commit_if_current(
-                    declarations, lambda: self._result(request_id, result)
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots, lambda: self._result(request_id, result)
                 )
             except WorkspaceIndexError:
                 return self._error(request_id, -32801, "Content modified")
