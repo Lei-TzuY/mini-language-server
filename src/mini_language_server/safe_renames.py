@@ -50,9 +50,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if new_name == name:
                 self.requests.checkpoint(context)
                 try:
+                    empty_edit = self._workspace_edit({}, versions={})
                     return self.workspace_symbols.commit_snapshots_if_current(
                         snapshots,
-                        lambda: self._result(request_id, {"changes": {}}),
+                        lambda: self._result(request_id, empty_edit),
                     )
                 except WorkspaceIndexError:
                     return self._error(request_id, -32801, "Content modified")
@@ -113,11 +114,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 ordered = sorted(edits_by_uri[uri], key=lambda item: item[0])
                 changes[uri] = [edit for _, edit in ordered]
 
+            versions = {
+                snapshot.uri: snapshot.symbols.syntax.document.version
+                for snapshot in snapshots
+            }
+            workspace_edit = self._workspace_edit(changes, versions=versions)
             self.requests.checkpoint(context)
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
                     snapshots,
-                    lambda: self._result(request_id, {"changes": changes}),
+                    lambda: self._result(request_id, workspace_edit),
                 )
             except WorkspaceIndexError:
                 return self._error(request_id, -32801, "Content modified")

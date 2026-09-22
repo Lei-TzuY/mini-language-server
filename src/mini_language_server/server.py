@@ -38,6 +38,7 @@ class LanguageServer:
         self.state = ServerState.PRE_INITIALIZE
         self.exit_code: int | None = None
         self.position_encoding = DEFAULT_POSITION_ENCODING
+        self._workspace_edit_document_changes = False
         self.documents = DocumentStore(position_encoding=self.position_encoding)
         self.syntax = SyntaxStore(self.documents)
         self.symbols = SymbolIndex(self.syntax)
@@ -72,6 +73,9 @@ class LanguageServer:
                 return None
             params = message.get("params")
             self.position_encoding = self._negotiate_position_encoding(params)
+            self._workspace_edit_document_changes = (
+                self._client_supports_workspace_document_changes(params)
+            )
             self.documents.set_position_encoding(self.position_encoding)
             self.state = ServerState.RUNNING
             capabilities: dict[str, Any] = {
@@ -442,7 +446,11 @@ class LanguageServer:
                 for span in spans
             ]
             self.requests.checkpoint(context)
-            result = {"changes": {semantics.uri: edits}}
+            document = semantics.symbols.syntax.document
+            result = self._workspace_edit(
+                {semantics.uri: edits},
+                versions={semantics.uri: document.version},
+            )
             return self._current_semantic_result(semantics, request_id, result)
         except RequestCancelled:
             return self._error(request_id, -32800, "Request cancelled")
@@ -505,6 +513,48 @@ class LanguageServer:
     def _source_text(self, text: str) -> SourceText:
         """Create a source view using the session's negotiated position encoding."""
         return SourceText(text, position_encoding=self.position_encoding)
+
+    @staticmethod
+    def _client_supports_workspace_document_changes(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        workspace_edit = workspace.get("workspaceEdit")
+        return (
+            isinstance(workspace_edit, dict)
+            and workspace_edit.get("documentChanges") is True
+        )
+
+    def _workspace_edit(
+        self,
+        changes: dict[str, list[dict[str, Any]]],
+        *,
+        versions: dict[str, int],
+    ) -> dict[str, Any]:
+        """Render deterministic WorkspaceEdit payloads from captured snapshot versions."""
+        ordered = {uri: changes[uri] for uri in sorted(changes)}
+        if not self._workspace_edit_document_changes:
+            return {"changes": ordered}
+
+        document_changes: list[dict[str, Any]] = []
+        for uri, edits in ordered.items():
+            version = versions.get(uri)
+            if not isinstance(version, int) or isinstance(version, bool):
+                raise AssertionError(
+                    f"versioned workspace edit requires captured version for {uri}"
+                )
+            document_changes.append(
+                {
+                    "textDocument": {"uri": uri, "version": version},
+                    "edits": edits,
+                }
+            )
+        return {"documentChanges": document_changes}
 
     @staticmethod
     def _client_supports_completion(params: Any) -> bool:

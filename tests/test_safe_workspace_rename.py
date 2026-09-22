@@ -11,12 +11,26 @@ def notify(method: str, params: dict) -> dict:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialize(server: NovaProductLanguageServer) -> None:
-    result = server.handle(request("initialize", 1, {"capabilities": {}}))
+def initialize(
+    server: NovaProductLanguageServer, *, document_changes: bool = False
+) -> None:
+    workspace = (
+        {"workspaceEdit": {"documentChanges": True}}
+        if document_changes
+        else {}
+    )
+    result = server.handle(
+        request("initialize", 1, {"capabilities": {"workspace": workspace}})
+    )
     assert result is not None
 
 
-def open_nova(server: NovaProductLanguageServer, uri: str, text: str) -> None:
+def open_nova(
+    server: NovaProductLanguageServer,
+    uri: str,
+    text: str,
+    version: int = 1,
+) -> None:
     server.handle(
         notify(
             "textDocument/didOpen",
@@ -24,7 +38,7 @@ def open_nova(server: NovaProductLanguageServer, uri: str, text: str) -> None:
                 "textDocument": {
                     "uri": uri,
                     "languageId": "nova",
-                    "version": 1,
+                    "version": version,
                     "text": text,
                 }
             },
@@ -145,4 +159,32 @@ def test_product_workspace_rename_remains_cancellable() -> None:
         "jsonrpc": "2.0",
         "id": 2,
         "error": {"code": -32800, "message": "Request cancelled"},
+    }
+
+def test_product_workspace_rename_returns_versioned_edits_when_negotiated() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, document_changes=True)
+    declaration_uri = "file:///workspace/target.nova"
+    caller_uri = "file:///workspace/main.nova"
+    open_nova(server, declaration_uri, "fn target() {}\n", version=2)
+    open_nova(server, caller_uri, "fn caller() { target() }\n", version=4)
+
+    result = rename(server, caller_uri, "renamed")["result"]
+
+    assert "changes" not in result
+    assert [item["textDocument"] for item in result["documentChanges"]] == [
+        {"uri": caller_uri, "version": 4},
+        {"uri": declaration_uri, "version": 2},
+    ]
+
+
+def test_product_same_name_rename_returns_empty_document_changes_when_negotiated() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, document_changes=True)
+    caller_uri = "file:///workspace/main.nova"
+    open_nova(server, "file:///workspace/target.nova", "fn target() {}\n")
+    open_nova(server, caller_uri, "fn caller() { target() }\n")
+
+    assert rename(server, caller_uri, "target")["result"] == {
+        "documentChanges": []
     }

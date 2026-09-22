@@ -18,9 +18,14 @@ def notification(method: str, params: object | None = None) -> dict:
     return message
 
 
-def initialized_server() -> LanguageServer:
+def initialized_server(*, document_changes: bool = False) -> LanguageServer:
     server = LanguageServer()
-    server.handle(request("initialize"))
+    capabilities = (
+        {"workspace": {"workspaceEdit": {"documentChanges": True}}}
+        if document_changes
+        else {}
+    )
+    server.handle(request("initialize", params={"capabilities": capabilities}))
     return server
 
 
@@ -273,3 +278,66 @@ def test_rename_rejects_invalid_utf16_position() -> None:
         "id": 1,
         "error": {"code": -32602, "message": "Invalid params"},
     }
+
+def test_rename_returns_versioned_document_changes_when_negotiated() -> None:
+    server = initialized_server(document_changes=True)
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "let 😀foo = 1\nfoo foo\n", version=7)
+    publish_semantics(server, uri)
+
+    response = server.handle(request("textDocument/rename", params=rename_params(uri)))
+
+    assert response is not None
+    result = response["result"]
+    assert "changes" not in result
+    assert result["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": 7},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": 6},
+                        "end": {"line": 0, "character": 9},
+                    },
+                    "newText": "bar",
+                },
+                {
+                    "range": {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 1, "character": 3},
+                    },
+                    "newText": "bar",
+                },
+                {
+                    "range": {
+                        "start": {"line": 1, "character": 4},
+                        "end": {"line": 1, "character": 7},
+                    },
+                    "newText": "bar",
+                },
+            ],
+        }
+    ]
+
+
+def test_document_changes_capability_must_be_literal_true() -> None:
+    server = LanguageServer()
+    server.handle(
+        request(
+            "initialize",
+            params={
+                "capabilities": {
+                    "workspace": {"workspaceEdit": {"documentChanges": False}}
+                }
+            },
+        )
+    )
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "let 😀foo = 1\nfoo foo\n")
+    publish_semantics(server, uri)
+
+    response = server.handle(request("textDocument/rename", params=rename_params(uri)))
+
+    assert response is not None
+    assert "changes" in response["result"]
+    assert "documentChanges" not in response["result"]
