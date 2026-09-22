@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Any, TypeVar
 
-from .source import Position, SourceError, SourceText
+from .source import (
+    DEFAULT_POSITION_ENCODING,
+    SUPPORTED_POSITION_ENCODINGS,
+    Position,
+    SourceError,
+    SourceText,
+)
 
 
 class DocumentError(ValueError):
@@ -35,9 +41,28 @@ class DocumentStore:
     This prevents a slower, lower-version change from overwriting a newer snapshot.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, position_encoding: str = DEFAULT_POSITION_ENCODING) -> None:
+        if position_encoding not in SUPPORTED_POSITION_ENCODINGS:
+            raise DocumentError(f"unsupported position encoding: {position_encoding!r}")
         self._documents: dict[str, Document] = {}
+        self._position_encoding = position_encoding
         self._lock = RLock()
+
+    @property
+    def position_encoding(self) -> str:
+        with self._lock:
+            return self._position_encoding
+
+    def set_position_encoding(self, position_encoding: str) -> None:
+        """Set the session position encoding before any document is opened."""
+        if position_encoding not in SUPPORTED_POSITION_ENCODINGS:
+            raise DocumentError(f"unsupported position encoding: {position_encoding!r}")
+        with self._lock:
+            if self._documents:
+                raise DocumentError(
+                    "cannot change position encoding while documents are open"
+                )
+            self._position_encoding = position_encoding
 
     def __len__(self) -> int:
         with self._lock:
@@ -133,7 +158,7 @@ class DocumentStore:
                 if not isinstance(range_, dict):
                     raise DocumentError("change range must be an object")
                 try:
-                    source = SourceText(text)
+                    source = SourceText(text, position_encoding=self._position_encoding)
                     span = source.span_from_range(
                         self._parse_position(range_.get("start")),
                         self._parse_position(range_.get("end")),
