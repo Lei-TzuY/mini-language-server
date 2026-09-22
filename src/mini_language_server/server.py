@@ -239,15 +239,33 @@ class LanguageServer:
         if not isinstance(request_id, str | int) or isinstance(request_id, bool):
             return
         key = str(request_id)
-        if key not in self._pending_server_requests:
+        method = self._pending_server_requests.get(key)
+        if method is None:
             return
         has_result = "result" in message
         has_error = "error" in message
         if has_result == has_error:
             return
-        if has_error and not isinstance(message.get("error"), dict):
+        error = message.get("error") if has_error else None
+        if has_error and not isinstance(error, dict):
             return
         self._pending_server_requests.pop(key, None)
+        self._server_request_completed(
+            key,
+            method,
+            result=message.get("result") if has_result else None,
+            error=error,
+        )
+
+    def _server_request_completed(
+        self,
+        request_id: str,
+        method: str,
+        *,
+        result: Any,
+        error: dict[str, Any] | None,
+    ) -> None:
+        """Extension point for consumers that need a tracked client response payload."""
 
     def _handle_cancel_request(self, params: Any) -> None:
         """Apply an LSP cancellation notification to the matching active request."""

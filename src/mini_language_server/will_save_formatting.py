@@ -5,16 +5,48 @@ from __future__ import annotations
 from typing import Any
 
 from .cancellation import RequestCancelled, StaleRequest
-from .implementation import NovaProductLanguageServer as _NovaProductLanguageServer
+from .implementation import NovaProductLanguageServer as _PreviousNovaProductLanguageServer
 from .server import ServerState
 from .source import Span
 
+_DEFAULT_FORMATTING_TAB_SIZE = 4
+_DEFAULT_FORMATTING_INSERT_SPACES = True
+_FORMATTING_CONFIGURATION_SECTION = "mini-language-server.formatting"
 
-class NovaProductLanguageServer(_NovaProductLanguageServer):
+
+class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
     """Final Nova product with negotiated formatting before save."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._workspace_configuration_support = False
+        self._formatting_tab_size = _DEFAULT_FORMATTING_TAB_SIZE
+        self._formatting_insert_spaces = _DEFAULT_FORMATTING_INSERT_SPACES
+        self._formatting_configuration_generation = 0
+        self._formatting_configuration_requests: dict[str, int] = {}
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
+        if method == "initialize" and self.state is ServerState.PRE_INITIALIZE:
+            self._workspace_configuration_support = (
+                self._client_supports_workspace_configuration(message.get("params"))
+            )
+
+        if method == "initialized" and self.state is ServerState.RUNNING:
+            result = super().handle(message)
+            if self._workspace_configuration_support:
+                self._invalidate_formatting_configuration()
+            return result
+
+        if (
+            method == "workspace/didChangeConfiguration"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+        ):
+            result = super().handle(message)
+            if self._workspace_configuration_support:
+                self._invalidate_formatting_configuration()
+            return result
         if (
             method == "textDocument/willSaveWaitUntil"
             and "id" in message
@@ -37,6 +69,96 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     "willSaveWaitUntil": True,
                 }
         return result
+
+    @staticmethod
+    def _client_supports_workspace_configuration(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        return (
+            isinstance(workspace, dict)
+            and workspace.get("configuration") is True
+        )
+
+    def _invalidate_formatting_configuration(self) -> None:
+        self._formatting_configuration_generation += 1
+        self._queue_formatting_configuration()
+
+    def _queue_formatting_configuration(self) -> None:
+        if (
+            not self._workspace_configuration_support
+            or self._has_pending_server_request("workspace/configuration")
+        ):
+            return
+        request_id = self._queue_server_request(
+            "workspace/configuration",
+            {
+                "items": [
+                    {"section": _FORMATTING_CONFIGURATION_SECTION}
+                ]
+            },
+        )
+        self._formatting_configuration_requests[request_id] = (
+            self._formatting_configuration_generation
+        )
+
+    def _server_request_completed(
+        self,
+        request_id: str,
+        method: str,
+        *,
+        result: Any,
+        error: dict[str, Any] | None,
+    ) -> None:
+        super()._server_request_completed(
+            request_id,
+            method,
+            result=result,
+            error=error,
+        )
+        if method != "workspace/configuration":
+            return
+        generation = self._formatting_configuration_requests.pop(request_id, None)
+        if generation is None:
+            return
+        if generation != self._formatting_configuration_generation:
+            self._queue_formatting_configuration()
+            return
+        if error is not None:
+            return
+        parsed = self._parse_formatting_configuration(result)
+        if parsed is None:
+            return
+        self._formatting_tab_size, self._formatting_insert_spaces = parsed
+
+    @staticmethod
+    def _parse_formatting_configuration(result: Any) -> tuple[int, bool] | None:
+        if not isinstance(result, list) or len(result) != 1:
+            return None
+        value = result[0]
+        if value is None:
+            return (
+                _DEFAULT_FORMATTING_TAB_SIZE,
+                _DEFAULT_FORMATTING_INSERT_SPACES,
+            )
+        if not isinstance(value, dict):
+            return None
+        tab_size = value.get("tabSize", _DEFAULT_FORMATTING_TAB_SIZE)
+        insert_spaces = value.get(
+            "insertSpaces",
+            _DEFAULT_FORMATTING_INSERT_SPACES,
+        )
+        if (
+            isinstance(tab_size, bool)
+            or not isinstance(tab_size, int)
+            or tab_size <= 0
+            or not isinstance(insert_spaces, bool)
+        ):
+            return None
+        return tab_size, insert_spaces
 
     @staticmethod
     def _client_supports_will_save_wait_until(params: Any) -> bool:
@@ -73,8 +195,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
             formatted = self._format_nova_document(
                 document.text,
-                tab_size=4,
-                insert_spaces=True,
+                tab_size=self._formatting_tab_size,
+                insert_spaces=self._formatting_insert_spaces,
             )
             self.requests.checkpoint(context)
             if formatted == document.text:

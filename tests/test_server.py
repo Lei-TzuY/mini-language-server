@@ -675,3 +675,74 @@ def test_missing_method_without_response_shape_remains_invalid_request() -> None
         "id": 99,
         "error": {"code": -32600, "message": "Invalid Request"},
     }
+
+def test_tracked_server_response_exposes_payload_to_consumer_hook() -> None:
+    class RecordingServer(LanguageServer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.completed: list[tuple[str, str, object, object]] = []
+
+        def _server_request_completed(
+            self,
+            request_id: str,
+            method: str,
+            *,
+            result: object,
+            error: dict[str, object] | None,
+        ) -> None:
+            self.completed.append((request_id, method, result, error))
+
+    server = RecordingServer()
+    request_id = server._queue_server_request(
+        "workspace/configuration",
+        {"items": [{"section": "mini-language-server.formatting"}]},
+    )
+    server.drain_server_requests()
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": [{"tabSize": 2, "insertSpaces": True}],
+        }
+    ) is None
+    assert server.completed == [
+        (
+            request_id,
+            "workspace/configuration",
+            [{"tabSize": 2, "insertSpaces": True}],
+            None,
+        )
+    ]
+
+
+def test_malformed_server_response_never_reaches_consumer_hook() -> None:
+    class RecordingServer(LanguageServer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.completed = 0
+
+        def _server_request_completed(
+            self,
+            request_id: str,
+            method: str,
+            *,
+            result: object,
+            error: dict[str, object] | None,
+        ) -> None:
+            self.completed += 1
+
+    server = RecordingServer()
+    request_id = server._queue_server_request("workspace/configuration")
+    server.drain_server_requests()
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": [],
+            "error": {"code": -32603, "message": "invalid mixed response"},
+        }
+    ) is None
+    assert server.completed == 0
+    assert server._has_pending_server_request("workspace/configuration")
