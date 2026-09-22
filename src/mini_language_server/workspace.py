@@ -167,16 +167,16 @@ class WorkspaceSymbolIndex:
             expected_by_uri[snapshot.uri] = snapshot
 
         with self._lock:
-            if (
-                captured_generation is not None
-                and captured_generation != self._generation
-            ):
-                raise WorkspaceIndexError("workspace snapshot generation changed")
             if set(self._snapshots) != set(expected_by_uri):
                 raise WorkspaceIndexError("workspace snapshot set changed")
             for uri, snapshot in expected_by_uri.items():
                 if self._snapshots.get(uri) is not snapshot:
                     raise WorkspaceIndexError("workspace snapshot was replaced")
+            if (
+                captured_generation is not None
+                and captured_generation != self._generation
+            ):
+                raise WorkspaceIndexError("workspace snapshot generation changed")
             return callback()
 
     def references(self, name: str) -> tuple[WorkspaceReference, ...]:
