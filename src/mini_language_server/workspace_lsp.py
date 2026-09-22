@@ -158,15 +158,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if self.workspace_folders.contains(snapshot.uri):
                 continue
             document = self.documents.get(snapshot.uri)
+            if (
+                document is not None
+                and document.language_id == self.nova_adapter.language_id
+            ):
+                with suppress(SyntaxError, SymbolError, SemanticError):
+                    self.nova_adapter.publish(self, document)
             with suppress(WorkspaceIndexError):
                 self.workspace_symbols.remove(snapshot.uri, expected=snapshot)
-            if document is not None:
-                self.diagnostics.discard(snapshot.uri)
-                self._queue_publish_diagnostics(
-                    snapshot.uri,
-                    document.version,
-                    [],
-                )
 
         for document in self.documents.snapshots():
             if (
