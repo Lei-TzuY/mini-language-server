@@ -9,8 +9,11 @@ from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
 from .documents import Document
 from .nova import NovaFunctionSyntax, NovaLanguageServer
+from .semantic import SemanticError
 from .server import ServerState
 from .source import Span
+from .symbols import SymbolError
+from .syntax import SyntaxError
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
 from .workspace_folders import WorkspaceFolderError, WorkspaceFolderSet
 
