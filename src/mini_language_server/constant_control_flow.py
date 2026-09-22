@@ -3,14 +3,117 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from .constant_values import bounded_boolean_constant_value
 
 _IF_BRANCH = re.compile(r"\bif\b(?P<condition>[^{};]*)\{")
 _ELSE_IF_BRANCH = re.compile(r"\s*else\s+if\b(?P<condition>[^{};]*)\{")
 _ELSE_BRANCH = re.compile(r"\s*else\s*\{")
-_WHILE = re.compile(r"\bwhile\s*\(")
+_CONTROL_FLOW = re.compile(r"\b(?P<kind>if|while)\b")
 _BREAK = re.compile(r"\bbreak\b")
+
+
+@dataclass(frozen=True, slots=True)
+class ControlFlowStatement:
+    """One structurally complete bounded if/while statement."""
+
+    kind: str
+    start: int
+    condition_start: int
+    condition_end: int
+    body_open: int
+    body_close: int
+
+    @property
+    def end(self) -> int:
+        return self.body_close + 1
+
+
+def control_flow_statements(code: str) -> tuple[ControlFlowStatement, ...]:
+    """Return complete control-flow statements from a trivia-masked Nova view."""
+    result: list[ControlFlowStatement] = []
+    for match in _CONTROL_FLOW.finditer(code):
+        statement = _control_flow_statement_from_match(code, match)
+        if statement is not None:
+            result.append(statement)
+    return tuple(result)
+
+
+def control_flow_statement_at(
+    code: str, offset: int, *, kind: str | None = None
+) -> ControlFlowStatement | None:
+    """Parse one complete control-flow statement starting exactly at offset."""
+    match = _CONTROL_FLOW.match(code, offset)
+    if match is None or (kind is not None and match.group("kind") != kind):
+        return None
+    return _control_flow_statement_from_match(code, match)
+
+
+def _control_flow_statement_from_match(
+    code: str, match: re.Match[str]
+) -> ControlFlowStatement | None:
+    cursor = _next_non_space(code, match.end())
+    if cursor is None:
+        return None
+
+    if code[cursor] == "(":
+        condition_close = _matching_delimiter(code, cursor, "(", ")")
+        if condition_close is None:
+            return None
+        condition_start = cursor + 1
+        condition_end = condition_close
+        body_open = _next_non_space(code, condition_close + 1)
+    else:
+        condition_start = cursor
+        body_open = _bare_condition_body_open(code, cursor)
+        condition_end = body_open if body_open is not None else cursor
+
+    if body_open is None or code[body_open] != "{":
+        return None
+    body_close = _matching_brace(code, body_open)
+    if body_close is None:
+        return None
+
+    while condition_start < condition_end and code[condition_start].isspace():
+        condition_start += 1
+    while condition_end > condition_start and code[condition_end - 1].isspace():
+        condition_end -= 1
+    if condition_start >= condition_end:
+        return None
+
+    return ControlFlowStatement(
+        kind=match.group("kind"),
+        start=match.start(),
+        condition_start=condition_start,
+        condition_end=condition_end,
+        body_open=body_open,
+        body_close=body_close,
+    )
+
+
+def _bare_condition_body_open(code: str, offset: int) -> int | None:
+    paren_depth = 0
+    bracket_depth = 0
+    for cursor in range(offset, len(code)):
+        character = code[cursor]
+        if character == "(":
+            paren_depth += 1
+        elif character == ")":
+            paren_depth -= 1
+            if paren_depth < 0:
+                return None
+        elif character == "[":
+            bracket_depth += 1
+        elif character == "]":
+            bracket_depth -= 1
+            if bracket_depth < 0:
+                return None
+        elif character == "{" and paren_depth == 0 and bracket_depth == 0:
+            return cursor
+        elif character in ";}" and paren_depth == 0 and bracket_depth == 0:
+            return None
+    return None
 
 
 def proven_dead_branch_spans(code: str) -> tuple[tuple[int, int], ...]:
@@ -71,29 +174,21 @@ def proven_non_fallthrough_while_spans(
 ) -> tuple[tuple[int, int], ...]:
     """Return while-statement spans proven unable to fall through."""
     spans: list[tuple[int, int]] = []
-    for statement in _WHILE.finditer(code):
-        condition_open = statement.end() - 1
-        condition_close = _matching_delimiter(code, condition_open, "(", ")")
-        if condition_close is None:
-            continue
-        body_open = _next_non_space(code, condition_close + 1)
-        if body_open is None or code[body_open] != "{":
-            continue
-        body_close = _matching_brace(code, body_open)
-        if body_close is None:
+    for statement in control_flow_statements(code):
+        if statement.kind != "while":
             continue
         if (
             bounded_boolean_constant_value(
-                code[condition_open + 1 : condition_close]
+                code[statement.condition_start : statement.condition_end]
             )
             is not True
         ):
             continue
 
-        body = code[body_open + 1 : body_close]
+        body = code[statement.body_open + 1 : statement.body_close]
         if _has_reachable_break_targeting_current_loop(body):
             continue
-        spans.append((statement.start(), body_close + 1))
+        spans.append((statement.start, statement.end))
 
     return tuple(spans)
 
@@ -112,19 +207,11 @@ def _has_reachable_break_targeting_current_loop(code: str) -> bool:
 
 
 def _while_body_spans(code: str) -> tuple[tuple[int, int], ...]:
-    spans: list[tuple[int, int]] = []
-    for statement in _WHILE.finditer(code):
-        condition_open = statement.end() - 1
-        condition_close = _matching_delimiter(code, condition_open, "(", ")")
-        if condition_close is None:
-            continue
-        body_open = _next_non_space(code, condition_close + 1)
-        if body_open is None or code[body_open] != "{":
-            continue
-        body_close = _matching_brace(code, body_open)
-        if body_close is not None:
-            spans.append((body_open + 1, body_close))
-    return tuple(spans)
+    return tuple(
+        (statement.body_open + 1, statement.body_close)
+        for statement in control_flow_statements(code)
+        if statement.kind == "while"
+    )
 
 
 def _next_non_space(code: str, offset: int) -> int | None:
