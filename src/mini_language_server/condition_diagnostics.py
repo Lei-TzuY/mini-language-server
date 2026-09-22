@@ -7,7 +7,10 @@ from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any
 
-from .constant_control_flow import proven_non_fallthrough_while_spans
+from .constant_control_flow import (
+    control_flow_statements,
+    proven_non_fallthrough_while_spans,
+)
 from .constant_values import bounded_boolean_constant_value
 from .diagnostics import DIAGNOSTIC_TAG_VALUES, Diagnostic
 from .expression_local_types import NovaProductLanguageServer as _NovaProductLanguageServer
@@ -20,8 +23,7 @@ _FUNCTION = re.compile(
     rf"\bfn\s+(?P<name>{_IDENTIFIER})\s*\([^)]*\)"
     rf"(?:\s*->\s*(?:{_IDENTIFIER}|!))?\s*\{{"
 )
-_CONTROL_FLOW_CONDITION = re.compile(r"\b(?:if|while)\s*\(")
-_IF = re.compile(r"\bif\s*\(")
+_IF = re.compile(r"\bif\b")
 _RETURN = re.compile(r"\breturn\b")
 _CONDITION_TYPE_DIAGNOSTIC = "nova.condition-type"
 _UNREACHABLE_CODE_DIAGNOSTIC = "nova.unreachable-code"
@@ -149,16 +151,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         text = semantic.symbols.syntax.document.text
         code = self.nova_adapter.code_view(text)
         diagnostics: list[Diagnostic] = []
-        for match in _CONTROL_FLOW_CONDITION.finditer(code):
-            opening = match.end() - 1
-            closing = self._matching_paren(code, opening)
-            if closing is None:
-                continue
-            expression = text[opening + 1 : closing]
-            span = Span(opening + 1, closing)
-            expression, span = self._trim_expression(expression, span)
-            if not expression:
-                continue
+        for statement in control_flow_statements(code):
+            expression = text[
+                statement.condition_start : statement.condition_end
+            ]
+            span = Span(statement.condition_start, statement.condition_end)
             actual = self._return_expression_type(semantic, expression, span)
             if actual is None or actual == "Bool":
                 continue
@@ -283,9 +280,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         )
         if condition is None:
             return False
-        condition_open, condition_close, then_open, then_close = condition
+        condition_start, condition_end, then_open, then_close = condition
         constant = bounded_boolean_constant_value(
-            code[condition_open + 1 : condition_close]
+            code[condition_start:condition_end]
         )
         then_terminates = self._body_guarantees_termination(
             code[then_open + 1 : then_close], text[then_open + 1 : then_close]
@@ -338,7 +335,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         condition_open, condition_close, _, then_close = condition
         if (
             bounded_boolean_constant_value(
-                code[condition_open + 1 : condition_close]
+                code[condition_start:condition_end]
             )
             is True
         ):
