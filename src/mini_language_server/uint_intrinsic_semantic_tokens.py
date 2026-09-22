@@ -7,7 +7,7 @@ from typing import Any
 
 from .cancellation import RequestCancelled, StaleRequest
 from .semantic_tokens import TOKEN_TYPES, encode_semantic_tokens
-from .source import SourceText, Span
+from .source import Span
 from .uint_intrinsic_signature_help import (
     NovaProductLanguageServer as _NovaProductLanguageServer,
 )
