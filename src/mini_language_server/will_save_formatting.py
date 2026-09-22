@@ -7,7 +7,7 @@ from typing import Any
 from .cancellation import RequestCancelled, StaleRequest
 from .implementation import NovaProductLanguageServer as _NovaProductLanguageServer
 from .server import ServerState
-from .source import SourceText, Span
+from .source import Span
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
