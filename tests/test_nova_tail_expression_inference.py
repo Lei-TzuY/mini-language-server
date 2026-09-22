@@ -240,3 +240,87 @@ def test_unknown_conditional_return_still_blocks_tail_inference() -> None:
     open_nova(server, uri, text)
 
     assert hover_target(server, uri, 51)["result"]["contents"]["value"] == "fn target(flag: Bool)"
+
+def test_non_fallthrough_loop_makes_final_tail_unreachable_for_inference() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn target() { while (true) { continue; } 7 } "
+        "fn caller() { target() }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_target(server, uri, 60)["result"]["contents"]["value"] == "fn target()"
+
+
+def test_reachable_break_keeps_final_tail_inference_available() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn target() { while (true) { break; } 7 } "
+        "fn caller() { target() }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_target(server, uri, 61)["result"]["contents"]["value"] == (
+        "fn target() -> Int"
+    )
+
+
+def test_unknown_loop_condition_keeps_final_tail_inference_available() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn target(flag: Bool) { while (flag) { continue; } 7 } "
+        "fn caller() { target(false) }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_target(server, uri, 62)["result"]["contents"]["value"] == (
+        "fn target(flag: Bool) -> Int"
+    )
+
+
+def test_branch_complete_divergence_makes_final_tail_unreachable() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn target(flag: Bool) { "
+        "if (flag) { while (true) { continue; } } "
+        "else { while (1 < 2) { continue; } } "
+        "7 } fn caller() { target(true) }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_target(server, uri, 63)["result"]["contents"]["value"] == (
+        "fn target(flag: Bool)"
+    )
+
+
+def test_did_change_rebinds_tail_reachability_inference() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    reachable = (
+        "fn target() { while (true) { break; } 7 } "
+        "fn caller() { target() }\n"
+    )
+    divergent = (
+        "fn target() { while (true) { continue; } 7 } "
+        "fn caller() { target() }\n"
+    )
+    open_nova(server, uri, reachable, version=1)
+    assert hover_target(server, uri, 64)["result"]["contents"]["value"] == (
+        "fn target() -> Int"
+    )
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": divergent}],
+            },
+        )
+    )
+
+    assert hover_target(server, uri, 65)["result"]["contents"]["value"] == "fn target()"
