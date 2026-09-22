@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from .assignment_diagnostics import NovaProductLanguageServer as _NovaProductLanguageServer
+from .constant_control_flow import proven_non_fallthrough_while_spans
 from .constant_values import bounded_boolean_constant_value
 from .diagnostics import Diagnostic
 from .semantic import SemanticSnapshot
@@ -141,9 +142,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         branch_close: int,
         branch_scope: tuple[int, ...],
     ) -> bool:
-        return any(
+        if any(
             cls._brace_scope_at(code, match.start()) == branch_scope
             for match in _RETURN_STATEMENT.finditer(code, branch_open + 1, branch_close)
+        ):
+            return True
+
+        branch_code = code[branch_open + 1 : branch_close]
+        return any(
+            cls._brace_scope_at(branch_code, statement_start) == ()
+            for statement_start, _ in proven_non_fallthrough_while_spans(branch_code)
         )
 
     @classmethod
