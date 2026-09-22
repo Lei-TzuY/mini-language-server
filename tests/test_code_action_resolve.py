@@ -14,11 +14,25 @@ def notify(method: str, params: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialize_params(*, properties: list[str] | None = None) -> dict[str, Any]:
+def initialize_params(
+    *,
+    properties: list[str] | None = None,
+    document_changes: bool = False,
+) -> dict[str, Any]:
     code_action: dict[str, Any] = {}
     if properties is not None:
         code_action["resolveSupport"] = {"properties": properties}
-    return {"capabilities": {"textDocument": {"codeAction": code_action}}}
+    workspace = (
+        {"workspaceEdit": {"documentChanges": True}}
+        if document_changes
+        else {}
+    )
+    return {
+        "capabilities": {
+            "textDocument": {"codeAction": code_action},
+            "workspace": workspace,
+        }
+    }
 
 
 def open_nova(
@@ -184,3 +198,39 @@ def test_code_action_resolve_honors_cancellation_before_publication(monkeypatch)
         }
     ]
     assert len(server.requests) == 0
+
+def test_code_action_resolve_restores_versioned_edit_when_negotiated() -> None:
+    server = NovaProductLanguageServer()
+    initialized = server.handle(
+        request(
+            "initialize",
+            1,
+            initialize_params(properties=["edit"], document_changes=True),
+        )
+    )
+    assert initialized is not None
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() { missing() }\n", version=7)
+
+    action = unresolved_action(server, uri)
+    assert "edit" not in action
+
+    resolved = server.handle(request("codeAction/resolve", 3, action))
+
+    assert resolved is not None
+    assert resolved["result"]["edit"] == {
+        "documentChanges": [
+            {
+                "textDocument": {"uri": uri, "version": 7},
+                "edits": [
+                    {
+                        "range": {
+                            "start": {"line": 1, "character": 0},
+                            "end": {"line": 1, "character": 0},
+                        },
+                        "newText": "fn missing() {}\n",
+                    }
+                ],
+            }
+        ]
+    }
