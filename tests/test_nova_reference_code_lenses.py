@@ -323,6 +323,7 @@ def test_code_lens_resolve_honors_cancellation_before_publication() -> None:
         "error": {"code": -32800, "message": "Request cancelled"},
     }
 
+
 def test_code_lens_refresh_requested_for_cross_file_workspace_change() -> None:
     server = NovaProductLanguageServer()
     initialize(server, refresh_support=True)
