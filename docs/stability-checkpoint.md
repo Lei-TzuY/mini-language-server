@@ -51,7 +51,7 @@ The following remain deliberate future work:
 - hover and completion
 - semantic tokens
 - multi-file/workspace symbol and reference indexing
-- broader versioned WorkspaceEdit adoption for code actions and other edit-producing features
+- WorkspaceEdit change annotations or resource operations when a concrete editor workflow requires them
 - broader LSP compliance surface
 - editor-specific integration layers
 

@@ -13,13 +13,23 @@ def notify(method: str, params: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialized_server() -> NovaProductLanguageServer:
+def initialized_server(*, document_changes: bool = False) -> NovaProductLanguageServer:
     server = NovaProductLanguageServer()
+    workspace = (
+        {"workspaceEdit": {"documentChanges": True}}
+        if document_changes
+        else {}
+    )
     result = server.handle(
         request(
             "initialize",
             1,
-            {"capabilities": {"textDocument": {"codeAction": {}}}},
+            {
+                "capabilities": {
+                    "textDocument": {"codeAction": {}},
+                    "workspace": workspace,
+                }
+            },
         )
     )
     assert result is not None
@@ -27,7 +37,13 @@ def initialized_server() -> NovaProductLanguageServer:
     return server
 
 
-def open_nova(server: NovaProductLanguageServer, uri: str, text: str) -> None:
+def open_nova(
+    server: NovaProductLanguageServer,
+    uri: str,
+    text: str,
+    *,
+    version: int = 1,
+) -> None:
     server.handle(
         notify(
             "textDocument/didOpen",
@@ -35,7 +51,7 @@ def open_nova(server: NovaProductLanguageServer, uri: str, text: str) -> None:
                 "textDocument": {
                     "uri": uri,
                     "languageId": "nova",
-                    "version": 1,
+                    "version": version,
                     "text": text,
                 }
             },
@@ -216,3 +232,30 @@ def test_argument_count_quick_fix_honors_cancellation_checkpoint() -> None:
         "id": 2,
         "error": {"code": -32800, "message": "Request cancelled"},
     }
+
+def test_argument_count_quick_fix_uses_versioned_edit_when_negotiated() -> None:
+    server = initialized_server(document_changes=True)
+    uri = "file:///workspace/main.nova"
+    text = "fn target(left: Int, right: Int) {} fn caller(value: Int) { target(value) }\n"
+    open_nova(server, uri, text, version=9)
+
+    start = text.index("target(value)", text.index("caller"))
+    result = code_action(server, uri, 2, 0, start, start + len("target"))
+    action = result["result"][0]
+
+    assert action["title"] == "Adjust 'target' to 2 argument(s)"
+    assert "changes" not in action["edit"]
+    assert action["edit"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": 9},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": start + len("target(")},
+                        "end": {"line": 0, "character": start + len("target(value")},
+                    },
+                    "newText": "value, 0",
+                }
+            ],
+        }
+    ]

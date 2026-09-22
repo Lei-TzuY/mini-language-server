@@ -428,6 +428,7 @@ class NovaLanguageServer(LanguageServer):
             actions = self._nova_code_actions(
                 uri, document, source, snapshot.diagnostics, start_offset, end_offset
             )
+            actions = self._render_code_action_workspace_edits(actions, document)
             self.requests.checkpoint(context)
             try:
                 return self.diagnostics.commit_if_current(
@@ -441,6 +442,31 @@ class NovaLanguageServer(LanguageServer):
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
+
+    def _render_code_action_workspace_edits(
+        self,
+        actions: list[dict[str, Any]],
+        document: Document,
+    ) -> list[dict[str, Any]]:
+        """Bind eager code-action edits to the captured document snapshot version."""
+        for action in actions:
+            edit = action.get("edit")
+            if not isinstance(edit, dict):
+                continue
+            changes = edit.get("changes")
+            if not isinstance(changes, dict):
+                continue
+            if any(uri != document.uri for uri in changes):
+                raise AssertionError(
+                    "document-scoped code action escaped its captured document"
+                )
+            rendered = self._workspace_edit(
+                changes,
+                versions={document.uri: document.version},
+            )
+            preserved = {key: value for key, value in edit.items() if key != "changes"}
+            action["edit"] = {**preserved, **rendered}
+        return actions
 
     def _nova_code_actions(
         self,

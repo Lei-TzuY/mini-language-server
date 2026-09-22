@@ -208,6 +208,7 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
             actions = self._nova_code_actions(
                 uri, document, source, snapshot.diagnostics, start_offset, end_offset
             )
+            actions = self._render_code_action_workspace_edits(actions, document)
             self.requests.checkpoint(context)
 
             def publish() -> dict[str, Any]:
