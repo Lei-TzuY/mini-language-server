@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from .constant_values import bounded_integer_constant_value as _constant_integer_value
 from .diagnostics import Diagnostic
 from .loop_control import NovaProductLanguageServer as _NovaProductLanguageServer
 from .semantic import SemanticSnapshot
@@ -124,14 +125,8 @@ def _constant_zero_divisor_span(code: str, offset: int) -> tuple[int, int] | Non
 
 
 def bounded_integer_constant_value(expression: str) -> int | None:
-    """Evaluate the bounded integer-constant grammar only when it consumes all input."""
-    parsed = _parse_expression(expression, 0)
-    if parsed is None:
-        return None
-    constant, cursor = parsed
-    if _skip_whitespace(expression, cursor) != len(expression):
-        return None
-    return constant.value
+    """Compatibility wrapper around the product-independent constant proof."""
+    return _constant_integer_value(expression)
 
 
 def _parse_primary(code: str, offset: int) -> tuple[_Constant, int] | None:
