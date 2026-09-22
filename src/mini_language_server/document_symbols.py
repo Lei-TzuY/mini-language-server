@@ -7,7 +7,6 @@ from typing import Any
 from .cancellation import RequestCancelled, StaleRequest
 from .product import NovaProductLanguageServer as _NovaProductLanguageServer
 from .server import ServerState
-from .source import SourceText
 
 _SYMBOL_KINDS = {
     "file": 1,
