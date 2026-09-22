@@ -6,6 +6,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import replace
 
+from .constant_values import bounded_boolean_constant_value
 from .diagnostics import Diagnostic
 from .range_formatting import NovaProductLanguageServer as _NovaProductLanguageServer
 from .semantic import SemanticSnapshot
@@ -144,29 +145,43 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _if_statement_guarantees_value_return(
         self, code: str, text: str, statement_start: int, condition_prefix_end: int
     ) -> bool:
+        condition = self._if_condition_then_bounds(
+            code, statement_start, condition_prefix_end
+        )
+        if condition is None:
+            return False
+        condition_open, condition_close, then_open, then_close = condition
+        constant = bounded_boolean_constant_value(
+            code[condition_open + 1 : condition_close]
+        )
+        then_returns = self._body_guarantees_value_return(
+            code[then_open + 1 : then_close], text[then_open + 1 : then_close]
+        )
+        if constant is True:
+            return then_returns
+
         branches = self._if_then_else_bounds(code, statement_start, condition_prefix_end)
         if branches is None:
             return False
-        then_open, then_close, else_start = branches
-        if not self._body_guarantees_value_return(
-            code[then_open + 1 : then_close], text[then_open + 1 : then_close]
-        ):
-            return False
-
+        _, _, else_start = branches
         if code[else_start] == "{":
             else_close = self._matching_delimiter(code, else_start, "{", "}")
             if else_close is None:
                 return False
-            return self._body_guarantees_value_return(
+            else_returns = self._body_guarantees_value_return(
                 code[else_start + 1 : else_close], text[else_start + 1 : else_close]
             )
+        else:
+            nested_if = _IF.match(code, else_start)
+            if nested_if is None:
+                return False
+            else_returns = self._if_statement_guarantees_value_return(
+                code, text, nested_if.start(), nested_if.end()
+            )
 
-        nested_if = _IF.match(code, else_start)
-        if nested_if is None:
-            return False
-        return self._if_statement_guarantees_value_return(
-            code, text, nested_if.start(), nested_if.end()
-        )
+        if constant is False:
+            return else_returns
+        return then_returns and else_returns
 
     @staticmethod
     def _return_statement_has_value(text: str, keyword_end: int) -> bool:
@@ -178,9 +193,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         return bool(text[keyword_end:boundary].strip())
 
     @classmethod
-    def _if_then_else_bounds(
+    def _if_condition_then_bounds(
         cls, code: str, statement_start: int, condition_prefix_end: int
-    ) -> tuple[int, int, int] | None:
+    ) -> tuple[int, int, int, int] | None:
         condition_open = code.find("(", statement_start, condition_prefix_end)
         if condition_open < 0:
             return None
@@ -193,6 +208,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         then_close = cls._matching_delimiter(code, then_open, "{", "}")
         if then_close is None:
             return None
+        return condition_open, condition_close, then_open, then_close
+
+    @classmethod
+    def _if_then_else_bounds(
+        cls, code: str, statement_start: int, condition_prefix_end: int
+    ) -> tuple[int, int, int] | None:
+        condition = cls._if_condition_then_bounds(
+            code, statement_start, condition_prefix_end
+        )
+        if condition is None:
+            return None
+        _, _, then_open, then_close = condition
         else_keyword = cls._next_non_space(code, then_close + 1)
         if else_keyword is None or not code.startswith("else", else_keyword):
             return None
