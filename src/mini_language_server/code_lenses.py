@@ -93,6 +93,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if other_uris:
             self._queue_code_lens_refresh()
 
+    def _workspace_scope_changed(self, before: Any, after: Any) -> None:
+        super()._workspace_scope_changed(before, after)
+        self._queue_code_lens_refresh()
+
     def _queue_code_lens_refresh(self) -> None:
         if not self._code_lens_refresh_support:
             return
