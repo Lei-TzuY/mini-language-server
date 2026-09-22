@@ -14,6 +14,8 @@ from .source import Span
 _CONTROL_FLOW_CONDITION = re.compile(r"\b(?P<kind>if|while)\s*\(")
 _CONSTANT_CONDITION_DIAGNOSTIC = "nova.constant-condition"
 _UNREACHABLE_CODE_DIAGNOSTIC = "nova.unreachable-code"
+
+
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product with conservative constant-expression diagnostics."""
 
