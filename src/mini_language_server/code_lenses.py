@@ -27,11 +27,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     def __init__(self) -> None:
         super().__init__()
+        self._code_lens_refresh_support = False
         self._code_lens_resolve_next = 1
         self._code_lens_resolve_records: dict[int, _CodeLensResolveRecord] = {}
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
+        if method == "initialize" and self.state is ServerState.PRE_INITIALIZE:
+            params = message.get("params")
+            self._code_lens_refresh_support = (
+                self._client_supports_code_lens(params)
+                and self._client_supports_code_lens_refresh(params)
+            )
         if (
             method == "textDocument/codeLens"
             and "id" in message
@@ -69,6 +76,46 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     "commands": [_SHOW_REFERENCES_COMMAND]
                 }
         return result
+
+    def _handle_document_notification(self, method: str, params: Any) -> None:
+        uri = self._document_uri(params)
+        before = self.workspace_symbols.snapshots()
+        super()._handle_document_notification(method, params)
+        after = self.workspace_symbols.snapshots()
+        if (
+            uri is None
+            or self._same_workspace_identity(before, after)
+        ):
+            return
+        other_uris = {
+            snapshot.uri for snapshot in (*before, *after)
+        } - {uri}
+        if other_uris:
+            self._queue_code_lens_refresh()
+
+    def _queue_code_lens_refresh(self) -> None:
+        if not self._code_lens_refresh_support:
+            return
+        method = "workspace/codeLens/refresh"
+        if self._has_pending_server_request(method):
+            return
+        self._queue_server_request(method)
+
+    @staticmethod
+    def _client_supports_code_lens_refresh(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        code_lens = workspace.get("codeLens")
+        return (
+            isinstance(code_lens, dict)
+            and code_lens.get("refreshSupport") is True
+        )
 
     @staticmethod
     def _client_supports_code_lens(params: Any) -> bool:
