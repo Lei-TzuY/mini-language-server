@@ -231,3 +231,51 @@ def test_bare_return_after_reachable_break_still_infers_unit() -> None:
     assert items[0].message == (
         "argument 1 to 'consume' has type 'Unit'; expected 'Int'"
     )
+
+def test_bare_return_after_guaranteed_bare_return_does_not_block_unit() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn noop() { return; return 1; }\n"
+        "fn consume(value: Int) -> Int { return value; }\n"
+        "fn main() -> Int { consume(noop()); return 0; }\n"
+    )
+    open_nova(server, uri, text)
+
+    items = diagnostics(server, uri, "nova.argument-type")
+    assert len(items) == 1
+    assert items[0].message == (
+        "argument 1 to 'consume' has type 'Unit'; expected 'Int'"
+    )
+
+
+def test_bare_return_after_inferred_never_call_does_not_infer_unit() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() { while (true) { continue; } }\n"
+        "fn noop() { halt(); return; }\n"
+        "fn consume(value: Int) -> Int { return value; }\n"
+        "fn main() -> Int { consume(noop()); return 0; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert diagnostics(server, uri, "nova.argument-type") == []
+
+
+def test_nested_dead_bare_return_does_not_block_value_inference() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() { while (true) { continue; } }\n"
+        "fn helper(flag: Bool) { if flag { halt(); return; } return 1; }\n"
+        "fn consume(value: String) -> Int { return 0; }\n"
+        "fn main() -> Int { consume(helper(true)); return 0; }\n"
+    )
+    open_nova(server, uri, text)
+
+    items = diagnostics(server, uri, "nova.argument-type")
+    assert len(items) == 1
+    assert items[0].message == (
+        "argument 1 to 'consume' has type 'Int'; expected 'String'"
+    )

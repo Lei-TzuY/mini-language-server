@@ -31,7 +31,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         saw_bare_return = False
         saw_value_return = False
         body_code = code[opening + 1 : closing]
-        for statement in self._reachable_return_statements(body_code):
+        body_text = text[opening + 1 : closing]
+        for statement in self._reachable_return_statements(body_code, body_text):
             keyword_end = opening + 1 + statement.end()
             boundary = closing
             for delimiter in (";", "\n", "\r"):

@@ -128,7 +128,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         inferred: str | None = None
         body_code = code[opening + 1 : closing]
-        for statement in self._reachable_return_statements(body_code):
+        body_text = text[opening + 1 : closing]
+        for statement in self._reachable_return_statements(body_code, body_text):
             keyword_end = opening + 1 + statement.end()
             boundary = closing
             for delimiter in (";", "\n", "\r"):
@@ -159,8 +160,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 return None
         return inferred
 
-    @staticmethod
-    def _reachable_return_statements(body_code: str) -> tuple[re.Match[str], ...]:
+    def _reachable_return_statements(
+        self, body_code: str, body_text: str | None = None
+    ) -> tuple[re.Match[str], ...]:
         """Keep return evidence only from bounded-proven reachable source."""
         dead_spans = (
             proven_dead_branch_spans(body_code)

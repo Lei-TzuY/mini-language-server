@@ -5,8 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
-from .nested_unreachable import NovaProductLanguageServer as _NovaProductLanguageServer
 from .nova import NovaFunctionSyntax
+from .semantic_return_reachability import (
+    NovaProductLanguageServer as _NovaProductLanguageServer,
+)
 from .workspace import WorkspaceIndexError
 
 
