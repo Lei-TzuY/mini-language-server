@@ -15,8 +15,19 @@ from .server import ServerState
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product server with exact-snapshot pull diagnostics."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._diagnostic_refresh_support = False
+        self._workspace_diagnostics_publish_succeeded = False
+
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
+        if method == "initialize" and self.state is ServerState.PRE_INITIALIZE:
+            params = message.get("params")
+            self._diagnostic_refresh_support = (
+                self._client_supports_pull_diagnostics(params)
+                and self._client_supports_diagnostic_refresh(params)
+            )
         if (
             method == "textDocument/diagnostic"
             and "id" in message
@@ -40,10 +51,26 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             capabilities = result["result"].get("capabilities")
             if isinstance(capabilities, dict):
                 capabilities["diagnosticProvider"] = {
-                    "interFileDependencies": False,
+                    "interFileDependencies": True,
                     "workspaceDiagnostics": True,
                 }
         return result
+
+    @staticmethod
+    def _client_supports_diagnostic_refresh(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        diagnostics = workspace.get("diagnostics")
+        return (
+            isinstance(diagnostics, dict)
+            and diagnostics.get("refreshSupport") is True
+        )
 
     @staticmethod
     def _client_supports_pull_diagnostics(params: Any) -> bool:
@@ -56,6 +83,43 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if not isinstance(text_document, dict):
             return False
         return isinstance(text_document.get("diagnostic"), dict)
+
+    def _handle_document_notification(self, method: str, params: Any) -> None:
+        uri = self._document_uri(params)
+        before = self.workspace_symbols.snapshots()
+        self._workspace_diagnostics_publish_succeeded = False
+        super()._handle_document_notification(method, params)
+        after = self.workspace_symbols.snapshots()
+        if (
+            not self._workspace_diagnostics_publish_succeeded
+            or self._same_workspace_identity(before, after)
+            or uri is None
+        ):
+            return
+        other_uris = {
+            snapshot.uri for snapshot in (*before, *after)
+        } - {uri}
+        if other_uris:
+            self._queue_diagnostic_refresh()
+
+    def _publish_workspace_diagnostics(self) -> bool:
+        succeeded = bool(super()._publish_workspace_diagnostics())
+        self._workspace_diagnostics_publish_succeeded = succeeded
+        return succeeded
+
+    @staticmethod
+    def _same_workspace_identity(left: tuple[Any, ...], right: tuple[Any, ...]) -> bool:
+        return len(left) == len(right) and all(
+            old is new for old, new in zip(left, right, strict=True)
+        )
+
+    def _queue_diagnostic_refresh(self) -> None:
+        if not self._diagnostic_refresh_support:
+            return
+        method = "workspace/diagnostic/refresh"
+        if self._has_pending_server_request(method):
+            return
+        self._queue_server_request(method)
 
     def _handle_pull_diagnostic(self, request_id: Any, params: Any) -> dict[str, Any]:
         context = self._start_document_request(request_id, params)
