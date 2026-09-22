@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
+import collections.abc
+import dataclasses
+import threading
+import typing
 import urllib.parse
-from collections.abc import Callable
-from dataclasses import dataclass
-from threading import RLock
-from typing import Any, TypeVar
 
 
-_T = TypeVar("_T")
+_T = typing.TypeVar("_T")
 
 
 class WorkspaceFolderError(ValueError):
     """Raised when workspace-folder lifecycle data is malformed."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class WorkspaceFolder:
     uri: str
     name: str
@@ -39,7 +39,7 @@ class WorkspaceFolderSet:
     def __init__(self) -> None:
         self._folders: dict[str, WorkspaceFolder] | None = None
         self._generation = 0
-        self._lock = RLock()
+        self._lock = threading.RLock()
 
     @property
     def generation(self) -> int:
@@ -57,7 +57,7 @@ class WorkspaceFolderSet:
                 return ()
             return tuple(self._folders[uri] for uri in sorted(self._folders))
 
-    def configure(self, params: Any) -> None:
+    def configure(self, params: typing.Any) -> None:
         """Initialize scope from workspaceFolders with rootUri fallback."""
         if not isinstance(params, dict):
             return
@@ -77,7 +77,7 @@ class WorkspaceFolderSet:
             raise WorkspaceFolderError("rootUri must be a non-empty string or null")
         self._replace((WorkspaceFolder(root_uri, root_uri),))
 
-    def apply_change(self, params: Any) -> bool:
+    def apply_change(self, params: typing.Any) -> bool:
         """Apply one workspace/didChangeWorkspaceFolders notification."""
         if not isinstance(params, dict):
             raise WorkspaceFolderError("workspace folder change params must be an object")
@@ -121,7 +121,7 @@ class WorkspaceFolderSet:
             folders = tuple(self._folders.values())
         return any(self._contains(folder.uri, uri) for folder in folders)
 
-    def commit_if_current(self, generation: int, callback: Callable[[], _T]) -> _T:
+    def commit_if_current(self, generation: int, callback: collections.abc.Callable[[], _T]) -> _T:
         """Run a derived workspace publication only while folder scope is unchanged."""
         if not callable(callback):
             raise WorkspaceFolderError("workspace folder commit must be callable")
@@ -139,7 +139,7 @@ class WorkspaceFolderSet:
             self._generation += 1
 
     @staticmethod
-    def _parse_folders(values: list[Any]) -> tuple[WorkspaceFolder, ...]:
+    def _parse_folders(values: list[typing.Any]) -> tuple[WorkspaceFolder, ...]:
         parsed: list[WorkspaceFolder] = []
         seen: set[str] = set()
         for value in values:
