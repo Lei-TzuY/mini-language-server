@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any
 
+from .constant_control_flow import proven_non_fallthrough_while_spans
 from .constant_values import bounded_boolean_constant_value
 from .diagnostics import DIAGNOSTIC_TAG_VALUES, Diagnostic
 from .expression_local_types import NovaProductLanguageServer as _NovaProductLanguageServer
@@ -187,9 +188,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 continue
             body_code = code[opening + 1 : closing]
             body_text = text[opening + 1 : closing]
-            termination_end = self._first_guaranteed_termination_end(body_code, body_text)
-            if termination_end is None:
+            termination = self._first_guaranteed_termination(body_code, body_text)
+            if termination is None:
                 continue
+            termination_end, termination_kind = termination
             unreachable_start = self._next_non_space(body_code, termination_end)
             if unreachable_start is None:
                 continue
@@ -206,7 +208,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         opening + 1 + unreachable_start,
                         opening + 1 + unreachable_end,
                     ),
-                    message="unreachable code after guaranteed return",
+                    message=f"unreachable code after {termination_kind}",
                     code=_UNREACHABLE_CODE_DIAGNOSTIC,
                     source="nova",
                     tags=("unnecessary",),
@@ -214,13 +216,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             )
         return tuple(diagnostics)
 
-    def _first_guaranteed_termination_end(self, code: str, text: str) -> int | None:
-        candidates: list[tuple[int, int]] = []
+    def _first_guaranteed_termination(
+        self, code: str, text: str
+    ) -> tuple[int, str] | None:
+        candidates: list[tuple[int, int, str]] = []
         for statement in _RETURN.finditer(code):
             if self._brace_depth_before(code, statement.start()) != 0:
                 continue
             candidates.append(
-                (statement.start(), self._return_statement_end(code, statement.end()))
+                (
+                    statement.start(),
+                    self._return_statement_end(code, statement.end()),
+                    "guaranteed return",
+                )
             )
 
         for statement in _IF.finditer(code):
@@ -234,11 +242,25 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 code, statement.start(), statement.end()
             )
             if statement_end is not None:
-                candidates.append((statement.start(), statement_end))
+                candidates.append(
+                    (statement.start(), statement_end, "guaranteed return")
+                )
+
+        for statement_start, statement_end in proven_non_fallthrough_while_spans(code):
+            if self._brace_depth_before(code, statement_start) != 0:
+                continue
+            candidates.append(
+                (statement_start, statement_end, "non-fallthrough while")
+            )
 
         if not candidates:
             return None
-        return min(candidates, key=lambda candidate: candidate[0])[1]
+        _, end, kind = min(candidates, key=lambda candidate: candidate[0])
+        return end, kind
+
+    def _first_guaranteed_termination_end(self, code: str, text: str) -> int | None:
+        termination = self._first_guaranteed_termination(code, text)
+        return None if termination is None else termination[0]
 
     def _body_guarantees_termination(self, code: str, text: str) -> bool:
         for statement in _RETURN.finditer(code):

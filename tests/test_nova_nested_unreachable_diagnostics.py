@@ -149,3 +149,77 @@ def test_nested_unreachable_rebinds_across_change_close_and_reopen() -> None:
     assert server.diagnostics.get(uri) is None
     open_nova(server, uri, dead, 3)
     assert unreachable_texts(server, uri) == ("let dead = 1;",)
+
+def test_constant_true_loop_without_reachable_break_kills_following_suffix() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() { while (1 < 2) { continue; } "
+        "let dead = 1; let also_dead = 2; }\n"
+    )
+    open_nova(server, uri, text, 1)
+
+    assert unreachable_texts(server, uri) == (
+        "let dead = 1; let also_dead = 2;",
+    )
+
+
+def test_reachable_break_keeps_suffix_after_constant_true_loop_live() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn main() { while (true) { break; } let live = 1; }\n"
+    open_nova(server, uri, text, 1)
+
+    assert unreachable_texts(server, uri) == ()
+
+
+def test_break_in_proven_dead_branch_does_not_make_true_loop_fall_through() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() { while (true) { if (false) { break; } continue; } "
+        "let dead = 1; }\n"
+    )
+    open_nova(server, uri, text, 1)
+
+    assert unreachable_texts(server, uri) == (
+        "break;",
+        "let dead = 1;",
+    )
+
+
+def test_break_under_unknown_branch_keeps_true_loop_fallthrough_conservative() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { while (true) { if (flag) { break; } } "
+        "let maybe_live = 1; }\n"
+    )
+    open_nova(server, uri, text, 1)
+
+    assert unreachable_texts(server, uri) == ()
+
+
+def test_break_in_nested_loop_does_not_exit_constant_true_outer_loop() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { while (true) { "
+        "while (flag) { break; } continue; } let dead = 1; }\n"
+    )
+    open_nova(server, uri, text, 1)
+
+    assert unreachable_texts(server, uri) == ("let dead = 1;",)
+
+
+def test_nested_constant_true_loop_kills_only_its_enclosing_body_suffix() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { if (flag) { "
+        "while (true) { continue; } let dead = 1; } "
+        "let outer_live = 2; }\n"
+    )
+    open_nova(server, uri, text, 1)
+
+    assert unreachable_texts(server, uri) == ("let dead = 1;",)
