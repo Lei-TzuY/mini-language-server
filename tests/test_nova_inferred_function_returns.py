@@ -389,3 +389,51 @@ def test_unknown_conditional_conflicting_return_remains_conservative() -> None:
     open_nova(server, uri, text)
 
     assert hover_value(server, uri, text) == "variable value"
+
+def test_return_after_non_fallthrough_loop_is_not_inference_evidence() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn helper() { while (true) { continue; } return 1; } "
+        "fn main() { let value = helper() value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value"
+
+
+def test_return_after_reachable_break_remains_inference_evidence() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn helper() { while (true) { break; } return 1; } "
+        "fn main() { let value = helper() value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: Int"
+
+
+def test_divergent_loop_kills_only_same_scope_return_evidence() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        'fn helper(flag: Bool) { if flag { '
+        'while (true) { continue; } return "dead"; } return 1; } '
+        "fn main() { let value = helper(true) value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: Int"
+
+
+def test_unknown_loop_condition_keeps_following_return_evidence() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn helper(flag: Bool) { while (flag) { continue; } return 1; } "
+        "fn main() { let value = helper(false) value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: Int"

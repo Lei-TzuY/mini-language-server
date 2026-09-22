@@ -202,3 +202,32 @@ def test_unknown_conditional_value_return_still_blocks_unit_inference() -> None:
     open_nova(server, uri, text)
 
     assert diagnostics(server, uri, "nova.argument-type") == []
+
+def test_bare_return_after_non_fallthrough_loop_does_not_infer_unit() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn noop() { while (true) { continue; } return; }\n"
+        "fn consume(value: Int) -> Int { return value; }\n"
+        "fn main() -> Int { consume(noop()); return 0; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert diagnostics(server, uri, "nova.argument-type") == []
+
+
+def test_bare_return_after_reachable_break_still_infers_unit() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn noop() { while (true) { break; } return; }\n"
+        "fn consume(value: Int) -> Int { return value; }\n"
+        "fn main() -> Int { consume(noop()); return 0; }\n"
+    )
+    open_nova(server, uri, text)
+
+    items = diagnostics(server, uri, "nova.argument-type")
+    assert len(items) == 1
+    assert items[0].message == (
+        "argument 1 to 'consume' has type 'Unit'; expected 'Int'"
+    )
