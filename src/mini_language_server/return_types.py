@@ -6,7 +6,10 @@ import re
 from collections.abc import Iterable
 from dataclasses import replace
 
-from .constant_control_flow import proven_non_fallthrough_while_spans
+from .constant_control_flow import (
+    control_flow_statement_at,
+    proven_non_fallthrough_while_spans,
+)
 from .constant_values import bounded_boolean_constant_value
 from .diagnostics import Diagnostic
 from .range_formatting import NovaProductLanguageServer as _NovaProductLanguageServer
@@ -19,7 +22,7 @@ _TYPED_FUNCTION = re.compile(
     rf"\bfn\s+(?P<name>{_IDENTIFIER})\s*\([^)]*\)\s*->\s*(?P<type>{_IDENTIFIER}|!)\s*\{{"
 )
 _RETURN = re.compile(r"\breturn\b")
-_IF = re.compile(r"\bif\s*\(")
+_IF = re.compile(r"\bif\b")
 _INTEGER = re.compile(r"-?[0-9]+")
 _CALL_EXPRESSION = re.compile(rf"\s*(?P<name>{_IDENTIFIER})\s*\(")
 _RETURN_ANNOTATION = re.compile(rf"->\s*(?P<type>{_IDENTIFIER}|!)\s*$")
@@ -155,9 +158,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         )
         if condition is None:
             return False
-        condition_open, condition_close, then_open, then_close = condition
+        condition_start, condition_end, then_open, then_close = condition
         constant = bounded_boolean_constant_value(
-            code[condition_open + 1 : condition_close]
+            code[condition_start:condition_end]
         )
         then_returns = self._body_guarantees_value_return(
             code[then_open + 1 : then_close], text[then_open + 1 : then_close]
@@ -201,19 +204,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _if_condition_then_bounds(
         cls, code: str, statement_start: int, condition_prefix_end: int
     ) -> tuple[int, int, int, int] | None:
-        condition_open = code.find("(", statement_start, condition_prefix_end)
-        if condition_open < 0:
+        del condition_prefix_end
+        statement = control_flow_statement_at(code, statement_start, kind="if")
+        if statement is None:
             return None
-        condition_close = cls._matching_delimiter(code, condition_open, "(", ")")
-        if condition_close is None:
-            return None
-        then_open = cls._next_non_space(code, condition_close + 1)
-        if then_open is None or code[then_open] != "{":
-            return None
-        then_close = cls._matching_delimiter(code, then_open, "{", "}")
-        if then_close is None:
-            return None
-        return condition_open, condition_close, then_open, then_close
+        return (
+            statement.condition_start,
+            statement.condition_end,
+            statement.body_open,
+            statement.body_close,
+        )
 
     @classmethod
     def _if_then_else_bounds(
