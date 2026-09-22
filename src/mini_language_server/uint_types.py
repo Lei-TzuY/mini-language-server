@@ -9,11 +9,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .arithmetic_expression_types import _ADDITIVE, _MULTIPLICATIVE
 from .assignment_diagnostics import _ASSIGNMENT
-from .comparison_expression_types import (
+from .expression_types import (
+    _ADDITIVE,
     _BOUNDED_EQUALITY_TYPES,
     _EQUALITY,
+    _MULTIPLICATIVE,
     _ORDERING,
 )
 from .diagnostics import Diagnostic
