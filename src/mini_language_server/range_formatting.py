@@ -98,8 +98,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         finally:
             self.requests.finish(context)
 
-    @staticmethod
-    def _parse_range(text: str, value: dict[str, Any]) -> tuple[Position, Position] | None:
+    def _parse_range(self, text: str, value: dict[str, Any]) -> tuple[Position, Position] | None:
         start_value = value.get("start")
         end_value = value.get("end")
         if not isinstance(start_value, dict) or not isinstance(end_value, dict):
@@ -121,7 +120,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         end = parse_position(end_value)
         if start is None or end is None:
             return None
-        source = SourceText(text)
+        source = self._source_text(text)
         try:
             start_offset = source.offset_at(start)
             end_offset = source.offset_at(end)
