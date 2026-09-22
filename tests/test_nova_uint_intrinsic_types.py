@@ -228,3 +228,19 @@ def test_same_version_workspace_replacement_suppresses_stale_uint_call_result() 
     current_helper = server.workspace_symbols.get(helper_uri)
     assert current_helper is not None and current_helper is not original_helper
     assert server.diagnostics.get(main_uri) is original_diagnostics
+
+def test_uint_missing_return_accepts_proven_loop_divergence() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        "fn diverge() -> UInt { while (true) { continue; } }\n"
+        "fn maybe(flag: Bool) -> UInt { while (flag) { continue; } }\n",
+    )
+
+    missing = diagnostics(server, uri, "nova.missing-return")
+    assert len(missing) == 1
+    assert missing[0].message == (
+        "function 'maybe' with return type 'UInt' has no value return"
+    )

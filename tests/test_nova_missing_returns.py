@@ -280,3 +280,108 @@ def test_constant_false_if_uses_reachable_else_return_proof() -> None:
     open_nova(server, uri, text)
 
     assert missing_returns(server, uri) == []
+
+def test_proven_non_fallthrough_loop_satisfies_value_return_requirement() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn value() -> Int { while (true) { continue; } }\n"
+    open_nova(server, uri, text)
+
+    assert missing_returns(server, uri) == []
+
+
+def test_reachable_break_keeps_divergent_loop_missing_return_conservative() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn value() -> Int { while (true) { break; } }\n"
+    open_nova(server, uri, text)
+
+    assert len(missing_returns(server, uri)) == 1
+
+
+def test_break_in_dead_branch_does_not_restore_loop_fallthrough() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn value() -> String { while (1 < 2) { "
+        "if (false) { break; } continue; } }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert missing_returns(server, uri) == []
+
+
+def test_break_under_unknown_branch_keeps_missing_return() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn value(flag: Bool) -> Int { while (true) { "
+        "if (flag) { break; } } }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert len(missing_returns(server, uri)) == 1
+
+
+def test_nested_loop_break_does_not_restore_outer_loop_fallthrough() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn value(flag: Bool) -> Bool { while (true) { "
+        "while (flag) { break; } continue; } }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert missing_returns(server, uri) == []
+
+
+def test_unknown_loop_condition_does_not_satisfy_value_return_requirement() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn value(flag: Bool) -> Int { while (flag) { continue; } }\n"
+    open_nova(server, uri, text)
+
+    assert len(missing_returns(server, uri)) == 1
+
+
+def test_if_paths_may_mix_value_return_and_proven_divergence() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn value(flag: Bool) -> Int { "
+        "if (flag) { while (true) { continue; } } "
+        "else { return 1; } }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert missing_returns(server, uri) == []
+
+def test_did_change_rebinds_divergent_loop_return_proof() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        "fn value(flag: Bool) -> Int { while (true) { continue; } }\n",
+        version=1,
+    )
+    assert missing_returns(server, uri) == []
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [
+                    {
+                        "text": (
+                            "fn value(flag: Bool) -> Int { "
+                            "while (flag) { continue; } }\n"
+                        )
+                    }
+                ],
+            },
+        )
+    )
+
+    assert len(missing_returns(server, uri)) == 1

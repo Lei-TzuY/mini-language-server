@@ -6,6 +6,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import replace
 
+from .constant_control_flow import proven_non_fallthrough_while_spans
 from .constant_values import bounded_boolean_constant_value
 from .diagnostics import Diagnostic
 from .range_formatting import NovaProductLanguageServer as _NovaProductLanguageServer
@@ -126,7 +127,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         return tuple(diagnostics)
 
     def _body_guarantees_value_return(self, code: str, text: str) -> bool:
-        """Prove a bounded body returns via a top-level return or complete if chain."""
+        """Prove every fallthrough path is closed by a value return or divergence."""
         for statement in _RETURN.finditer(code):
             if self._brace_depth_before(code, statement.start()) != 0:
                 continue
@@ -140,7 +141,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 code, text, statement.start(), statement.end()
             ):
                 return True
-        return False
+
+        return any(
+            self._brace_depth_before(code, statement_start) == 0
+            for statement_start, _ in proven_non_fallthrough_while_spans(code)
+        )
 
     def _if_statement_guarantees_value_return(
         self, code: str, text: str, statement_start: int, condition_prefix_end: int
