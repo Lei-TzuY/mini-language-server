@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from .assignment_diagnostics import NovaProductLanguageServer as _NovaProductLanguageServer
+from .constant_values import bounded_boolean_constant_value
 from .diagnostics import Diagnostic
 from .semantic import SemanticSnapshot
 from .source import Span
@@ -179,7 +180,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         reference_scope: tuple[int, ...],
         assignments: list[tuple[int, tuple[int, ...]]],
     ) -> bool:
-        """Prove every reachable arm either assigns or terminates before the join."""
+        """Prove every reachable arm assigns or terminates before the join."""
         pairs = cls._matching_braces(code)
         for if_open, if_close in sorted(pairs.items()):
             if if_open < start_offset or if_close >= end_offset:
@@ -189,20 +190,33 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if not cls._is_if_block(code, if_open):
                 continue
 
-            branch_open = if_open
-            branch_close = if_close
-            all_assigned = cls._scope_definitely_assigned(
+            condition = cls._if_condition_before_brace(code, if_open)
+            constant = (
+                None
+                if condition is None
+                else bounded_boolean_constant_value(condition)
+            )
+            branch_assigned = cls._scope_definitely_assigned(
                 code,
-                branch_open,
-                branch_close,
-                reference_scope + (branch_open,),
+                if_open,
+                if_close,
+                reference_scope + (if_open,),
                 assignments,
             )
-            cursor = branch_close + 1
+            if constant is True:
+                if branch_assigned:
+                    return True
+                continue
+
+            all_reachable_assigned = True if constant is False else branch_assigned
+            cursor = if_close + 1
 
             while cursor < end_offset:
                 remainder = code[cursor:end_offset]
-                else_if_match = re.match(r"\s*else\s+if\b[^{};]*\{", remainder)
+                else_if_match = re.match(
+                    r"\s*else\s+if\b(?P<condition>[^{};]*)\{",
+                    remainder,
+                )
                 if else_if_match is not None:
                     branch_open = cursor + else_if_match.end() - 1
                     branch_close = pairs.get(branch_open, -1)
@@ -210,13 +224,25 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         break
                     if cls._brace_scope_at(code, branch_open) != reference_scope:
                         break
-                    all_assigned = all_assigned and cls._scope_definitely_assigned(
+
+                    branch_constant = bounded_boolean_constant_value(
+                        else_if_match.group("condition")
+                    )
+                    branch_assigned = cls._scope_definitely_assigned(
                         code,
                         branch_open,
                         branch_close,
                         reference_scope + (branch_open,),
                         assignments,
                     )
+                    if branch_constant is True:
+                        if all_reachable_assigned and branch_assigned:
+                            return True
+                        break
+                    if branch_constant is None:
+                        all_reachable_assigned = (
+                            all_reachable_assigned and branch_assigned
+                        )
                     cursor = branch_close + 1
                     continue
 
@@ -229,17 +255,34 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     break
                 if cls._brace_scope_at(code, branch_open) != reference_scope:
                     break
-                all_assigned = all_assigned and cls._scope_definitely_assigned(
+                branch_assigned = cls._scope_definitely_assigned(
                     code,
                     branch_open,
                     branch_close,
                     reference_scope + (branch_open,),
                     assignments,
                 )
-                if all_assigned:
+                if all_reachable_assigned and branch_assigned:
                     return True
                 break
         return False
+
+    @staticmethod
+    def _if_condition_before_brace(code: str, open_brace: int) -> str | None:
+        """Return one direct if condition ending at the supplied body brace."""
+        boundary = max(
+            code.rfind(";", 0, open_brace),
+            code.rfind("{", 0, open_brace),
+            code.rfind("}", 0, open_brace),
+        )
+        prefix = code[boundary + 1 : open_brace]
+        if re.search(r"\belse\s+if\b[^{};]*$", prefix) is not None:
+            return None
+        match = re.search(r"\bif\b(?P<condition>[^{};]*)$", prefix)
+        if match is None:
+            return None
+        condition = match.group("condition").strip()
+        return condition or None
 
     @classmethod
     def _if_else_join_initializes(
