@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from .inferred_function_returns import _RETURN
 from .unit_type_actions import NovaProductLanguageServer as _NovaProductLanguageServer
 
 
