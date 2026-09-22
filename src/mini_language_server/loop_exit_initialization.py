@@ -15,22 +15,22 @@ _WHILE_PREFIX = re.compile(r"\bwhile\s*\([^{};]*\)\s*$")
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product that treats valid direct loop exits as join termination."""
 
-    @classmethod
     def _direct_scope_terminates(
-        cls,
+        self,
         code: str,
+        text: str,
         branch_open: int,
         branch_close: int,
         branch_scope: tuple[int, ...],
     ) -> bool:
         if super()._direct_scope_terminates(
-            code, branch_open, branch_close, branch_scope
+            code, text, branch_open, branch_close, branch_scope
         ):
             return True
-        if not cls._scope_is_inside_while(code, branch_scope):
+        if not self._scope_is_inside_while(code, branch_scope):
             return False
         return any(
-            cls._brace_scope_at(code, match.start()) == branch_scope
+            self._brace_scope_at(code, match.start()) == branch_scope
             for match in _LOOP_CONTROL_STATEMENT.finditer(
                 code, branch_open + 1, branch_close
             )
