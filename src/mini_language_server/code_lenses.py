@@ -10,7 +10,6 @@ from .nova import NovaFunctionSyntax
 from .pull_diagnostics import NovaProductLanguageServer as _NovaProductLanguageServer
 from .semantic import SemanticError, SemanticSnapshot
 from .server import ServerState
-from .source import SourceText
 from .workspace import WorkspaceIndexError
 
 _SHOW_REFERENCES_COMMAND = "mini-language-server.showReferences"
