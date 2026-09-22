@@ -19,17 +19,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     def _nova_unreachable_code_diagnostics(
         self, semantic: SemanticSnapshot
-    ) -> tuple[Diagnostic, ...]:
+    ) -> tuple[tuple[Span, str], ...]:
         text = semantic.symbols.syntax.document.text
         code = self.nova_adapter.code_view(text)
-        diagnostics: list[Diagnostic] = []
+        regions: list[tuple[Span, str]] = []
         for function in _FUNCTION.finditer(code):
             opening = function.end() - 1
             closing = self._matching_delimiter(code, opening, "{", "}")
             if closing is None:
                 continue
-            diagnostics.extend(
-                self._unreachable_in_body(
+            regions.extend(
+                self._unreachable_regions_in_body(
                     code[opening + 1 : closing],
                     text[opening + 1 : closing],
                     base_offset=opening + 1,
@@ -37,9 +37,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     include_never_calls=True,
                 )
             )
-        return tuple(diagnostics)
+        return tuple(
+            Diagnostic(
+                span=span,
+                message=f"unreachable code after {termination_kind}",
+                code=_UNREACHABLE_CODE_DIAGNOSTIC,
+                source="nova",
+                tags=("unnecessary",),
+            )
+            for span, termination_kind in regions
+        )
 
-    def _unreachable_in_body(
+    def _unreachable_regions_in_body(
         self,
         code: str,
         text: str,
@@ -66,7 +75,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 _, termination_end, keyword = loop_control
                 termination_kind = f"'{keyword}'"
         scan_end = len(code) if termination_end is None else termination_end
-        diagnostics: list[Diagnostic] = []
+        regions: list[tuple[Span, str]] = []
 
         if termination_end is not None:
             unreachable_start = self._next_non_space(code, termination_end)
@@ -78,16 +87,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 ):
                     unreachable_end -= 1
                 if unreachable_end > unreachable_start:
-                    diagnostics.append(
-                        Diagnostic(
-                            span=Span(
+                    regions.append(
+                        (
+                            Span(
                                 base_offset + unreachable_start,
                                 base_offset + unreachable_end,
                             ),
-                            message=f"unreachable code after {termination_kind}",
-                            code=_UNREACHABLE_CODE_DIAGNOSTIC,
-                            source="nova",
-                            tags=("unnecessary",),
+                            termination_kind,
                         )
                     )
 
@@ -100,8 +106,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if closing is None or closing >= scan_end:
                 break
             child_loop_depth = loop_depth + int(self._brace_opens_while(code, opening))
-            diagnostics.extend(
-                self._unreachable_in_body(
+            regions.extend(
+                self._unreachable_regions_in_body(
                     code[opening + 1 : closing],
                     text[opening + 1 : closing],
                     base_offset=base_offset + opening + 1,
@@ -111,7 +117,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             )
             cursor = closing + 1
 
-        return tuple(diagnostics)
+        return tuple(regions)
 
     def _first_top_level_loop_control(
         self, code: str
