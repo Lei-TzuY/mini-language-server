@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
 from mini_language_server import NovaProductLanguageServer
+from mini_language_server.workspace import WorkspaceIndexError
 
 
 def request(method: str, request_id: int, params: dict) -> dict:
@@ -11,15 +14,26 @@ def notify(method: str, params: dict) -> dict:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialize(server: NovaProductLanguageServer, *, supported: bool = True) -> dict:
+def initialize(
+    server: NovaProductLanguageServer,
+    *,
+    supported: bool = True,
+    refresh_support: bool = False,
+    workspace_folders: list[dict[str, str]] | None = None,
+) -> dict:
     text_document = {"inlayHint": {}} if supported else {}
-    result = server.handle(
-        request(
-            "initialize",
-            1,
-            {"capabilities": {"textDocument": text_document}},
-        )
-    )
+    capabilities: dict = {"textDocument": text_document}
+    if refresh_support or workspace_folders is not None:
+        workspace: dict = {}
+        if refresh_support:
+            workspace["inlayHint"] = {"refreshSupport": True}
+        if workspace_folders is not None:
+            workspace["workspaceFolders"] = True
+        capabilities["workspace"] = workspace
+    params: dict = {"capabilities": capabilities}
+    if workspace_folders is not None:
+        params["workspaceFolders"] = workspace_folders
+    result = server.handle(request("initialize", 1, params))
     assert result is not None
     return result
 
@@ -233,3 +247,175 @@ def test_inlay_hints_honor_cancellation_checkpoint() -> None:
         "id": 2,
         "error": {"code": -32800, "message": "Request cancelled"},
     }
+
+
+def test_inlay_hint_refresh_requested_for_cross_file_workspace_change() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    library_uri = "file:///workspace/library.nova"
+    main_uri = "file:///workspace/main.nova"
+
+    open_nova(server, library_uri, "fn target(value: Int) -> Int { value }\n")
+    assert server.drain_server_requests() == []
+
+    text = "fn caller() { target(1) }\n"
+    open_nova(server, main_uri, text)
+    first = server.drain_server_requests()
+    assert len(first) == 1
+    assert first[0]["method"] == "workspace/inlayHint/refresh"
+    assert "params" not in first[0]
+    request_id = first[0]["id"]
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": library_uri, "version": 2},
+                "contentChanges": [
+                    {"text": "fn target(renamed: Int) -> Int { renamed }\n"}
+                ],
+            },
+        )
+    )
+    assert server.drain_server_requests() == []
+
+    assert server.handle(
+        {"jsonrpc": "2.0", "id": request_id, "result": None}
+    ) is None
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": library_uri, "version": 3},
+                "contentChanges": [
+                    {"text": "fn target(flag: Bool) -> Bool { flag }\n"}
+                ],
+            },
+        )
+    )
+    second = server.drain_server_requests()
+    assert len(second) == 1
+    assert second[0]["method"] == "workspace/inlayHint/refresh"
+    assert second[0]["id"] != request_id
+
+    refreshed = inlay_hints(server, main_uri, text, request_id=6)["result"]
+    assert [item["label"] for item in refreshed] == [" -> Bool", "flag:"]
+
+
+def test_inlay_hint_refresh_error_response_rearms_future_refresh() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    library_uri = "file:///workspace/library.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(server, library_uri, "fn target(value: Int) {}\n")
+    open_nova(server, main_uri, "fn caller() { target(1) }\n")
+    refresh = server.drain_server_requests()[0]
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": refresh["id"],
+            "error": {"code": -32603, "message": "refresh failed"},
+        }
+    ) is None
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": library_uri, "version": 2},
+                "contentChanges": [{"text": "fn target(flag: Bool) {}\n"}],
+            },
+        )
+    )
+    requests = server.drain_server_requests()
+    assert len(requests) == 1
+    assert requests[0]["method"] == "workspace/inlayHint/refresh"
+
+
+def test_inlay_hint_refresh_requires_workspace_client_support() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=False)
+    open_nova(server, "file:///workspace/library.nova", "fn target(value: Int) {}\n")
+    open_nova(server, "file:///workspace/main.nova", "fn caller() { target(1) }\n")
+
+    assert server.drain_server_requests() == []
+
+
+def test_single_document_change_does_not_send_global_inlay_hint_refresh() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn target(value: Int) {}\n")
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": "fn target(flag: Bool) {}\n"}],
+            },
+        )
+    )
+
+    assert server.drain_server_requests() == []
+
+
+def test_failed_workspace_replacement_does_not_request_inlay_hint_refresh(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    library_uri = "file:///workspace/library.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(server, library_uri, "fn target(value: Int) {}\n")
+    open_nova(server, main_uri, "fn caller() { target(1) }\n")
+    first = server.drain_server_requests()[0]
+    server.handle({"jsonrpc": "2.0", "id": first["id"], "result": None})
+
+    def reject_replace(*args: Any, **kwargs: Any) -> Any:
+        raise WorkspaceIndexError("stale workspace")
+
+    monkeypatch.setattr(server.workspace_symbols, "replace", reject_replace)
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": library_uri, "version": 2},
+                "contentChanges": [{"text": "fn target(flag: Bool) {}\n"}],
+            },
+        )
+    )
+
+    assert server.drain_server_requests() == []
+
+
+def test_workspace_folder_change_requests_inlay_hint_refresh() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        refresh_support=True,
+        workspace_folders=[{"uri": "file:///workspace/a", "name": "a"}],
+    )
+    target_uri = "file:///workspace/a/target.nova"
+    caller_uri = "file:///workspace/b/caller.nova"
+    open_nova(server, target_uri, "fn target(value: Int) {}\n")
+    open_nova(server, caller_uri, "fn caller() { target(1) }\n")
+    assert server.drain_server_requests() == []
+
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [{"uri": "file:///workspace/b", "name": "b"}],
+                    "removed": [],
+                }
+            },
+        )
+    )
+
+    refresh = server.drain_server_requests()
+    assert len(refresh) == 1
+    assert refresh[0]["method"] == "workspace/inlayHint/refresh"
