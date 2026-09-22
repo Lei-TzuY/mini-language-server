@@ -82,14 +82,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             guarantees_value_return = self._body_guarantees_value_return(
                 body_code, body_text
             )
-            if (
-                not guarantees_value_return
-                and not self._body_has_bare_return(body_code, body_text)
-                and self._top_level_explicit_never_call_statements(
-                    body_code, body_text
-                )
-            ):
-                guarantees_value_return = True
             for statement in _RETURN.finditer(body_code):
                 keyword_end = opening + 1 + statement.end()
                 boundary = len(text)
@@ -150,9 +142,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             ):
                 return True
 
-        return any(
+        if any(
             self._brace_depth_before(code, statement_start) == 0
             for statement_start, _ in proven_non_fallthrough_while_spans(code)
+        ):
+            return True
+
+        return (
+            not self._body_has_bare_return(code, text)
+            and bool(self._top_level_explicit_never_call_statements(code, text))
         )
 
     def _if_statement_guarantees_value_return(
