@@ -8,7 +8,7 @@ The checkpoint covers:
 
 1. JSON-RPC/LSP framing and lifecycle
 2. document snapshots, versions, and incremental edits
-3. source positions and spans
+3. source positions and spans with session-wide LSP UTF-8/UTF-16 position encoding negotiation
 4. syntax snapshot publication
 5. symbol snapshot publication
 6. semantic reference publication
@@ -23,7 +23,7 @@ The core invariant is generational identity: a derived result is valid only whil
 
 | Layer | Owns | Must not silently own |
 | --- | --- | --- |
-| protocol/server | JSON-RPC lifecycle, request routing, LSP result rendering | language parsing/type rules |
+| protocol/server | JSON-RPC lifecycle, request routing, session position-encoding negotiation, LSP result rendering | language parsing/type rules |
 | document store | current text snapshot, version/generation transitions | syntax or semantic interpretation |
 | syntax store | current parsed result for one exact document | symbol resolution |
 | symbol index | deterministic symbols for one exact syntax snapshot | reference semantics |
