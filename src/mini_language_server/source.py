@@ -5,7 +5,6 @@ from __future__ import annotations
 from bisect import bisect_right
 from dataclasses import dataclass
 
-
 DEFAULT_POSITION_ENCODING = "utf-16"
 SUPPORTED_POSITION_ENCODINGS = ("utf-8", "utf-16")
 
