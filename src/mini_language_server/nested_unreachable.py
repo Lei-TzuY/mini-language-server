@@ -19,7 +19,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     def _nova_unreachable_code_diagnostics(
         self, semantic: SemanticSnapshot
-    ) -> tuple[tuple[Span, str], ...]:
+    ) -> tuple[Diagnostic, ...]:
         text = semantic.symbols.syntax.document.text
         code = self.nova_adapter.code_view(text)
         regions: list[tuple[Span, str]] = []
@@ -56,7 +56,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         base_offset: int,
         loop_depth: int,
         include_never_calls: bool = False,
-    ) -> tuple[Diagnostic, ...]:
+    ) -> tuple[tuple[Span, str], ...]:
         termination = self._first_guaranteed_termination(
             code,
             text,
