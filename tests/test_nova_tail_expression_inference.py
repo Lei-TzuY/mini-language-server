@@ -324,3 +324,33 @@ def test_did_change_rebinds_tail_reachability_inference() -> None:
     )
 
     assert hover_target(server, uri, 65)["result"]["contents"]["value"] == "fn target()"
+
+def test_semantic_dead_branch_return_does_not_block_reachable_tail() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        'fn halt() { while (true) { continue; } } '
+        'fn target(flag: Bool) { if flag { halt(); return "dead"; } 7 } '
+        "fn caller() { target(true) }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_target(server, uri, 70)["result"]["contents"]["value"] == (
+        "fn target(flag: Bool) -> Int"
+    )
+
+
+def test_aggregate_dead_return_does_not_compete_with_reachable_return() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        'fn halt() { while (true) { continue; } } '
+        'fn target(flag: Bool) { '
+        'if flag { halt(); } else { return 1; } return "dead"; } '
+        "fn caller() { target(true) }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_target(server, uri, 71)["result"]["contents"]["value"] == (
+        "fn target(flag: Bool) -> Int"
+    )
