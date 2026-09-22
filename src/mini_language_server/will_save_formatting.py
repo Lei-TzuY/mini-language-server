@@ -5,12 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from .cancellation import RequestCancelled, StaleRequest
-from .implementation import NovaProductLanguageServer
+from .implementation import NovaProductLanguageServer as _PreviousNovaProductLanguageServer
 from .server import ServerState
 from .source import Span
-
-
-_PreviousNovaProductLanguageServer = NovaProductLanguageServer
 
 _DEFAULT_FORMATTING_TAB_SIZE = 4
 _DEFAULT_FORMATTING_INSERT_SPACES = True
