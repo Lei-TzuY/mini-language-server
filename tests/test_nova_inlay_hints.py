@@ -11,13 +11,28 @@ def notify(method: str, params: dict) -> dict:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialize(server: NovaProductLanguageServer, *, supported: bool = True) -> dict:
+def initialize(
+    server: NovaProductLanguageServer,
+    *,
+    supported: bool = True,
+    refresh_support: bool = False,
+) -> dict:
     text_document = {"inlayHint": {}} if supported else {}
+    workspace = (
+        {"inlayHint": {"refreshSupport": True}}
+        if refresh_support
+        else {}
+    )
     result = server.handle(
         request(
             "initialize",
             1,
-            {"capabilities": {"textDocument": text_document}},
+            {
+                "capabilities": {
+                    "textDocument": text_document,
+                    "workspace": workspace,
+                }
+            },
         )
     )
     assert result is not None
@@ -233,3 +248,143 @@ def test_inlay_hints_honor_cancellation_checkpoint() -> None:
         "id": 2,
         "error": {"code": -32800, "message": "Request cancelled"},
     }
+
+def test_inlay_hint_refresh_reacts_to_cross_file_parameter_change() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    library_uri = "file:///workspace/library.nova"
+    main_uri = "file:///workspace/main.nova"
+    text = "fn caller() { target(1); }\n"
+
+    open_nova(server, library_uri, "fn target(value: Int) -> Int { value }\n")
+    assert server.drain_server_requests() == []
+    open_nova(server, main_uri, text)
+    refresh = server.drain_server_requests()
+    assert len(refresh) == 1
+    assert refresh[0]["method"] == "workspace/inlayHint/refresh"
+    assert "params" not in refresh[0]
+    request_id = refresh[0]["id"]
+
+    assert inlay_hints(server, main_uri, text)["result"][0]["label"] == "value:"
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": library_uri, "version": 2},
+                "contentChanges": [
+                    {"text": "fn target(renamed: Int) -> Int { renamed }\n"}
+                ],
+            },
+        )
+    )
+    assert server.drain_server_requests() == []
+
+    assert server.handle(
+        {"jsonrpc": "2.0", "id": request_id, "result": None}
+    ) is None
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": library_uri, "version": 3},
+                "contentChanges": [
+                    {"text": "fn target(finalName: Int) -> Int { finalName }\n"}
+                ],
+            },
+        )
+    )
+    second = server.drain_server_requests()
+    assert len(second) == 1
+    assert second[0]["method"] == "workspace/inlayHint/refresh"
+    assert second[0]["id"] != request_id
+    assert inlay_hints(server, main_uri, text, request_id=6)["result"][0]["label"] == (
+        "finalName:"
+    )
+
+
+def test_inlay_hint_refresh_error_response_rearms_future_refresh() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    library_uri = "file:///workspace/library.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(server, library_uri, "fn target(value: Int) {}\n")
+    open_nova(server, main_uri, "fn caller() { target(1); }\n")
+    refresh = server.drain_server_requests()[0]
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": refresh["id"],
+            "error": {"code": -32603, "message": "refresh failed"},
+        }
+    ) is None
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": library_uri, "version": 2},
+                "contentChanges": [{"text": "fn target(flag: Bool) {}\n"}],
+            },
+        )
+    )
+    assert len(server.drain_server_requests()) == 1
+
+
+def test_inlay_hint_refresh_requires_workspace_client_support() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=False)
+    open_nova(server, "file:///workspace/library.nova", "fn target(value: Int) {}\n")
+    open_nova(
+        server,
+        "file:///workspace/main.nova",
+        "fn caller() { target(1); }\n",
+    )
+
+    assert server.drain_server_requests() == []
+
+
+def test_single_document_change_does_not_send_global_inlay_hint_refresh() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    uri = "file:///workspace/main.nova"
+    text = "fn target(value: Int) {} fn caller() { target(1); }\n"
+    open_nova(server, uri, text)
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [
+                    {"text": "fn target(flag: Bool) {} fn caller() { target(true); }\n"}
+                ],
+            },
+        )
+    )
+
+    assert server.drain_server_requests() == []
+
+
+def test_closing_workspace_document_requests_inlay_hint_refresh() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    library_uri = "file:///workspace/library.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(server, library_uri, "fn target(value: Int) {}\n")
+    open_nova(server, main_uri, "fn caller() { target(1); }\n")
+    first = server.drain_server_requests()[0]
+    server.handle({"jsonrpc": "2.0", "id": first["id"], "result": None})
+
+    server.handle(
+        notify(
+            "textDocument/didClose",
+            {"textDocument": {"uri": library_uri}},
+        )
+    )
+
+    refresh = server.drain_server_requests()
+    assert len(refresh) == 1
+    assert refresh[0]["method"] == "workspace/inlayHint/refresh"
