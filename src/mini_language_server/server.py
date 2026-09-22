@@ -58,6 +58,7 @@ class LanguageServer:
             message.get("jsonrpc") == "2.0"
             and "method" not in message
             and is_request
+            and ("result" in message or "error" in message)
         ):
             self._handle_server_response(message)
             return None
