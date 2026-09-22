@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
+from .constant_values import bounded_boolean_constant_value
 from .diagnostics import Diagnostic
-from .division_diagnostics import bounded_integer_constant_value
 from .loop_exit_initialization import NovaProductLanguageServer as _NovaProductLanguageServer
 from .semantic import SemanticSnapshot
 from .source import Span
@@ -49,7 +49,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             span = Span(opening + 1, closing)
             expression, span = self._trim_expression(expression, span)
             expression, span = self._unwrap_expression_with_span(expression, span)
-            constant = self._bounded_boolean_constant_value(
+            constant = bounded_boolean_constant_value(
                 code[span.start : span.end]
             )
             if constant is None:
@@ -116,7 +116,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             expression, expression_span = self._unwrap_expression_with_span(
                 expression, expression_span
             )
-            constant = self._bounded_boolean_constant_value(
+            constant = bounded_boolean_constant_value(
                 code[expression_span.start : expression_span.end]
             )
             if constant is None:
@@ -175,107 +175,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 )
 
         return tuple(diagnostics)
-
-    def _bounded_boolean_constant_value(self, expression: str) -> bool | None:
-        """Evaluate only the bounded constant grammar proven by current Nova syntax."""
-        if not expression.strip():
-            return None
-        expression, span = self._trim_expression(
-            expression, Span(0, len(expression))
-        )
-        expression, _ = self._unwrap_expression_with_span(expression, span)
-        if expression == "true":
-            return True
-        if expression == "false":
-            return False
-
-        parts = self._split_top_level_logical(
-            expression, Span(0, len(expression)), "||"
-        )
-        if parts is not None:
-            if not parts:
-                return None
-            values = [
-                self._bounded_boolean_constant_value(part)
-                for part, _ in parts
-            ]
-            return None if any(value is None for value in values) else any(values)
-
-        parts = self._split_top_level_logical(
-            expression, Span(0, len(expression)), "&&"
-        )
-        if parts is not None:
-            if not parts:
-                return None
-            values = [
-                self._bounded_boolean_constant_value(part)
-                for part, _ in parts
-            ]
-            return None if any(value is None for value in values) else all(values)
-
-        comparisons = self._top_level_comparison_operators(expression)
-        if comparisons:
-            if len(comparisons) != 1:
-                return None
-            operator, offset = comparisons[0]
-            left = expression[:offset]
-            right = expression[offset + len(operator) :]
-
-            left_integer = self._bounded_condition_integer_value(left)
-            right_integer = self._bounded_condition_integer_value(right)
-            if left_integer is not None and right_integer is not None:
-                if operator == "==":
-                    return left_integer == right_integer
-                if operator == "!=":
-                    return left_integer != right_integer
-                if operator == "<":
-                    return left_integer < right_integer
-                if operator == "<=":
-                    return left_integer <= right_integer
-                if operator == ">":
-                    return left_integer > right_integer
-                if operator == ">=":
-                    return left_integer >= right_integer
-                return None
-
-            if operator not in {"==", "!="}:
-                return None
-            left_boolean = self._bounded_boolean_constant_value(left)
-            right_boolean = self._bounded_boolean_constant_value(right)
-            if left_boolean is None or right_boolean is None:
-                return None
-            return (
-                left_boolean == right_boolean
-                if operator == "=="
-                else left_boolean != right_boolean
-            )
-
-        if expression.startswith("!") and not expression.startswith("!="):
-            operand = expression[1:]
-            value = self._bounded_boolean_constant_value(operand)
-            return None if value is None else not value
-
-        return None
-
-    @classmethod
-    def _bounded_condition_integer_value(cls, expression: str) -> int | None:
-        """Reject Nova-invalid unary plus before reusing bounded integer folding."""
-        if cls._contains_unsupported_unary_plus(expression):
-            return None
-        return bounded_integer_constant_value(expression)
-
-    @staticmethod
-    def _contains_unsupported_unary_plus(expression: str) -> bool:
-        unary_preceders = frozenset("({[=,:;!+-*/%&|<>")
-        for offset, character in enumerate(expression):
-            if character != "+":
-                continue
-            cursor = offset - 1
-            while cursor >= 0 and expression[cursor].isspace():
-                cursor -= 1
-            if cursor < 0 or expression[cursor] in unary_preceders:
-                return True
-        return False
 
     @staticmethod
     def _keyword_at(code: str, offset: int, keyword: str) -> bool:
