@@ -171,3 +171,92 @@ def test_unknown_if_condition_keeps_following_code_reachable() -> None:
     open_nova(server, uri, text)
 
     assert unreachable(server, uri) == ()
+
+def test_mixed_return_and_never_branches_mark_outer_suffix_unreachable() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() { while (true) { continue; } } "
+        "fn main(flag: Bool) { "
+        "if (flag) { halt(); } else { return; } let dead = 1; }\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = unreachable(server, uri)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].message == "unreachable code after guaranteed termination"
+    assert text[diagnostics[0].span.start : diagnostics[0].span.end] == "let dead = 1;"
+
+
+def test_divergent_while_and_return_branches_mark_outer_suffix_unreachable() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { "
+        "if (flag) { while (true) { continue; } } else { return; } "
+        "let dead = 1; }\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = unreachable(server, uri)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].message == "unreachable code after guaranteed termination"
+    assert text[diagnostics[0].span.start : diagnostics[0].span.end] == "let dead = 1;"
+
+
+def test_all_return_branches_keep_guaranteed_return_message() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { "
+        "if (flag) { return; } else { return; } let dead = 1; }\n"
+    )
+    open_nova(server, uri, text)
+
+    diagnostics = unreachable(server, uri)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].message == "unreachable code after guaranteed return"
+
+
+def test_incomplete_never_branch_does_not_kill_outer_suffix() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() { while (true) { continue; } } "
+        "fn main(flag: Bool) { if (flag) { halt(); } let live = 1; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert unreachable(server, uri) == ()
+
+
+def test_cross_file_aggregate_never_effect_rebinds_when_callee_can_return() -> None:
+    server = initialized_server()
+    helper_uri = "file:///workspace/helper.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        helper_uri,
+        "fn halt() { while (true) { continue; } }\n",
+    )
+    main_text = (
+        "fn main(flag: Bool) { "
+        "if (flag) { halt(); } else { return; } let maybe = 1; }\n"
+    )
+    open_nova(server, main_uri, main_text)
+
+    diagnostics = unreachable(server, main_uri)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].message == "unreachable code after guaranteed termination"
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": helper_uri, "version": 2},
+                "contentChanges": [{"text": "fn halt() { return; }\n"}],
+            },
+        )
+    )
+
+    assert unreachable(server, main_uri) == ()
