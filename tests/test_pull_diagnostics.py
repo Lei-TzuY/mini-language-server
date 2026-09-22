@@ -557,3 +557,46 @@ def test_workspace_folder_change_requests_diagnostic_refresh_and_expands_report(
 
     result = workspace_diagnostics(server, request_id=21)["result"]["items"]
     assert [item["uri"] for item in result] == [in_scope, outside]
+
+def test_workspace_diagnostics_reject_workspace_folder_generation_change(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize_with_workspace_folder(server)
+    in_scope = "file:///workspace/a/main.nova"
+    outside = "file:///workspace/b/other.nova"
+    open_document(server, in_scope, "fn main() {}\n")
+    open_document(server, outside, "fn other() {}\n")
+    real_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def change_scope_before_publication(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        real_checkpoint(context)
+        if calls == 2:
+            server.handle(
+                notification(
+                    "workspace/didChangeWorkspaceFolders",
+                    {
+                        "event": {
+                            "added": [
+                                {"uri": "file:///workspace/b", "name": "b"}
+                            ],
+                            "removed": [],
+                        }
+                    },
+                )
+            )
+
+    monkeypatch.setattr(
+        server.requests,
+        "checkpoint",
+        change_scope_before_publication,
+    )
+
+    assert workspace_diagnostics(server) == {
+        "jsonrpc": "2.0",
+        "id": 20,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
