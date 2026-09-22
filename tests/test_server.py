@@ -395,6 +395,7 @@ def test_semantic_requests_reject_invalid_utf16_positions() -> None:
         "error": {"code": -32602, "message": "Invalid params"},
     }
 
+
 def test_initialize_negotiates_first_supported_position_encoding() -> None:
     server = LanguageServer()
     response = server.handle(
@@ -551,6 +552,7 @@ def test_utf8_semantic_request_rejects_position_inside_code_point() -> None:
         "error": {"code": -32602, "message": "Invalid params"},
     }
 
+
 def test_push_diagnostics_render_ranges_in_negotiated_utf8_units() -> None:
     server = LanguageServer()
     server.handle(
@@ -663,6 +665,7 @@ def test_unknown_server_response_id_is_ignored() -> None:
     assert server.handle(
         {"jsonrpc": "2.0", "id": request_id, "result": None}
     ) is None
+
 
 def test_missing_method_without_response_shape_remains_invalid_request() -> None:
     server = LanguageServer()
