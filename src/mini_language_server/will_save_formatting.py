@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import implementation
 from .cancellation import RequestCancelled, StaleRequest
-from .implementation import (
-    NovaProductLanguageServer as _NovaProductLanguageServer,
-)
 from .server import ServerState
 from .source import Span
 
@@ -17,7 +15,7 @@ _DEFAULT_FORMATTING_INSERT_SPACES = True
 _FORMATTING_CONFIGURATION_SECTION = "mini-language-server.formatting"
 
 
-class NovaProductLanguageServer(_NovaProductLanguageServer):
+class NovaProductLanguageServer(implementation.NovaProductLanguageServer):
     """Final Nova product with negotiated formatting before save."""
 
     def __init__(self) -> None:
