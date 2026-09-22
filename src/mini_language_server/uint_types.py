@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from .assignment_diagnostics import _ASSIGNMENT
+from .diagnostics import Diagnostic
 from .expression_types import (
     _ADDITIVE,
     _BOUNDED_EQUALITY_TYPES,
@@ -17,7 +18,6 @@ from .expression_types import (
     _MULTIPLICATIVE,
     _ORDERING,
 )
-from .diagnostics import Diagnostic
 from .inferred_function_returns import _LOCAL_TYPE_SUFFIX
 from .local_type_diagnostics import _ANNOTATED_INITIALIZER_PREFIX
 from .return_types import _TYPED_FUNCTION
