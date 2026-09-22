@@ -175,3 +175,30 @@ def test_same_version_workspace_replacement_suppresses_stale_bare_return_result(
     current_helper = server.workspace_symbols.get(helper_uri)
     assert current_helper is not None and current_helper is not original_helper
     assert server.diagnostics.get(main_uri) is original_diagnostics
+
+def test_dead_value_return_does_not_block_unit_inference() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn noop() { if (false) { return 1; } return; }\n"
+        "fn consume(value: Int) -> Int { return value; }\n"
+        "fn main() -> Int { consume(noop()); return 0; }\n"
+    )
+    open_nova(server, uri, text)
+
+    items = diagnostics(server, uri, "nova.argument-type")
+    assert len(items) == 1
+    assert items[0].message == "argument 1 to 'consume' has type 'Unit'; expected 'Int'"
+
+
+def test_unknown_conditional_value_return_still_blocks_unit_inference() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn helper(flag: Bool) { if flag { return 1; } return; }\n"
+        "fn consume(value: Int) -> Int { return value; }\n"
+        "fn main() -> Int { consume(helper(true)); return 0; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert diagnostics(server, uri, "nova.argument-type") == []

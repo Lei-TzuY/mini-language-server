@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from .inferred_function_returns import _RETURN
 from .unit_type_actions import NovaProductLanguageServer as _NovaProductLanguageServer
 
 
@@ -32,7 +31,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         saw_bare_return = False
         saw_value_return = False
         body_code = code[opening + 1 : closing]
-        for statement in _RETURN.finditer(body_code):
+        for statement in self._reachable_return_statements(body_code):
             keyword_end = opening + 1 + statement.end()
             boundary = closing
             for delimiter in (";", "\n", "\r"):

@@ -31,7 +31,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         tail = self._bounded_tail_expression(text, code, opening + 1, closing)
         body_code = code[opening + 1 : closing]
-        if _RETURN.search(body_code) is not None:
+        if self._reachable_return_statements(body_code):
             if tail is None:
                 return super()._bounded_function_return_type(declaration, resolving)
             expression, _ = tail

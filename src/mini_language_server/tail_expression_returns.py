@@ -76,10 +76,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _bounded_tail_expression(
         text: str, code: str, start: int, end: int
     ) -> tuple[str, Span] | None:
-        """Return one top-level final expression after the last statement terminator.
+        """Return one top-level final expression after the last statement boundary.
 
         Structural scanning uses the trivia-masked view so semicolons inside strings
-        and comments cannot manufacture statement boundaries. Final edge trimming uses
+        and comments cannot manufacture statement boundaries. A top-level structural
+        block close also ends the preceding control-flow statement. Final edge trimming uses
         the original source, preserving string literals for exact expression typing.
         Comments adjacent to a candidate therefore remain conservative rather than
         being reinterpreted as expression text.
@@ -94,6 +95,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 brace_depth += 1
             elif character == "}" and brace_depth > 0:
                 brace_depth -= 1
+                if brace_depth == 0 and paren_depth == 0 and bracket_depth == 0:
+                    candidate_start = offset + 1
             elif character == "(":
                 paren_depth += 1
             elif character == ")" and paren_depth > 0:

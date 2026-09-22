@@ -215,3 +215,28 @@ def test_tail_inference_hover_honors_cancellation_checkpoint(monkeypatch) -> Non
             "error": {"code": -32800, "message": "Request cancelled"},
         }
     ]
+
+def test_dead_explicit_return_does_not_block_tail_inference() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        'fn target() { if (false) { return "dead"; } 7 } '
+        "fn caller() { target() }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_target(server, uri, 50)["result"]["contents"]["value"] == (
+        "fn target() -> Int"
+    )
+
+
+def test_unknown_conditional_return_still_blocks_tail_inference() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn target(flag: Bool) { if flag { return 1; } 7 } "
+        "fn caller() { target(true) }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_target(server, uri, 51)["result"]["contents"]["value"] == "fn target(flag: Bool)"
