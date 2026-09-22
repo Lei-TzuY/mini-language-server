@@ -251,3 +251,32 @@ def test_same_version_replacement_rebinds_missing_return_to_exact_semantics() ->
     ]
     assert len(diagnostics) == 1
     assert text[diagnostics[0].span.start : diagnostics[0].span.end] == "Int"
+
+def test_constant_true_if_without_else_proves_value_return() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn value() -> Int { if (1 < 2) { return 1; } }\n"
+    open_nova(server, uri, text)
+
+    assert missing_returns(server, uri) == []
+
+
+def test_constant_false_if_without_else_does_not_prove_value_return() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn value() -> Int { if (2 < 1) { return 1; } }\n"
+    open_nova(server, uri, text)
+
+    assert len(missing_returns(server, uri)) == 1
+
+
+def test_constant_false_if_uses_reachable_else_return_proof() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn value() -> Int { "
+        "if (2 < 1) { let dead = 0; } else { return 1; } }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert missing_returns(server, uri) == []

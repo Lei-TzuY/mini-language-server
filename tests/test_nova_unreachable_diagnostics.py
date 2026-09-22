@@ -147,3 +147,27 @@ def test_same_version_unreachable_reanalysis_rebinds_exact_semantic_parent() -> 
     assert second_diagnostic is not first_diagnostic
     assert second_diagnostic.semantic is second_semantic
     assert len(unreachable(server, uri)) == 1
+
+def test_constant_true_if_without_else_marks_following_code_unreachable() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn main() { if (1 < 2) { return; } let value = 1; }\n"
+    open_nova(server, uri, text)
+
+    diagnostics = unreachable(server, uri)
+    suffix = [
+        item
+        for item in diagnostics
+        if item.message == "unreachable code after guaranteed return"
+    ]
+    assert len(suffix) == 1
+    assert text[suffix[0].span.start : suffix[0].span.end] == "let value = 1;"
+
+
+def test_unknown_if_condition_keeps_following_code_reachable() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn main(flag: Bool) { if (flag) { return; } let value = 1; }\n"
+    open_nova(server, uri, text)
+
+    assert unreachable(server, uri) == ()

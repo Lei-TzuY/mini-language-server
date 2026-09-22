@@ -11,6 +11,7 @@ from .constant_condition_diagnostics import (
 from .constant_condition_diagnostics import (
     NovaProductLanguageServer as _NovaProductLanguageServer,
 )
+from .constant_values import bounded_boolean_constant_value
 from .diagnostics import Diagnostic
 from .source import Span
 
@@ -92,7 +93,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             expression, expression_span = self._unwrap_expression_with_span(
                 expression, expression_span
             )
-            constant = self._bounded_boolean_constant_value(
+            constant = bounded_boolean_constant_value(
                 code[expression_span.start : expression_span.end]
             )
             if constant is None:

@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any
 
+from .constant_values import bounded_boolean_constant_value
 from .diagnostics import DIAGNOSTIC_TAG_VALUES, Diagnostic
 from .expression_local_types import NovaProductLanguageServer as _NovaProductLanguageServer
 from .return_types import ReturnTypeNovaFunctionAdapter
@@ -255,42 +256,72 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _if_statement_guarantees_termination(
         self, code: str, text: str, statement_start: int, condition_prefix_end: int
     ) -> bool:
+        condition = self._if_condition_then_bounds(
+            code, statement_start, condition_prefix_end
+        )
+        if condition is None:
+            return False
+        condition_open, condition_close, then_open, then_close = condition
+        constant = bounded_boolean_constant_value(
+            code[condition_open + 1 : condition_close]
+        )
+        then_terminates = self._body_guarantees_termination(
+            code[then_open + 1 : then_close], text[then_open + 1 : then_close]
+        )
+        if constant is True:
+            return then_terminates
+
         branches = self._if_then_else_bounds(code, statement_start, condition_prefix_end)
         if branches is None:
             return False
-        then_open, then_close, else_start = branches
-        if not self._body_guarantees_termination(
-            code[then_open + 1 : then_close], text[then_open + 1 : then_close]
-        ):
-            return False
+        _, _, else_start = branches
         if code[else_start] == "{":
             else_close = self._matching_delimiter(code, else_start, "{", "}")
             if else_close is None:
                 return False
-            return self._body_guarantees_termination(
+            else_terminates = self._body_guarantees_termination(
                 code[else_start + 1 : else_close], text[else_start + 1 : else_close]
             )
-        nested_if = _IF.match(code, else_start)
-        if nested_if is None:
-            return False
-        return self._if_statement_guarantees_termination(
-            code, text, nested_if.start(), nested_if.end()
-        )
+        else:
+            nested_if = _IF.match(code, else_start)
+            if nested_if is None:
+                return False
+            else_terminates = self._if_statement_guarantees_termination(
+                code, text, nested_if.start(), nested_if.end()
+            )
+
+        if constant is False:
+            return else_terminates
+        return then_terminates and else_terminates
 
     def _if_statement_end(
         self, code: str, statement_start: int, condition_prefix_end: int
     ) -> int | None:
         branches = self._if_then_else_bounds(code, statement_start, condition_prefix_end)
-        if branches is None:
+        if branches is not None:
+            _, _, else_start = branches
+            if code[else_start] == "{":
+                else_close = self._matching_delimiter(code, else_start, "{", "}")
+                return None if else_close is None else else_close + 1
+            nested_if = _IF.match(code, else_start)
+            if nested_if is None:
+                return None
+            return self._if_statement_end(code, nested_if.start(), nested_if.end())
+
+        condition = self._if_condition_then_bounds(
+            code, statement_start, condition_prefix_end
+        )
+        if condition is None:
             return None
-        _, _, else_start = branches
-        if code[else_start] == "{":
-            else_close = self._matching_delimiter(code, else_start, "{", "}")
-            return None if else_close is None else else_close + 1
-        nested_if = _IF.match(code, else_start)
-        if nested_if is None:
-            return None
-        return self._if_statement_end(code, nested_if.start(), nested_if.end())
+        condition_open, condition_close, _, then_close = condition
+        if (
+            bounded_boolean_constant_value(
+                code[condition_open + 1 : condition_close]
+            )
+            is True
+        ):
+            return then_close + 1
+        return None
 
     @staticmethod
     def _return_statement_end(code: str, keyword_end: int) -> int:
