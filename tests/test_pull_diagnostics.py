@@ -321,6 +321,7 @@ def test_workspace_diagnostics_honor_cancellation(monkeypatch: Any) -> None:
         "error": {"code": -32800, "message": "Request cancelled"},
     }
 
+
 def test_workspace_diagnostic_refresh_is_requested_for_cross_file_change() -> None:
     server = NovaProductLanguageServer()
     initialize(server, refresh_support=True)
@@ -449,6 +450,7 @@ def test_closing_workspace_document_requests_refresh_for_remaining_document() ->
     refresh = server.drain_server_requests()
     assert len(refresh) == 1
     assert refresh[0]["method"] == "workspace/diagnostic/refresh"
+
 
 def test_stale_workspace_diagnostic_commit_does_not_request_refresh(
     monkeypatch: Any,
