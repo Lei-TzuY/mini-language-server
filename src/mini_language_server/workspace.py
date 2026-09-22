@@ -32,6 +32,21 @@ class WorkspaceReference:
 _T = TypeVar("_T")
 
 
+class WorkspaceSnapshotSet(tuple):
+    """Tuple-compatible exact workspace capture with one mutation generation."""
+
+    generation: int
+
+    def __new__(
+        cls,
+        snapshots: tuple[SemanticSnapshot, ...],
+        generation: int,
+    ):
+        value = super().__new__(cls, snapshots)
+        value.generation = generation
+        return value
+
+
 class WorkspaceSymbolIndex:
     """Index current semantic snapshots without mixing superseded generations.
 
@@ -43,15 +58,19 @@ class WorkspaceSymbolIndex:
     def __init__(self) -> None:
         self._lock = RLock()
         self._snapshots: dict[str, SemanticSnapshot] = {}
+        self._generation = 0
 
     def get(self, uri: str) -> SemanticSnapshot | None:
         with self._lock:
             return self._snapshots.get(uri)
 
-    def snapshots(self) -> tuple[SemanticSnapshot, ...]:
-        """Return the exact indexed snapshots in deterministic URI order."""
+    def snapshots(self) -> WorkspaceSnapshotSet:
+        """Return exact indexed snapshots plus the current workspace generation."""
         with self._lock:
-            return tuple(self._snapshots[uri] for uri in sorted(self._snapshots))
+            snapshots = tuple(
+                self._snapshots[uri] for uri in sorted(self._snapshots)
+            )
+            return WorkspaceSnapshotSet(snapshots, self._generation)
 
     def replace(
         self,
@@ -64,7 +83,10 @@ class WorkspaceSymbolIndex:
             current = self._snapshots.get(uri)
             if expected is not None and current is not expected:
                 raise WorkspaceIndexError("workspace snapshot was replaced")
+            if current is snapshot:
+                return
             self._snapshots[uri] = snapshot
+            self._generation += 1
 
     def remove(
         self, uri: str, *, expected: SemanticSnapshot | None = None
@@ -73,7 +95,10 @@ class WorkspaceSymbolIndex:
             current = self._snapshots.get(uri)
             if expected is not None and current is not expected:
                 raise WorkspaceIndexError("workspace snapshot was replaced")
-            return self._snapshots.pop(uri, None)
+            removed = self._snapshots.pop(uri, None)
+            if removed is not None:
+                self._generation += 1
+            return removed
 
     def declarations(self, name: str) -> tuple[WorkspaceDeclaration, ...]:
         with self._lock:
@@ -129,6 +154,11 @@ class WorkspaceSymbolIndex:
         callback: Callable[[], _T],
     ) -> _T:
         """Publish only while the complete exact semantic snapshot set is unchanged."""
+        captured_generation = (
+            snapshots.generation
+            if isinstance(snapshots, WorkspaceSnapshotSet)
+            else None
+        )
         expected_by_uri: dict[str, SemanticSnapshot] = {}
         for snapshot in snapshots:
             previous = expected_by_uri.get(snapshot.uri)
@@ -137,6 +167,11 @@ class WorkspaceSymbolIndex:
             expected_by_uri[snapshot.uri] = snapshot
 
         with self._lock:
+            if (
+                captured_generation is not None
+                and captured_generation != self._generation
+            ):
+                raise WorkspaceIndexError("workspace snapshot generation changed")
             if set(self._snapshots) != set(expected_by_uri):
                 raise WorkspaceIndexError("workspace snapshot set changed")
             for uri, snapshot in expected_by_uri.items():
