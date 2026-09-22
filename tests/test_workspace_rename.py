@@ -11,12 +11,26 @@ def notify(method: str, params: dict) -> dict:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialize(server: WorkspaceNovaLanguageServer) -> None:
-    result = server.handle(request("initialize", 1, {"capabilities": {}}))
+def initialize(
+    server: WorkspaceNovaLanguageServer, *, document_changes: bool = False
+) -> None:
+    workspace = (
+        {"workspaceEdit": {"documentChanges": True}}
+        if document_changes
+        else {}
+    )
+    result = server.handle(
+        request("initialize", 1, {"capabilities": {"workspace": workspace}})
+    )
     assert result is not None
 
 
-def open_nova(server: WorkspaceNovaLanguageServer, uri: str, text: str) -> None:
+def open_nova(
+    server: WorkspaceNovaLanguageServer,
+    uri: str,
+    text: str,
+    version: int = 1,
+) -> None:
     server.handle(
         notify(
             "textDocument/didOpen",
@@ -24,7 +38,7 @@ def open_nova(server: WorkspaceNovaLanguageServer, uri: str, text: str) -> None:
                 "textDocument": {
                     "uri": uri,
                     "languageId": "nova",
-                    "version": 1,
+                    "version": version,
                     "text": text,
                 }
             },
@@ -147,4 +161,40 @@ def test_workspace_rename_suppresses_same_version_replacement() -> None:
         "jsonrpc": "2.0",
         "id": 2,
         "error": {"code": -32801, "message": "Content modified"},
+    }
+
+def test_workspace_rename_returns_versioned_document_changes_when_negotiated() -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize(server, document_changes=True)
+    declaration_uri = "file:///workspace/library.nova"
+    caller_uri = "file:///workspace/main.nova"
+    other_uri = "file:///workspace/other.nova"
+    open_nova(server, declaration_uri, "fn target() {}\n", version=3)
+    open_nova(server, caller_uri, "fn caller() { target() }\n", version=5)
+    open_nova(server, other_uri, "fn other() { target() }\n", version=7)
+
+    result = rename(server, caller_uri)["result"]
+
+    assert "changes" not in result
+    assert [item["textDocument"] for item in result["documentChanges"]] == [
+        {"uri": declaration_uri, "version": 3},
+        {"uri": caller_uri, "version": 5},
+        {"uri": other_uri, "version": 7},
+    ]
+    assert result["documentChanges"][0]["edits"] == [
+        {
+            "range": {
+                "start": {"line": 0, "character": 3},
+                "end": {"line": 0, "character": 9},
+            },
+            "newText": "renamed",
+        }
+    ]
+    assert result["documentChanges"][1]["edits"][0]["range"]["start"] == {
+        "line": 0,
+        "character": 14,
+    }
+    assert result["documentChanges"][2]["edits"][0]["range"]["start"] == {
+        "line": 0,
+        "character": 13,
     }
