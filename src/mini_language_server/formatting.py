@@ -8,7 +8,7 @@ from .cancellation import RequestCancelled, StaleRequest
 from .lexical_nova import LexicalNovaFunctionAdapter
 from .lexical_nova import NovaProductLanguageServer as _NovaProductLanguageServer
 from .server import ServerState
-from .source import SourceText, Span
+from .source import Span
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
