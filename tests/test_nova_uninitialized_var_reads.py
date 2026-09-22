@@ -592,3 +592,29 @@ def test_cross_file_never_join_rebinds_after_annotation_change() -> None:
     )
 
     assert len(uninitialized_reads(server, main_uri)) == 1
+
+def test_inferred_never_call_arm_proves_join_initialization() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() { while (true) { continue; } } "
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { halt(); } else { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_transitive_inferred_never_call_proves_join_initialization() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() { while (true) { continue; } } "
+        "fn wrapper() { halt(); } "
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { wrapper(); } else { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert uninitialized_reads(server, uri) == []
