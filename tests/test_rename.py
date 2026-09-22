@@ -333,7 +333,7 @@ def test_document_changes_capability_must_be_literal_true() -> None:
         )
     )
     uri = "file:///workspace/main.nova"
-    open_document(server, uri, "let foo = 1\nfoo\n")
+    open_document(server, uri, "let 😀foo = 1\nfoo foo\n")
     publish_semantics(server, uri)
 
     response = server.handle(request("textDocument/rename", params=rename_params(uri)))
