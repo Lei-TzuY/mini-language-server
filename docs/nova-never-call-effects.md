@@ -1,0 +1,9 @@
+# Nova explicit never-call control-flow effects
+
+Nova already accepts the explicit function result annotation `-> !`. The final product now uses that existing annotation as a bounded semantic control-flow fact for one deliberately narrow call form: a uniquely resolved, top-level standalone call statement.
+
+For a statement such as `halt();`, when the exact current workspace contains exactly one `halt` declaration and its explicit result annotation is `!`, the call closes the current function body's fallthrough path. The existing unreachable-code pipeline can therefore mark the executable suffix after the call as `nova.unreachable-code`, and an explicitly value-returning caller does not receive `nova.missing-return` merely because its only reachable path ends in that never-returning call.
+
+The proof is workspace-semantic rather than name based. Ambiguous function declarations remain unknown, and changing a uniquely resolved target from `-> !` to another result annotation removes the termination fact on the next exact workspace diagnostic publication. Cross-file calls therefore follow the same didChange, close/reopen, same-version replacement, cancellation, and stale-result guarantees as the existing workspace diagnostics pipeline.
+
+This first slice is intentionally bounded. Calls embedded inside another expression, initializer, argument list, condition, or nested block are not promoted to termination evidence. The product also does not infer `!` for unannotated functions. A body containing a syntactic bare `return;` remains conservative for missing-return proof rather than allowing a later never call to hide a reachable non-value-return path. These restrictions avoid pretending to have a full control-flow/effect system while establishing the first executable semantic-call effect.
