@@ -255,7 +255,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         return Span(start, closing + 1)
 
     def _call_hierarchy_item(self, declaration: Any) -> dict[str, Any]:
-        source = SourceText(declaration.snapshot.symbols.syntax.document.text)
+        source = self._source_text(declaration.snapshot.symbols.syntax.document.text)
         return {
             "name": declaration.symbol.name,
             "kind": 12,
@@ -391,7 +391,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         result = []
         for key in sorted(grouped):
             caller, spans = grouped[key]
-            source = SourceText(caller.snapshot.symbols.syntax.document.text)
+            source = self._source_text(caller.snapshot.symbols.syntax.document.text)
             result.append(
                 {
                     "from": self._call_hierarchy_item(caller),
@@ -409,7 +409,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(tree, NovaFunctionSyntax):
             return []
         extent = self._function_extent(declaration)
-        source = SourceText(snapshot.symbols.syntax.document.text)
+        source = self._source_text(snapshot.symbols.syntax.document.text)
         grouped: dict[tuple[str, int], tuple[Any, list[Span]]] = {}
         for call_name, span in tree.calls:
             if not (extent.start <= span.start < extent.end):
@@ -542,7 +542,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
             declaration = declarations[0]
             if method == "textDocument/definition":
-                source = SourceText(declaration.snapshot.symbols.syntax.document.text)
+                source = self._source_text(declaration.snapshot.symbols.syntax.document.text)
                 result = self._location(
                     declaration.uri, source, declaration.symbol.span
                 )
@@ -552,7 +552,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     return self._error(request_id, -32602, "Invalid params")
                 locations: list[tuple[str, int, dict[str, Any]]] = []
                 if include_declaration:
-                    source = SourceText(declaration.snapshot.symbols.syntax.document.text)
+                    source = self._source_text(declaration.snapshot.symbols.syntax.document.text)
                     locations.append(
                         (
                             declaration.uri,
@@ -566,7 +566,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     snapshot_tree = snapshot.symbols.syntax.tree
                     if not isinstance(snapshot_tree, NovaFunctionSyntax):
                         continue
-                    source = SourceText(snapshot.symbols.syntax.document.text)
+                    source = self._source_text(snapshot.symbols.syntax.document.text)
                     for call_name, span in snapshot_tree.calls:
                         if call_name == name:
                             locations.append(
@@ -689,7 +689,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
             declaration = declarations[0]
             edits_by_uri: dict[str, list[tuple[int, dict[str, Any]]]] = {}
-            declaration_source = SourceText(
+            declaration_source = self._source_text(
                 declaration.snapshot.symbols.syntax.document.text
             )
             edits_by_uri.setdefault(declaration.uri, []).append(
@@ -708,7 +708,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 snapshot_tree = snapshot.symbols.syntax.tree
                 if not isinstance(snapshot_tree, NovaFunctionSyntax):
                     continue
-                source = SourceText(snapshot.symbols.syntax.document.text)
+                source = self._source_text(snapshot.symbols.syntax.document.text)
                 for call_name, span in snapshot_tree.calls:
                     if call_name != name:
                         continue
@@ -765,7 +765,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             self.requests.checkpoint(context)
             result = []
             for declaration in declarations:
-                source = SourceText(declaration.snapshot.symbols.syntax.document.text)
+                source = self._source_text(declaration.snapshot.symbols.syntax.document.text)
                 result.append(
                     {
                         "name": declaration.symbol.name,
