@@ -91,8 +91,8 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
             and workspace.get("configuration") is True
         )
 
-    def _workspace_scope_changed(self, before: Any, after: Any) -> None:
-        super()._workspace_scope_changed(before, after)
+    def _workspace_folder_scope_changed(self, before: Any, after: Any) -> None:
+        super()._workspace_folder_scope_changed(before, after)
         if self._workspace_configuration_support:
             self._invalidate_formatting_configuration()
 
