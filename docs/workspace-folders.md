@@ -27,6 +27,6 @@ Workspace-wide symbol search uses the complete workspace snapshot guard rather t
 
 ## Refresh integration
 
-When folder membership changes the workspace identity, already-negotiated workspace refresh channels are reused. Pull-diagnostic clients receive `workspace/diagnostic/refresh`, and reference-CodeLens clients receive `workspace/codeLens/refresh`. Existing request coalescing and response retirement continue to apply.
+When folder membership changes the workspace identity, already-negotiated workspace refresh channels are reused. Pull-diagnostic clients receive `workspace/diagnostic/refresh`, reference-CodeLens clients receive `workspace/codeLens/refresh`, and supporting inlay-hint clients receive `workspace/inlayHint/refresh`. Existing request coalescing and response retirement continue to apply.
 
 This milestone scopes the existing open-document workspace model. It does not scan closed files from disk, watch filesystem roots, or synthesize semantic snapshots for files the client has not opened.
