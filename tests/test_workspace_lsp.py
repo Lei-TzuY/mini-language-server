@@ -99,16 +99,16 @@ def test_workspace_symbol_suppresses_same_version_replacement() -> None:
     original = server.workspace_symbols.get(uri)
     assert original is not None
 
-    real_commit = server.workspace_symbols.commit_if_current
+    real_commit = server.workspace_symbols.commit_snapshots_if_current
 
-    def replace_then_commit(declarations, callback):
+    def replace_then_commit(snapshots, callback):
         document = server.documents.get(uri)
         assert document is not None
         replacement = server.nova_adapter.publish(server, document)
         server.workspace_symbols.replace(replacement, expected=original)
-        return real_commit(declarations, callback)
+        return real_commit(snapshots, callback)
 
-    server.workspace_symbols.commit_if_current = replace_then_commit  # type: ignore[method-assign]
+    server.workspace_symbols.commit_snapshots_if_current = replace_then_commit  # type: ignore[method-assign]
     result = server.handle(request("workspace/symbol", 2, {"query": "run"}))
     assert result == {
         "jsonrpc": "2.0",
@@ -281,3 +281,43 @@ def test_workspace_folder_path_boundary_does_not_match_similar_prefix() -> None:
     result = server.handle(request("workspace/symbol", 2, {"query": ""}))
     assert result is not None
     assert [item["name"] for item in result["result"]] == ["inside"]
+
+def test_workspace_symbol_rejects_scope_change_after_search_capture(
+    monkeypatch,
+) -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize_with_folders(
+        server,
+        [{"uri": "file:///workspace/a", "name": "a"}],
+    )
+    open_nova(server, "file:///workspace/a/a.nova", "fn alpha() {}\n")
+    open_nova(server, "file:///workspace/b/b.nova", "fn beta() {}\n")
+    real_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def add_folder_after_search(context) -> None:
+        nonlocal calls
+        calls += 1
+        real_checkpoint(context)
+        if calls == 2:
+            server.handle(
+                notify(
+                    "workspace/didChangeWorkspaceFolders",
+                    {
+                        "event": {
+                            "added": [
+                                {"uri": "file:///workspace/b", "name": "b"}
+                            ],
+                            "removed": [],
+                        }
+                    },
+                )
+            )
+
+    monkeypatch.setattr(server.requests, "checkpoint", add_folder_after_search)
+
+    assert server.handle(request("workspace/symbol", 2, {"query": ""})) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
