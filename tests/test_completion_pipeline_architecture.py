@@ -60,3 +60,12 @@ def test_expression_typing_capabilities_share_one_runtime_product_layer() -> Non
             "mini_language_server.logical_expression_types",
         }
     )
+
+def test_return_inference_reachability_runs_after_control_flow_analysis() -> None:
+    modules = [base.__module__ for base in NovaProductLanguageServer.__mro__]
+
+    semantic = modules.index("mini_language_server.semantic_return_reachability")
+    nested = modules.index("mini_language_server.nested_unreachable")
+    inferred = modules.index("mini_language_server.inferred_function_returns")
+
+    assert semantic < nested < inferred
