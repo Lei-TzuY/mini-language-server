@@ -135,6 +135,23 @@ class WorkspaceFolderSet:
             folders = tuple(self._folders.values())
         return any(self._contains(folder.uri, uri) for folder in folders)
 
+    def scope_uri_for(self, uri: str) -> str | None:
+        """Return the most specific configured workspace folder containing the URI."""
+        with self._lock:
+            if self._folders is None:
+                return None
+            folders = tuple(self._folders.values())
+
+        matches = [folder.uri for folder in folders if self._contains(folder.uri, uri)]
+        if not matches:
+            return None
+        return max(
+            matches,
+            key=lambda folder_uri: len(
+                urllib.parse.urlsplit(folder_uri).path.rstrip("/")
+            ),
+        )
+
     def commit_if_current(self, generation: int, callback):
         """Run a derived workspace publication only while folder scope is unchanged."""
         if not callable(callback):
