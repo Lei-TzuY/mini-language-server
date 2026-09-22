@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from .constant_values import bounded_boolean_constant_value
 from .constant_condition_diagnostics import (
     _CONTROL_FLOW_CONDITION,
     _UNREACHABLE_CODE_DIAGNOSTIC,
@@ -12,6 +11,7 @@ from .constant_condition_diagnostics import (
 from .constant_condition_diagnostics import (
     NovaProductLanguageServer as _NovaProductLanguageServer,
 )
+from .constant_values import bounded_boolean_constant_value
 from .diagnostics import Diagnostic
 from .source import Span
 
