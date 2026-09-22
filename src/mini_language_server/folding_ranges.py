@@ -113,7 +113,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 self.requests.checkpoint(context)
                 return self._current_semantic_result(semantics, request_id, [])
 
-            source = SourceText(document.text)
+            source = self._source_text(document.text)
             code = self.nova_adapter.code_view(document.text)
             line_ranges: set[tuple[int, int]] = set()
 
