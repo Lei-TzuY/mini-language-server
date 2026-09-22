@@ -221,7 +221,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         code: str,
         text: str,
         *,
-        include_explicit_never_calls: bool = False,
+        include_never_calls: bool = False,
     ) -> tuple[int, str] | None:
         candidates: list[tuple[int, int, str]] = []
         for statement in _RETURN.finditer(code):
@@ -257,9 +257,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 (statement_start, statement_end, "non-fallthrough while")
             )
 
-        if include_explicit_never_calls:
+        if include_never_calls:
             for statement_start, statement_end in (
-                self._top_level_explicit_never_call_statements(code, text)
+                self._top_level_never_call_statements(code, text)
             ):
                 candidates.append(
                     (statement_start, statement_end, "never-returning call")
