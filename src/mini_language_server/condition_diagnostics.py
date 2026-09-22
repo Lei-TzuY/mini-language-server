@@ -188,11 +188,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 continue
             body_code = code[opening + 1 : closing]
             body_text = text[opening + 1 : closing]
-            termination = self._first_guaranteed_termination(
-                body_code,
-                body_text,
-                include_explicit_never_calls=True,
-            )
+            termination = self._first_guaranteed_termination(body_code, body_text)
             if termination is None:
                 continue
             termination_end, termination_kind = termination
