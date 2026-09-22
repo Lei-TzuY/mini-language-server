@@ -178,6 +178,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     def _bounded_boolean_constant_value(self, expression: str) -> bool | None:
         """Evaluate only the bounded constant grammar proven by current Nova syntax."""
+        if not expression.strip():
+            return None
         expression, span = self._trim_expression(
             expression, Span(0, len(expression))
         )
