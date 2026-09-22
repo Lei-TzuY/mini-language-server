@@ -7,6 +7,7 @@ from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
+from .documents import Document
 from .nova import NovaFunctionSyntax, NovaLanguageServer
 from .semantic import SemanticError
 from .server import ServerState
@@ -189,7 +190,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if before.generation != after.generation:
             self._workspace_scope_changed(before, after)
 
-    def _workspace_documents(self):
+    def _workspace_documents(self) -> tuple[Document, ...]:
         return tuple(
             document
             for document in self.documents.snapshots()
