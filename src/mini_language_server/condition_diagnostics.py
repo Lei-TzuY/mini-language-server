@@ -217,7 +217,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         return tuple(diagnostics)
 
     def _first_guaranteed_termination(
-        self, code: str, text: str
+        self,
+        code: str,
+        text: str,
+        *,
+        include_explicit_never_calls: bool = False,
     ) -> tuple[int, str] | None:
         candidates: list[tuple[int, int, str]] = []
         for statement in _RETURN.finditer(code):
@@ -252,6 +256,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             candidates.append(
                 (statement_start, statement_end, "non-fallthrough while")
             )
+
+        if include_explicit_never_calls:
+            for statement_start, statement_end in (
+                self._top_level_explicit_never_call_statements(code, text)
+            ):
+                candidates.append(
+                    (statement_start, statement_end, "never-returning call")
+                )
 
         if not candidates:
             return None

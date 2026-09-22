@@ -82,6 +82,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             guarantees_value_return = self._body_guarantees_value_return(
                 body_code, body_text
             )
+            if (
+                not guarantees_value_return
+                and not self._body_has_bare_return(body_code, body_text)
+                and self._top_level_explicit_never_call_statements(
+                    body_code, body_text
+                )
+            ):
+                guarantees_value_return = True
             for statement in _RETURN.finditer(body_code):
                 keyword_end = opening + 1 + statement.end()
                 boundary = len(text)
@@ -187,6 +195,68 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if constant is False:
             return else_returns
         return then_returns and else_returns
+
+    def _top_level_explicit_never_call_statements(
+        self, code: str, text: str
+    ) -> tuple[tuple[int, int], ...]:
+        """Return direct top-level call statements whose unique target is explicit never."""
+        statements: list[tuple[int, int]] = []
+        for match in _CALL_EXPRESSION.finditer(code):
+            start = match.start("name")
+            if self._brace_depth_before(code, start) != 0:
+                continue
+
+            boundary = max(
+                code.rfind(";", 0, start),
+                code.rfind("\n", 0, start),
+                code.rfind("\r", 0, start),
+                code.rfind("}", 0, start),
+            )
+            if code[boundary + 1 : start].strip():
+                continue
+
+            name = match.group("name")
+            expression = text[start:]
+            parsed = self._call_argument_bounds(expression, len(name))
+            if parsed is None:
+                continue
+            closing = parsed[1]
+            call_end = start + closing + 1
+
+            statement_boundary = len(code)
+            for delimiter in (";", "\n", "\r"):
+                found = code.find(delimiter, call_end)
+                if found >= 0:
+                    statement_boundary = min(statement_boundary, found)
+            if code[call_end:statement_boundary].strip():
+                continue
+            if self._explicit_function_result_annotation(name) != "!":
+                continue
+
+            statement_end = statement_boundary
+            if statement_end < len(code):
+                statement_end += 1
+            statements.append((start, statement_end))
+
+        return tuple(statements)
+
+    def _explicit_function_result_annotation(self, name: str) -> str | None:
+        declarations = tuple(
+            declaration
+            for declaration in self.workspace_symbols.declarations(name)
+            if declaration.symbol.kind == "function"
+        )
+        if len(declarations) != 1:
+            return None
+        signature = self._function_signature(declarations[0])
+        annotation = _RETURN_ANNOTATION.search(signature)
+        return None if annotation is None else annotation.group("type")
+
+    def _body_has_bare_return(self, code: str, text: str) -> bool:
+        return any(
+            not self._return_statement_has_value(text, statement.end())
+            for statement in _RETURN.finditer(code)
+        )
 
     @staticmethod
     def _return_statement_has_value(text: str, keyword_end: int) -> bool:
@@ -299,18 +369,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if code[closing + 1 :].strip():
             return None
 
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(match.group("name"))
-            if declaration.symbol.kind == "function"
-        )
-        if len(declarations) != 1:
-            return None
-        signature = self._function_signature(declarations[0])
-        annotation = _RETURN_ANNOTATION.search(signature)
-        if annotation is None:
-            return None
-        result_type = annotation.group("type")
+        result_type = self._explicit_function_result_annotation(match.group("name"))
         return result_type if result_type in _VALUE_RETURN_TYPES else None
 
     @staticmethod

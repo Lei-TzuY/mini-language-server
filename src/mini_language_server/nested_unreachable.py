@@ -34,14 +34,25 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     text[opening + 1 : closing],
                     base_offset=opening + 1,
                     loop_depth=0,
+                    include_explicit_never_calls=True,
                 )
             )
         return tuple(diagnostics)
 
     def _unreachable_in_body(
-        self, code: str, text: str, *, base_offset: int, loop_depth: int
+        self,
+        code: str,
+        text: str,
+        *,
+        base_offset: int,
+        loop_depth: int,
+        include_explicit_never_calls: bool = False,
     ) -> tuple[Diagnostic, ...]:
-        termination = self._first_guaranteed_termination(code, text)
+        termination = self._first_guaranteed_termination(
+            code,
+            text,
+            include_explicit_never_calls=include_explicit_never_calls,
+        )
         if termination is None:
             termination_end = None
             termination_kind = "guaranteed return"
