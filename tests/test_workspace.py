@@ -126,3 +126,29 @@ def test_complete_snapshot_guard_allows_duplicate_identity_but_not_conflicting_u
     assert index.commit_snapshots_if_current((current, current), lambda: "ok") == "ok"
     with pytest.raises(WorkspaceIndexError, match="conflicting URIs"):
         index.commit_snapshots_if_current((current, conflicting), lambda: None)
+
+def test_complete_snapshot_guard_rejects_remove_readd_same_snapshot_aba() -> None:
+    index = WorkspaceSymbolIndex()
+    current = snapshot("file:///workspace/main.nova", "current")
+    index.replace(current)
+    captured = index.snapshots()
+
+    assert index.remove(current.uri, expected=current) is current
+    index.replace(current)
+
+    with pytest.raises(WorkspaceIndexError, match="generation changed"):
+        index.commit_snapshots_if_current(captured, lambda: None)
+
+
+def test_workspace_snapshot_capture_remains_tuple_compatible() -> None:
+    index = WorkspaceSymbolIndex()
+    first = snapshot("file:///workspace/a.nova", "alpha")
+    second = snapshot("file:///workspace/b.nova", "beta")
+    index.replace(second)
+    index.replace(first)
+
+    captured = index.snapshots()
+
+    assert isinstance(captured, tuple)
+    assert tuple(captured) == (first, second)
+    assert captured.generation > 0
