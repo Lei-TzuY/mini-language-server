@@ -598,3 +598,68 @@ def test_push_diagnostics_render_ranges_in_negotiated_utf8_units() -> None:
             },
         }
     ]
+
+def test_server_request_outbox_tracks_result_response() -> None:
+    server = LanguageServer()
+    request_id = server._queue_server_request("workspace/diagnostic/refresh")
+
+    assert server._has_pending_server_request("workspace/diagnostic/refresh")
+    assert server.drain_server_requests() == [
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "workspace/diagnostic/refresh",
+        }
+    ]
+    assert server.drain_server_requests() == []
+
+    assert server.handle(
+        {"jsonrpc": "2.0", "id": request_id, "result": None}
+    ) is None
+    assert not server._has_pending_server_request("workspace/diagnostic/refresh")
+
+
+def test_server_request_error_response_clears_pending_request() -> None:
+    server = LanguageServer()
+    request_id = server._queue_server_request("workspace/diagnostic/refresh")
+    server.drain_server_requests()
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32603, "message": "client failure"},
+        }
+    ) is None
+    assert not server._has_pending_server_request("workspace/diagnostic/refresh")
+
+
+def test_malformed_server_response_does_not_consume_pending_request() -> None:
+    server = LanguageServer()
+    request_id = server._queue_server_request("workspace/diagnostic/refresh")
+    server.drain_server_requests()
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": None,
+            "error": {"code": -32603, "message": "invalid mixed response"},
+        }
+    ) is None
+    assert server._has_pending_server_request("workspace/diagnostic/refresh")
+
+
+def test_unknown_server_response_id_is_ignored() -> None:
+    server = LanguageServer()
+    request_id = server._queue_server_request("workspace/diagnostic/refresh")
+    server.drain_server_requests()
+
+    assert server.handle(
+        {"jsonrpc": "2.0", "id": "server:unknown", "result": None}
+    ) is None
+    assert server._has_pending_server_request("workspace/diagnostic/refresh")
+
+    assert server.handle(
+        {"jsonrpc": "2.0", "id": request_id, "result": None}
+    ) is None
