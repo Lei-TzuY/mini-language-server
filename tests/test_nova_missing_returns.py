@@ -355,3 +355,33 @@ def test_if_paths_may_mix_value_return_and_proven_divergence() -> None:
     open_nova(server, uri, text)
 
     assert missing_returns(server, uri) == []
+
+def test_did_change_rebinds_divergent_loop_return_proof() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        "fn value(flag: Bool) -> Int { while (true) { continue; } }\n",
+        version=1,
+    )
+    assert missing_returns(server, uri) == []
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [
+                    {
+                        "text": (
+                            "fn value(flag: Bool) -> Int { "
+                            "while (flag) { continue; } }\n"
+                        )
+                    }
+                ],
+            },
+        )
+    )
+
+    assert len(missing_returns(server, uri)) == 1
