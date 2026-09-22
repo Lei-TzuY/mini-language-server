@@ -301,6 +301,7 @@ def test_did_change_rebinds_else_if_join_to_current_snapshot() -> None:
     )
     assert uninitialized_reads(server, uri) == []
 
+
 def test_constant_true_if_assignment_initializes_outer_read_without_else() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
