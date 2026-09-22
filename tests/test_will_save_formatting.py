@@ -13,13 +13,23 @@ def notify(method: str, params: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialize(server: NovaProductLanguageServer, *, supported: bool = True) -> dict[str, Any]:
+def initialize(
+    server: NovaProductLanguageServer,
+    *,
+    supported: bool = True,
+    configuration: bool = False,
+) -> dict[str, Any]:
     synchronization = {"willSaveWaitUntil": True} if supported else {}
     result = server.handle(
         request(
             "initialize",
             1,
-            {"capabilities": {"textDocument": {"synchronization": synchronization}}},
+            {
+                "capabilities": {
+                    "textDocument": {"synchronization": synchronization},
+                    "workspace": {"configuration": configuration},
+                }
+            },
         )
     )
     assert result is not None
@@ -155,3 +165,190 @@ def test_will_save_honors_cancellation_before_publication() -> None:
         "id": 9,
         "error": {"code": -32800, "message": "Request cancelled"},
     }
+
+def test_initialized_requests_formatting_configuration_when_supported() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, configuration=True)
+    assert server.drain_server_requests() == []
+
+    assert server.handle(notify("initialized", {})) is None
+    requests = server.drain_server_requests()
+
+    assert requests == [
+        {
+            "jsonrpc": "2.0",
+            "id": "server:1",
+            "method": "workspace/configuration",
+            "params": {
+                "items": [
+                    {"section": "mini-language-server.formatting"},
+                ]
+            },
+        }
+    ]
+
+
+def test_workspace_configuration_controls_will_save_indentation() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, configuration=True)
+    server.handle(notify("initialized", {}))
+    config_request = server.drain_server_requests()[0]
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": config_request["id"],
+            "result": [{"tabSize": 2, "insertSpaces": False}],
+        }
+    ) is None
+
+    uri = "file:///workspace/main.nova"
+    source = "fn main() {\nreturn 1\n}\n"
+    open_nova(server, uri, source)
+
+    result = will_save(server, uri)["result"]
+    assert result[0]["newText"] == "fn main() {\n\treturn 1\n}\n"
+
+
+def test_configuration_change_invalidates_pending_response_and_refetches() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, configuration=True)
+    server.handle(notify("initialized", {}))
+    first = server.drain_server_requests()[0]
+
+    server.handle(
+        notify(
+            "workspace/didChangeConfiguration",
+            {"settings": {"ignored": "notification payload"}},
+        )
+    )
+    assert server.drain_server_requests() == []
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": first["id"],
+            "result": [{"tabSize": 2, "insertSpaces": False}],
+        }
+    ) is None
+    second = server.drain_server_requests()
+    assert len(second) == 1
+    assert second[0]["method"] == "workspace/configuration"
+    assert second[0]["id"] != first["id"]
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": second[0]["id"],
+            "result": [{"tabSize": 3, "insertSpaces": True}],
+        }
+    ) is None
+
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() {\nreturn 1\n}\n")
+    result = will_save(server, uri)["result"]
+    assert result[0]["newText"] == "fn main() {\n   return 1\n}\n"
+
+
+def test_configuration_error_preserves_last_valid_settings_and_rearms_on_change() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, configuration=True)
+    server.handle(notify("initialized", {}))
+    first = server.drain_server_requests()[0]
+    server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": first["id"],
+            "result": [{"tabSize": 2, "insertSpaces": False}],
+        }
+    )
+
+    server.handle(notify("workspace/didChangeConfiguration", {"settings": {}}))
+    second = server.drain_server_requests()[0]
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": second["id"],
+            "error": {"code": -32603, "message": "configuration unavailable"},
+        }
+    ) is None
+
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() {\nreturn 1\n}\n")
+    assert will_save(server, uri)["result"][0]["newText"] == (
+        "fn main() {\n\treturn 1\n}\n"
+    )
+
+    server.handle(notify("workspace/didChangeConfiguration", {"settings": {}}))
+    third = server.drain_server_requests()
+    assert len(third) == 1
+    assert third[0]["method"] == "workspace/configuration"
+
+
+def test_null_configuration_restores_default_save_formatting() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, configuration=True)
+    server.handle(notify("initialized", {}))
+    first = server.drain_server_requests()[0]
+    server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": first["id"],
+            "result": [{"tabSize": 2, "insertSpaces": False}],
+        }
+    )
+
+    server.handle(notify("workspace/didChangeConfiguration", {"settings": {}}))
+    second = server.drain_server_requests()[0]
+    server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": second["id"],
+            "result": [None],
+        }
+    )
+
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() {\nreturn 1\n}\n")
+    assert will_save(server, uri)["result"][0]["newText"] == (
+        "fn main() {\n    return 1\n}\n"
+    )
+
+
+def test_invalid_configuration_does_not_replace_last_valid_settings() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, configuration=True)
+    server.handle(notify("initialized", {}))
+    first = server.drain_server_requests()[0]
+    server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": first["id"],
+            "result": [{"tabSize": 2, "insertSpaces": False}],
+        }
+    )
+
+    server.handle(notify("workspace/didChangeConfiguration", {"settings": {}}))
+    second = server.drain_server_requests()[0]
+    server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": second["id"],
+            "result": [{"tabSize": 0, "insertSpaces": "yes"}],
+        }
+    )
+
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() {\nreturn 1\n}\n")
+    assert will_save(server, uri)["result"][0]["newText"] == (
+        "fn main() {\n\treturn 1\n}\n"
+    )
+
+
+def test_no_workspace_configuration_capability_sends_no_configuration_request() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, configuration=False)
+    server.handle(notify("initialized", {}))
+    server.handle(notify("workspace/didChangeConfiguration", {"settings": {}}))
+
+    assert server.drain_server_requests() == []
