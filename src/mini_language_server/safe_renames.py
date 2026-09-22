@@ -7,7 +7,6 @@ from typing import Any
 from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .code_lenses import NovaProductLanguageServer as _NovaProductLanguageServer
 from .nova import NovaFunctionSyntax
-from .source import SourceText
 from .workspace import WorkspaceIndexError
 
 
