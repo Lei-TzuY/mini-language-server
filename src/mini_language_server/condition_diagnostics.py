@@ -238,16 +238,27 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         for statement in _IF.finditer(code):
             if self._brace_depth_before(code, statement.start()) != 0:
                 continue
-            if not self._if_statement_guarantees_termination(
+            return_only = self._if_statement_guarantees_return_only(
                 code, text, statement.start(), statement.end()
+            )
+            if return_only:
+                termination_kind = "guaranteed return"
+            elif self._if_statement_guarantees_termination(
+                code,
+                text,
+                statement.start(),
+                statement.end(),
+                include_never_calls=include_never_calls,
             ):
+                termination_kind = "guaranteed termination"
+            else:
                 continue
             statement_end = self._if_statement_end(
                 code, statement.start(), statement.end()
             )
             if statement_end is not None:
                 candidates.append(
-                    (statement.start(), statement_end, "guaranteed return")
+                    (statement.start(), statement_end, termination_kind)
                 )
 
         for statement_start, statement_end in proven_non_fallthrough_while_spans(code):
@@ -274,20 +285,20 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         termination = self._first_guaranteed_termination(code, text)
         return None if termination is None else termination[0]
 
-    def _body_guarantees_termination(self, code: str, text: str) -> bool:
+    def _body_guarantees_return_only(self, code: str, text: str) -> bool:
         for statement in _RETURN.finditer(code):
             if self._brace_depth_before(code, statement.start()) == 0:
                 return True
         for statement in _IF.finditer(code):
             if self._brace_depth_before(code, statement.start()) != 0:
                 continue
-            if self._if_statement_guarantees_termination(
+            if self._if_statement_guarantees_return_only(
                 code, text, statement.start(), statement.end()
             ):
                 return True
         return False
 
-    def _if_statement_guarantees_termination(
+    def _if_statement_guarantees_return_only(
         self, code: str, text: str, statement_start: int, condition_prefix_end: int
     ) -> bool:
         condition = self._if_condition_then_bounds(
@@ -299,8 +310,87 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         constant = bounded_boolean_constant_value(
             code[condition_open + 1 : condition_close]
         )
-        then_terminates = self._body_guarantees_termination(
+        then_returns = self._body_guarantees_return_only(
             code[then_open + 1 : then_close], text[then_open + 1 : then_close]
+        )
+        if constant is True:
+            return then_returns
+
+        branches = self._if_then_else_bounds(code, statement_start, condition_prefix_end)
+        if branches is None:
+            return False
+        _, _, else_start = branches
+        if code[else_start] == "{":
+            else_close = self._matching_delimiter(code, else_start, "{", "}")
+            if else_close is None:
+                return False
+            else_returns = self._body_guarantees_return_only(
+                code[else_start + 1 : else_close], text[else_start + 1 : else_close]
+            )
+        else:
+            nested_if = _IF.match(code, else_start)
+            if nested_if is None:
+                return False
+            else_returns = self._if_statement_guarantees_return_only(
+                code, text, nested_if.start(), nested_if.end()
+            )
+
+        if constant is False:
+            return else_returns
+        return then_returns and else_returns
+
+    def _body_guarantees_termination(
+        self,
+        code: str,
+        text: str,
+        *,
+        include_never_calls: bool = False,
+    ) -> bool:
+        for statement in _RETURN.finditer(code):
+            if self._brace_depth_before(code, statement.start()) == 0:
+                return True
+        for statement in _IF.finditer(code):
+            if self._brace_depth_before(code, statement.start()) != 0:
+                continue
+            if self._if_statement_guarantees_termination(
+                code,
+                text,
+                statement.start(),
+                statement.end(),
+                include_never_calls=include_never_calls,
+            ):
+                return True
+        if any(
+            self._brace_depth_before(code, statement_start) == 0
+            for statement_start, _ in proven_non_fallthrough_while_spans(code)
+        ):
+            return True
+        return include_never_calls and bool(
+            self._top_level_never_call_statements(code, text)
+        )
+
+    def _if_statement_guarantees_termination(
+        self,
+        code: str,
+        text: str,
+        statement_start: int,
+        condition_prefix_end: int,
+        *,
+        include_never_calls: bool = False,
+    ) -> bool:
+        condition = self._if_condition_then_bounds(
+            code, statement_start, condition_prefix_end
+        )
+        if condition is None:
+            return False
+        condition_open, condition_close, then_open, then_close = condition
+        constant = bounded_boolean_constant_value(
+            code[condition_open + 1 : condition_close]
+        )
+        then_terminates = self._body_guarantees_termination(
+            code[then_open + 1 : then_close],
+            text[then_open + 1 : then_close],
+            include_never_calls=include_never_calls,
         )
         if constant is True:
             return then_terminates
@@ -314,14 +404,20 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if else_close is None:
                 return False
             else_terminates = self._body_guarantees_termination(
-                code[else_start + 1 : else_close], text[else_start + 1 : else_close]
+                code[else_start + 1 : else_close],
+                text[else_start + 1 : else_close],
+                include_never_calls=include_never_calls,
             )
         else:
             nested_if = _IF.match(code, else_start)
             if nested_if is None:
                 return False
             else_terminates = self._if_statement_guarantees_termination(
-                code, text, nested_if.start(), nested_if.end()
+                code,
+                text,
+                nested_if.start(),
+                nested_if.end(),
+                include_never_calls=include_never_calls,
             )
 
         if constant is False:
