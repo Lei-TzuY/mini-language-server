@@ -85,7 +85,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         requested_span: Span | None = None,
     ) -> list[int]:
         source = self._source_text(text)
-        data = encode_semantic_tokens(\n            symbols,\n            requested_span=requested_span,\n            position_encoding=self.position_encoding,\n        )
+        data = encode_semantic_tokens(
+            symbols,
+            requested_span=requested_span,
+            position_encoding=self.position_encoding,
+        )
         decoded = self._decode_semantic_tokens(data)
         occupied = {(line, character, length) for line, character, length, _, _ in decoded}
 
