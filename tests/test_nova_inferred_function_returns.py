@@ -353,3 +353,39 @@ def test_bounded_expression_result_flows_into_argument_validation() -> None:
     open_nova(server, uri, text)
 
     assert "nova.argument-type" in diagnostic_codes(server, uri)
+
+def test_proven_dead_conflicting_return_does_not_poison_inference() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        'fn helper() { if (false) { return "dead"; } return 1; } '
+        "fn main() { let value = helper() value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: Int"
+
+
+def test_constant_else_if_chain_filters_only_proven_dead_returns() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        'fn helper() { if (false) { return "dead"; } '
+        'else if (true) { return 1; } else { return "also dead"; } } '
+        "fn main() { let value = helper() value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value: Int"
+
+
+def test_unknown_conditional_conflicting_return_remains_conservative() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        'fn helper(flag: Bool) { if flag { return "maybe"; } return 1; } '
+        "fn main() { let value = helper(true) value }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert hover_value(server, uri, text) == "variable value"
