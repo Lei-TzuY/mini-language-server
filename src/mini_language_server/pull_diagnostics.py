@@ -10,6 +10,7 @@ from .diagnostics import DiagnosticError, DiagnosticSnapshot
 from .documents import Document, DocumentError
 from .folding_ranges import NovaProductLanguageServer as _NovaProductLanguageServer
 from .server import ServerState
+from .workspace_folders import WorkspaceFolderError
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -113,6 +114,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             old is new for old, new in zip(left, right, strict=True)
         )
 
+    def _workspace_scope_changed(self, before: Any, after: Any) -> None:
+        super()._workspace_scope_changed(before, after)
+        if self._workspace_diagnostics_publish_succeeded:
+            self._queue_diagnostic_refresh()
+
     def _queue_diagnostic_refresh(self) -> None:
         if not self._diagnostic_refresh_support:
             return
@@ -185,7 +191,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         try:
             self.requests.checkpoint(context)
-            documents = self.documents.snapshots()
+            folder_generation = self.workspace_folders.generation
+            documents = self._workspace_documents()
             reports: list[dict[str, Any]] = []
             diagnostic_snapshots: list[DiagnosticSnapshot] = []
             for document in documents:
@@ -205,14 +212,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
             self.requests.checkpoint(context)
             try:
-                return self.documents.commit_all_if_current(
-                    documents,
-                    lambda: self.diagnostics.commit_all_if_current(
-                        diagnostic_snapshots,
-                        lambda: self._result(request_id, {"items": reports}),
+                return self.workspace_folders.commit_if_current(
+                    folder_generation,
+                    lambda: self.documents.commit_subset_if_current(
+                        documents,
+                        lambda: self.diagnostics.commit_all_if_current(
+                            diagnostic_snapshots,
+                            lambda: self._result(request_id, {"items": reports}),
+                        ),
                     ),
                 )
-            except (DocumentError, DiagnosticError):
+            except (DocumentError, DiagnosticError, WorkspaceFolderError):
                 return self._error(request_id, -32801, "Content modified")
         except RequestCancelled:
             return self._error(request_id, -32800, "Request cancelled")
