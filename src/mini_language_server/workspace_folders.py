@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 from threading import RLock
 from typing import Any, TypeVar
-from urllib.parse import urlsplit
 
 
 _T = TypeVar("_T")
@@ -155,8 +155,8 @@ class WorkspaceFolderSet:
     @staticmethod
     def _contains(folder_uri: str, document_uri: str) -> bool:
         try:
-            folder = urlsplit(folder_uri)
-            document = urlsplit(document_uri)
+            folder = urllib.parse.urlsplit(folder_uri)
+            document = urllib.parse.urlsplit(document_uri)
         except ValueError:
             return False
         if (
