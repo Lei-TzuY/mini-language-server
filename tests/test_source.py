@@ -61,3 +61,33 @@ def test_range_from_span_rejects_span_past_document_end() -> None:
 
     with pytest.raises(SourceError, match="span is outside"):
         source.range_from_span(Span(0, 4))
+
+def test_source_text_maps_utf8_positions_and_offsets() -> None:
+    source = SourceText("a😀β", position_encoding="utf-8")
+
+    assert source.offset_at(Position(0, 0)) == 0
+    assert source.offset_at(Position(0, 1)) == 1
+    assert source.offset_at(Position(0, 5)) == 2
+    assert source.offset_at(Position(0, 7)) == 3
+    assert source.position_at(2) == Position(0, 5)
+    assert source.position_at(3) == Position(0, 7)
+
+
+def test_source_text_rejects_position_inside_utf8_code_point() -> None:
+    source = SourceText("a😀b", position_encoding="utf-8")
+
+    with pytest.raises(SourceError, match="UTF-8 code point"):
+        source.offset_at(Position(0, 3))
+
+
+def test_utf8_span_range_round_trip_uses_byte_units() -> None:
+    source = SourceText("α😀z", position_encoding="utf-8")
+    span = Span(1, 2)
+
+    assert source.range_from_span(span) == (Position(0, 2), Position(0, 6))
+    assert source.span_from_range(Position(0, 2), Position(0, 6)) == span
+
+
+def test_source_text_rejects_unknown_position_encoding() -> None:
+    with pytest.raises(SourceError, match="unsupported position encoding"):
+        SourceText("abc", position_encoding="utf-32")
