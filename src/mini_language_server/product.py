@@ -8,7 +8,7 @@ from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic, DiagnosticError
 from .nova import NovaFunctionSyntax
 from .server import ServerState
-from .source import Position, SourceError, SourceText, Span
+from .source import Position, SourceError, Span
 from .workspace import WorkspaceIndexError
 from .workspace_lsp import WorkspaceNovaLanguageServer
 
