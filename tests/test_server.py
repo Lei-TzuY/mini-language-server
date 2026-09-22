@@ -1,3 +1,4 @@
+from mini_language_server.diagnostics import Diagnostic
 from mini_language_server.semantic import Reference
 from mini_language_server.server import LanguageServer, ServerState
 from mini_language_server.source import Span
@@ -549,3 +550,51 @@ def test_utf8_semantic_request_rejects_position_inside_code_point() -> None:
         "id": 1,
         "error": {"code": -32602, "message": "Invalid params"},
     }
+
+def test_push_diagnostics_render_ranges_in_negotiated_utf8_units() -> None:
+    server = LanguageServer()
+    server.handle(
+        request(
+            "initialize",
+            params={
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-8"]},
+                }
+            },
+        )
+    )
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "😀foo")
+    symbol = Symbol("foo", "variable", Span(1, 4))
+    publish_semantics(server, uri, [symbol], [])
+    semantic = server.semantics.get(uri)
+    assert semantic is not None
+
+    assert server.publish_diagnostics(
+        semantic,
+        [Diagnostic(Span(1, 4), "example", code="example", source="test")],
+    )
+    notifications = server.drain_notifications()
+
+    assert notifications == [
+        {
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": uri,
+                "version": 1,
+                "diagnostics": [
+                    {
+                        "range": {
+                            "start": {"line": 0, "character": 4},
+                            "end": {"line": 0, "character": 7},
+                        },
+                        "severity": 1,
+                        "message": "example",
+                        "code": "example",
+                        "source": "test",
+                    }
+                ],
+            },
+        }
+    ]
