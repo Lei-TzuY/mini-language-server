@@ -8,8 +8,11 @@ from typing import Any
 from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
 from .nova import NovaFunctionSyntax, NovaLanguageServer
+from .semantic import SemanticError
 from .server import ServerState
 from .source import Span
+from .symbols import SymbolError
+from .syntax import SyntaxError
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
 from .workspace_folders import WorkspaceFolderError, WorkspaceFolderSet
 
@@ -161,7 +164,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 document is not None
                 and document.language_id == self.nova_adapter.language_id
             ):
-                with suppress(Exception):
+                with suppress(SyntaxError, SymbolError, SemanticError):
                     self.nova_adapter.publish(self, document)
             with suppress(WorkspaceIndexError):
                 self.workspace_symbols.remove(snapshot.uri, expected=snapshot)
