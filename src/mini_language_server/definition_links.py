@@ -7,7 +7,7 @@ from typing import Any
 from .nova import NovaFunctionSyntax
 from .semantic import SemanticError, SemanticSnapshot
 from .server import ServerState
-from .source import SourceText, Span
+from .source import Span
 from .will_save_formatting import NovaProductLanguageServer as _NovaProductLanguageServer
 from .workspace import WorkspaceIndexError
 
