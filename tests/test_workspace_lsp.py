@@ -232,6 +232,21 @@ def test_workspace_folder_add_and_remove_rebind_open_cross_file_calls() -> None:
     assert "nova.unresolved-function" in diagnostic_codes(server, caller)
     assert server.workspace_symbols.get(provider) is None
 
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [{"uri": "file:///workspace/b", "name": "b"}],
+                    "removed": [],
+                }
+            },
+        )
+    )
+
+    assert "nova.unresolved-function" not in diagnostic_codes(server, caller)
+    assert server.workspace_symbols.get(provider) is server.semantics.get(provider)
+
 
 def test_out_of_scope_document_keeps_local_semantics_but_not_workspace_membership() -> None:
     server = WorkspaceNovaLanguageServer()
