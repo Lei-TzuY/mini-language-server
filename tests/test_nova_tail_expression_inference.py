@@ -346,7 +346,7 @@ def test_aggregate_dead_return_does_not_compete_with_reachable_return() -> None:
     text = (
         'fn halt() { while (true) { continue; } } '
         'fn target(flag: Bool) { '
-        'if flag { halt(); } else { return 1; } return "dead"; } '
+        'if (flag) { halt(); } else { return 1; } return "dead"; } '
         "fn caller() { target(true) }\n"
     )
     open_nova(server, uri, text)
