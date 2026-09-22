@@ -378,3 +378,109 @@ def test_unknown_if_condition_still_requires_complete_join() -> None:
     open_nova(server, uri, text)
 
     assert len(uninitialized_reads(server, uri)) == 1
+
+def test_divergent_if_arm_does_not_require_assignment_at_join() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { while (true) { continue; } } "
+        "else { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_divergent_else_arm_does_not_require_assignment_at_join() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { value = 1; } "
+        "else { while (1 < 2) { continue; } } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_reachable_break_in_arm_keeps_join_initialization_conservative() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { while (true) { break; } } "
+        "else { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert len(uninitialized_reads(server, uri)) == 1
+
+
+def test_dead_branch_break_does_not_restore_divergent_arm_fallthrough() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { while (true) { if (false) { break; } continue; } } "
+        "else { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_unknown_branch_break_keeps_join_initialization_conservative() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool, exit_loop: Bool) { var value: Int; "
+        "if flag { while (true) { if (exit_loop) { break; } } } "
+        "else { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert len(uninitialized_reads(server, uri)) == 1
+
+
+def test_nested_loop_break_does_not_exit_divergent_arm() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool, nested: Bool) { var value: Int; "
+        "if flag { while (true) { while (nested) { break; } continue; } } "
+        "else { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_did_change_rebinds_divergent_join_initialization() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    divergent = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { while (true) { continue; } } "
+        "else { value = 1; } let copy = value; }\n"
+    )
+    fallthrough = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { while (true) { break; } } "
+        "else { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, divergent, 1)
+    assert uninitialized_reads(server, uri) == []
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": fallthrough}],
+            },
+        )
+    )
+
+    assert len(uninitialized_reads(server, uri)) == 1
