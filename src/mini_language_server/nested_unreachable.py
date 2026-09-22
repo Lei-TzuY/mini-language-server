@@ -106,6 +106,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     text[opening + 1 : closing],
                     base_offset=base_offset + opening + 1,
                     loop_depth=child_loop_depth,
+                    include_explicit_never_calls=include_explicit_never_calls,
                 )
             )
             cursor = closing + 1
