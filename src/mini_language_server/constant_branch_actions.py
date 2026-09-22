@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .constant_values import bounded_boolean_constant_value
 from .constant_condition_diagnostics import (
     _CONTROL_FLOW_CONDITION,
     _UNREACHABLE_CODE_DIAGNOSTIC,
@@ -92,7 +93,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             expression, expression_span = self._unwrap_expression_with_span(
                 expression, expression_span
             )
-            constant = self._bounded_boolean_constant_value(
+            constant = bounded_boolean_constant_value(
                 code[expression_span.start : expression_span.end]
             )
             if constant is None:
