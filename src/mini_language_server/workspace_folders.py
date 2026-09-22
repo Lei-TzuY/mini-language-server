@@ -2,30 +2,44 @@
 
 from __future__ import annotations
 
-import collections.abc
-import dataclasses
 import threading
-import typing
 import urllib.parse
-
-
-_T = typing.TypeVar("_T")
 
 
 class WorkspaceFolderError(ValueError):
     """Raised when workspace-folder lifecycle data is malformed."""
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
 class WorkspaceFolder:
-    uri: str
-    name: str
+    """Immutable workspace-folder value used by the session scope."""
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.uri, str) or not self.uri:
+    __slots__ = ("_name", "_uri")
+
+    def __init__(self, uri: object, name: object) -> None:
+        if not isinstance(uri, str) or not uri:
             raise WorkspaceFolderError("workspace folder URI must be a non-empty string")
-        if not isinstance(self.name, str):
+        if not isinstance(name, str):
             raise WorkspaceFolderError("workspace folder name must be a string")
+        self._uri = uri
+        self._name = name
+
+    @property
+    def uri(self) -> str:
+        return self._uri
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, WorkspaceFolder)
+            and self.uri == other.uri
+            and self.name == other.name
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.uri, self.name))
 
 
 class WorkspaceFolderSet:
@@ -57,7 +71,7 @@ class WorkspaceFolderSet:
                 return ()
             return tuple(self._folders[uri] for uri in sorted(self._folders))
 
-    def configure(self, params: typing.Any) -> None:
+    def configure(self, params: object) -> None:
         """Initialize scope from workspaceFolders with rootUri fallback."""
         if not isinstance(params, dict):
             return
@@ -77,7 +91,7 @@ class WorkspaceFolderSet:
             raise WorkspaceFolderError("rootUri must be a non-empty string or null")
         self._replace((WorkspaceFolder(root_uri, root_uri),))
 
-    def apply_change(self, params: typing.Any) -> bool:
+    def apply_change(self, params: object) -> bool:
         """Apply one workspace/didChangeWorkspaceFolders notification."""
         if not isinstance(params, dict):
             raise WorkspaceFolderError("workspace folder change params must be an object")
@@ -121,7 +135,7 @@ class WorkspaceFolderSet:
             folders = tuple(self._folders.values())
         return any(self._contains(folder.uri, uri) for folder in folders)
 
-    def commit_if_current(self, generation: int, callback: collections.abc.Callable[[], _T]) -> _T:
+    def commit_if_current(self, generation: int, callback):
         """Run a derived workspace publication only while folder scope is unchanged."""
         if not callable(callback):
             raise WorkspaceFolderError("workspace folder commit must be callable")
@@ -139,7 +153,7 @@ class WorkspaceFolderSet:
             self._generation += 1
 
     @staticmethod
-    def _parse_folders(values: list[typing.Any]) -> tuple[WorkspaceFolder, ...]:
+    def _parse_folders(values: list[object]) -> tuple[WorkspaceFolder, ...]:
         parsed: list[WorkspaceFolder] = []
         seen: set[str] = set()
         for value in values:
