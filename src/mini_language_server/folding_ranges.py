@@ -8,7 +8,6 @@ from typing import Any
 from .cancellation import RequestCancelled, StaleRequest
 from .nova import NovaFunctionSyntax
 from .server import ServerState
-from .source import SourceText
 from .typed_local_arguments import NovaProductLanguageServer as _NovaProductLanguageServer
 
 _CONTROL_FLOW_KEYWORD = re.compile(r"\b(?:if|while)\b")
