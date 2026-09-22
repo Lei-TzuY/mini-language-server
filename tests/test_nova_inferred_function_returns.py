@@ -250,7 +250,7 @@ def test_wrapper_inference_rejects_ambiguous_explicit_target() -> None:
     assert hover_value(server, main_uri, main) == "variable value"
 
 
-def test_wrapper_inference_requires_consistent_literal_and_call_returns() -> None:
+def test_wrapper_inference_ignores_return_after_guaranteed_return() -> None:
     server = initialized_server()
     uri = "file:///workspace/main.nova"
     text = (
@@ -260,7 +260,7 @@ def test_wrapper_inference_requires_consistent_literal_and_call_returns() -> Non
     )
     open_nova(server, uri, text)
 
-    assert hover_value(server, uri, text) == "variable value"
+    assert hover_value(server, uri, text) == "variable value: Int"
 
 
 def test_unannotated_arithmetic_return_infers_int_result() -> None:
@@ -474,7 +474,7 @@ def test_aggregate_termination_filters_trailing_conflicting_return() -> None:
     text = (
         'fn halt() { while (true) { continue; } } '
         'fn helper(flag: Bool) { '
-        'if flag { halt(); } else { return 1; } return "dead"; } '
+        'if (flag) { halt(); } else { return 1; } return "dead"; } '
         "fn main() { let value = helper(true) value }\n"
     )
     open_nova(server, uri, text)
