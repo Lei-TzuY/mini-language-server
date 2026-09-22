@@ -7,10 +7,15 @@ from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
+from .documents import Document
 from .nova import NovaFunctionSyntax, NovaLanguageServer
+from .semantic import SemanticError
 from .server import ServerState
 from .source import Span
+from .symbols import SymbolError
+from .syntax import SyntaxError
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
+from .workspace_folders import WorkspaceFolderError, WorkspaceFolderSet
 
 _SYMBOL_KINDS = {
     "class": 5,
@@ -26,9 +31,32 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
     def __init__(self) -> None:
         super().__init__()
         self.workspace_symbols = WorkspaceSymbolIndex()
+        self.workspace_folders = WorkspaceFolderSet()
+        self._workspace_folder_change_support = False
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
+        if method == "initialize" and self.state is ServerState.PRE_INITIALIZE:
+            params = message.get("params")
+            self._workspace_folder_change_support = (
+                self._client_supports_workspace_folders(params)
+            )
+            try:
+                self.workspace_folders.configure(params)
+            except WorkspaceFolderError:
+                if "id" in message:
+                    return self._error(message.get("id"), -32602, "Invalid params")
+                return None
+
+        if (
+            method == "workspace/didChangeWorkspaceFolders"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+        ):
+            if self._workspace_folder_change_support:
+                self._handle_workspace_folder_change(message.get("params"))
+            return None
+
         if "id" in message and self.state is ServerState.RUNNING:
             if method == "workspace/symbol":
                 return self._handle_workspace_symbol(
@@ -82,6 +110,13 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     capabilities["workspaceSymbolProvider"] = True
                 if self._client_supports_call_hierarchy(params):
                     capabilities["callHierarchyProvider"] = True
+                if self._workspace_folder_change_support:
+                    workspace_capabilities = capabilities.setdefault("workspace", {})
+                    if isinstance(workspace_capabilities, dict):
+                        workspace_capabilities["workspaceFolders"] = {
+                            "supported": True,
+                            "changeNotifications": True,
+                        }
         return result
 
     def _handle_document_notification(self, method: str, params: Any) -> None:
@@ -98,6 +133,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return
         if method not in {"textDocument/didOpen", "textDocument/didChange"}:
             return
+        if not self.workspace_folders.contains(uri):
+            if previous is not None:
+                with suppress(WorkspaceIndexError):
+                    self.workspace_symbols.remove(uri, expected=previous)
+                self._publish_workspace_diagnostics()
+            return
         current = self.semantics.get(uri)
         if current is None:
             return
@@ -106,6 +147,58 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         except WorkspaceIndexError:
             return
         self._publish_workspace_diagnostics()
+
+    def _handle_workspace_folder_change(self, params: Any) -> None:
+        before = self.workspace_symbols.snapshots()
+        try:
+            changed = self.workspace_folders.apply_change(params)
+        except WorkspaceFolderError:
+            return
+        if not changed:
+            return
+
+        for snapshot in tuple(before):
+            if self.workspace_folders.contains(snapshot.uri):
+                continue
+            document = self.documents.get(snapshot.uri)
+            if (
+                document is not None
+                and document.language_id == self.nova_adapter.language_id
+            ):
+                with suppress(SyntaxError, SymbolError, SemanticError):
+                    self.nova_adapter.publish(self, document)
+            with suppress(WorkspaceIndexError):
+                self.workspace_symbols.remove(snapshot.uri, expected=snapshot)
+
+        for document in self.documents.snapshots():
+            if (
+                document.language_id != self.nova_adapter.language_id
+                or not self.workspace_folders.contains(document.uri)
+            ):
+                continue
+            semantic = self.semantics.get(document.uri)
+            if semantic is None or semantic.symbols.syntax.document is not document:
+                continue
+            current = self.workspace_symbols.get(document.uri)
+            if current is semantic:
+                continue
+            with suppress(WorkspaceIndexError):
+                self.workspace_symbols.replace(semantic, expected=current)
+
+        self._publish_workspace_diagnostics()
+        after = self.workspace_symbols.snapshots()
+        if before.generation != after.generation:
+            self._workspace_scope_changed(before, after)
+
+    def _workspace_documents(self) -> tuple[Document, ...]:
+        return tuple(
+            document
+            for document in self.documents.snapshots()
+            if self.workspace_folders.contains(document.uri)
+        )
+
+    def _workspace_scope_changed(self, before: Any, after: Any) -> None:
+        """Extension point for capabilities that cache workspace-wide results."""
 
     def _publish_workspace_diagnostics(self) -> None:
         """Reconcile Nova call diagnostics against one exact workspace snapshot set."""
@@ -764,6 +857,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         except RequestError:
             return self._error(request_id, -32602, "Invalid params")
 
+        snapshots = self.workspace_symbols.snapshots()
         try:
             self.requests.checkpoint(context)
             declarations = self.workspace_symbols.search(params["query"])
@@ -783,8 +877,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 )
             self.requests.checkpoint(context)
             try:
-                return self.workspace_symbols.commit_if_current(
-                    declarations, lambda: self._result(request_id, result)
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots, lambda: self._result(request_id, result)
                 )
             except WorkspaceIndexError:
                 return self._error(request_id, -32801, "Content modified")
@@ -792,6 +886,19 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return self._error(request_id, -32800, "Request cancelled")
         finally:
             self.requests.finish(context)
+
+    @staticmethod
+    def _client_supports_workspace_folders(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        return (
+            isinstance(workspace, dict)
+            and workspace.get("workspaceFolders") is True
+        )
 
     @staticmethod
     def _client_supports_workspace_symbol(params: Any) -> bool:

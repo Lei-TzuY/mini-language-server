@@ -490,3 +490,113 @@ def test_stale_workspace_diagnostic_commit_does_not_request_refresh(
         "commit_snapshots_if_current",
         real_commit,
     )
+
+def initialize_with_workspace_folder(
+    server: NovaProductLanguageServer,
+    *,
+    refresh_support: bool = False,
+) -> dict:
+    workspace: dict[str, Any] = {"workspaceFolders": True}
+    if refresh_support:
+        workspace["diagnostics"] = {"refreshSupport": True}
+    response = server.handle(
+        request(
+            "initialize",
+            params={
+                "capabilities": {
+                    "textDocument": {"diagnostic": {}},
+                    "workspace": workspace,
+                },
+                "workspaceFolders": [
+                    {"uri": "file:///workspace/a", "name": "a"},
+                ],
+            },
+        )
+    )
+    assert response is not None
+    return response
+
+
+def test_workspace_diagnostics_include_only_scoped_open_documents() -> None:
+    server = NovaProductLanguageServer()
+    initialize_with_workspace_folder(server)
+    in_scope = "file:///workspace/a/main.nova"
+    outside = "file:///workspace/b/other.nova"
+    open_document(server, in_scope, "fn main() {}\n")
+    open_document(server, outside, "fn other() {}\n")
+
+    result = workspace_diagnostics(server)["result"]["items"]
+
+    assert [item["uri"] for item in result] == [in_scope]
+
+
+def test_workspace_folder_change_requests_diagnostic_refresh_and_expands_report() -> None:
+    server = NovaProductLanguageServer()
+    initialize_with_workspace_folder(server, refresh_support=True)
+    in_scope = "file:///workspace/a/main.nova"
+    outside = "file:///workspace/b/other.nova"
+    open_document(server, in_scope, "fn main() {}\n")
+    open_document(server, outside, "fn other() {}\n")
+    assert server.drain_server_requests() == []
+
+    server.handle(
+        notification(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [{"uri": "file:///workspace/b", "name": "b"}],
+                    "removed": [],
+                }
+            },
+        )
+    )
+
+    refresh = server.drain_server_requests()
+    assert len(refresh) == 1
+    assert refresh[0]["method"] == "workspace/diagnostic/refresh"
+
+    result = workspace_diagnostics(server, request_id=21)["result"]["items"]
+    assert [item["uri"] for item in result] == [in_scope, outside]
+
+def test_workspace_diagnostics_reject_workspace_folder_generation_change(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize_with_workspace_folder(server)
+    in_scope = "file:///workspace/a/main.nova"
+    outside = "file:///workspace/b/other.nova"
+    open_document(server, in_scope, "fn main() {}\n")
+    open_document(server, outside, "fn other() {}\n")
+    real_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def change_scope_before_publication(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        real_checkpoint(context)
+        if calls == 2:
+            server.handle(
+                notification(
+                    "workspace/didChangeWorkspaceFolders",
+                    {
+                        "event": {
+                            "added": [
+                                {"uri": "file:///workspace/b", "name": "b"}
+                            ],
+                            "removed": [],
+                        }
+                    },
+                )
+            )
+
+    monkeypatch.setattr(
+        server.requests,
+        "checkpoint",
+        change_scope_before_publication,
+    )
+
+    assert workspace_diagnostics(server) == {
+        "jsonrpc": "2.0",
+        "id": 20,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
