@@ -31,6 +31,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         tail = self._bounded_tail_expression(text, code, opening + 1, closing)
         body_code = code[opening + 1 : closing]
+        body_text = text[opening + 1 : closing]
         if self._reachable_return_statements(body_code):
             if tail is None:
                 return super()._bounded_function_return_type(declaration, resolving)
@@ -42,6 +43,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         inherited = super()._bounded_function_return_type(declaration, resolving)
         if inherited is not None or tail is None:
             return inherited
+        if self._body_guarantees_value_return(body_code, body_text):
+            return None
 
         expression, expression_span = tail
         return self._inference_expression_type(
