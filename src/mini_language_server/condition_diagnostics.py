@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any
 
+from .constant_control_flow import proven_non_fallthrough_while_spans
 from .constant_values import bounded_boolean_constant_value
 from .diagnostics import DIAGNOSTIC_TAG_VALUES, Diagnostic
 from .expression_local_types import NovaProductLanguageServer as _NovaProductLanguageServer
