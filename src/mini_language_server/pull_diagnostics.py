@@ -18,6 +18,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def __init__(self) -> None:
         super().__init__()
         self._diagnostic_refresh_support = False
+        self._workspace_diagnostics_publish_succeeded = False
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -86,15 +87,25 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _handle_document_notification(self, method: str, params: Any) -> None:
         uri = self._document_uri(params)
         before = self.workspace_symbols.snapshots()
+        self._workspace_diagnostics_publish_succeeded = False
         super()._handle_document_notification(method, params)
         after = self.workspace_symbols.snapshots()
-        if self._same_workspace_identity(before, after) or uri is None:
+        if (
+            not self._workspace_diagnostics_publish_succeeded
+            or self._same_workspace_identity(before, after)
+            or uri is None
+        ):
             return
         other_uris = {
             snapshot.uri for snapshot in (*before, *after)
         } - {uri}
         if other_uris:
             self._queue_diagnostic_refresh()
+
+    def _publish_workspace_diagnostics(self) -> bool:
+        succeeded = bool(super()._publish_workspace_diagnostics())
+        self._workspace_diagnostics_publish_succeeded = succeeded
+        return succeeded
 
     @staticmethod
     def _same_workspace_identity(left: tuple[Any, ...], right: tuple[Any, ...]) -> bool:
