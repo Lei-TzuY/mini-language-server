@@ -9,7 +9,7 @@ from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
 from .nova import NovaFunctionSyntax, NovaLanguageServer
 from .server import ServerState
-from .source import SourceText, Span
+from .source import Span
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
 
 _SYMBOL_KINDS = {
