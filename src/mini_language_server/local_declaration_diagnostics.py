@@ -134,78 +134,88 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             for assignment_start, assignment_scope in assignments
         )
 
-    @classmethod
     def _direct_scope_terminates(
-        cls,
+        self,
         code: str,
+        text: str,
         branch_open: int,
         branch_close: int,
         branch_scope: tuple[int, ...],
     ) -> bool:
         if any(
-            cls._brace_scope_at(code, match.start()) == branch_scope
+            self._brace_scope_at(code, match.start()) == branch_scope
             for match in _RETURN_STATEMENT.finditer(code, branch_open + 1, branch_close)
         ):
             return True
 
         branch_code = code[branch_open + 1 : branch_close]
-        return any(
-            cls._brace_scope_at(branch_code, statement_start) == ()
+        if any(
+            self._brace_scope_at(branch_code, statement_start) == ()
             for statement_start, _ in proven_non_fallthrough_while_spans(branch_code)
+        ):
+            return True
+
+        branch_text = text[branch_open + 1 : branch_close]
+        return bool(
+            self._top_level_explicit_never_call_statements(
+                branch_code, branch_text
+            )
         )
 
-    @classmethod
     def _scope_definitely_assigned(
-        cls,
+        self,
         code: str,
+        text: str,
         branch_open: int,
         branch_close: int,
         branch_scope: tuple[int, ...],
         assignments: list[tuple[int, tuple[int, ...]]],
     ) -> bool:
-        if cls._direct_scope_assigned(
+        if self._direct_scope_assigned(
             branch_open, branch_close, branch_scope, assignments
         ):
             return True
-        if cls._direct_scope_terminates(
-            code, branch_open, branch_close, branch_scope
+        if self._direct_scope_terminates(
+            code, text, branch_open, branch_close, branch_scope
         ):
             return True
-        return cls._complete_if_chain_initializes(
+        return self._complete_if_chain_initializes(
             code,
+            text,
             branch_open + 1,
             branch_close,
             branch_scope,
             assignments,
         )
 
-    @classmethod
     def _complete_if_chain_initializes(
-        cls,
+        self,
         code: str,
+        text: str,
         start_offset: int,
         end_offset: int,
         reference_scope: tuple[int, ...],
         assignments: list[tuple[int, tuple[int, ...]]],
     ) -> bool:
         """Prove every reachable arm assigns or terminates before the join."""
-        pairs = cls._matching_braces(code)
+        pairs = self._matching_braces(code)
         for if_open, if_close in sorted(pairs.items()):
             if if_open < start_offset or if_close >= end_offset:
                 continue
-            if cls._brace_scope_at(code, if_open) != reference_scope:
+            if self._brace_scope_at(code, if_open) != reference_scope:
                 continue
-            if not cls._is_if_block(code, if_open):
+            if not self._is_if_block(code, if_open):
                 continue
 
-            condition = cls._if_condition_before_brace(code, if_open)
+            condition = self._if_condition_before_brace(code, if_open)
             constant = (
                 None
                 if condition is None
                 else bounded_boolean_constant_value(condition)
             )
-            branch_assigned = cls._scope_definitely_assigned(
+            branch_assigned = self._scope_definitely_assigned(
                 code,
+                text,
                 if_open,
                 if_close,
                 reference_scope + (if_open,),
@@ -230,14 +240,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     branch_close = pairs.get(branch_open, -1)
                     if branch_close < branch_open or branch_close >= end_offset:
                         break
-                    if cls._brace_scope_at(code, branch_open) != reference_scope:
+                    if self._brace_scope_at(code, branch_open) != reference_scope:
                         break
 
                     branch_constant = bounded_boolean_constant_value(
                         else_if_match.group("condition")
                     )
-                    branch_assigned = cls._scope_definitely_assigned(
+                    branch_assigned = self._scope_definitely_assigned(
                         code,
+                        text,
                         branch_open,
                         branch_close,
                         reference_scope + (branch_open,),
@@ -261,10 +272,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 branch_close = pairs.get(branch_open, -1)
                 if branch_close < branch_open or branch_close >= end_offset:
                     break
-                if cls._brace_scope_at(code, branch_open) != reference_scope:
+                if self._brace_scope_at(code, branch_open) != reference_scope:
                     break
-                branch_assigned = cls._scope_definitely_assigned(
+                branch_assigned = self._scope_definitely_assigned(
                     code,
+                    text,
                     branch_open,
                     branch_close,
                     reference_scope + (branch_open,),
@@ -292,23 +304,23 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         condition = match.group("condition").strip()
         return condition or None
 
-    @classmethod
     def _if_else_join_initializes(
-        cls,
+        self,
         code: str,
+        text: str,
         reference_start: int,
         reference_scope: tuple[int, ...],
         assignments: list[tuple[int, tuple[int, ...]]],
     ) -> bool:
         """Prove a bounded complete if/else-if/else join before the reference."""
-        return cls._complete_if_chain_initializes(
-            code, 0, reference_start, reference_scope, assignments
+        return self._complete_if_chain_initializes(
+            code, text, 0, reference_start, reference_scope, assignments
         )
 
-    @classmethod
     def _nova_reads_before_first_assignment(
-        cls, semantic: SemanticSnapshot, code: str, declaration: re.Match[str]
+        self, semantic: SemanticSnapshot, code: str, declaration: re.Match[str]
     ) -> tuple[Diagnostic, ...]:
+        text = semantic.symbols.syntax.document.text
         name_span = Span(*declaration.span("name"))
         target = next(
             (
@@ -332,7 +344,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         assignments: list[tuple[int, tuple[int, ...]]] = []
         diagnostics: list[Diagnostic] = []
         for reference in references:
-            reference_scope = cls._brace_scope_at(code, reference.span.start)
+            reference_scope = self._brace_scope_at(code, reference.span.start)
             if _ASSIGNMENT_SUFFIX.match(code, reference.span.end):
                 assignments.append((reference.span.start, reference_scope))
                 continue
@@ -342,8 +354,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 and len(assignment_scope) <= len(reference_scope)
                 and reference_scope[: len(assignment_scope)] == assignment_scope
                 for assignment_start, assignment_scope in assignments
-            ) or cls._if_else_join_initializes(
-                code, reference.span.start, reference_scope, assignments
+            ) or self._if_else_join_initializes(
+                code, text, reference.span.start, reference_scope, assignments
             )
             if definitely_initialized:
                 continue
