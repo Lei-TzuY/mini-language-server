@@ -484,3 +484,111 @@ def test_did_change_rebinds_divergent_join_initialization() -> None:
     )
 
     assert len(uninitialized_reads(server, uri)) == 1
+
+def test_never_call_arm_does_not_require_assignment_at_join() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() -> ! { while (true) { continue; } } "
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { halt(); } else { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_never_call_else_arm_does_not_require_assignment_at_join() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() -> ! { while (true) { continue; } } "
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { value = 1; } else { halt(); } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_nested_if_can_use_never_call_as_termination_evidence() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() -> ! { while (true) { continue; } } "
+        "fn main(outer: Bool, inner: Bool) { var value: Int; "
+        "if outer { if inner { halt(); } else { value = 1; } } "
+        "else { value = 2; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert uninitialized_reads(server, uri) == []
+
+
+def test_ambiguous_never_target_does_not_prove_join_initialization() -> None:
+    server = initialized_server()
+    open_nova(
+        server,
+        "file:///workspace/left.nova",
+        "fn halt() -> ! { while (true) { continue; } }\n",
+    )
+    open_nova(
+        server,
+        "file:///workspace/right.nova",
+        "fn halt() -> ! { while (true) { continue; } }\n",
+    )
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { halt(); } else { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert len(uninitialized_reads(server, uri)) == 1
+
+
+def test_compound_never_call_does_not_prove_join_initialization() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() -> ! { while (true) { continue; } } "
+        "fn consume(value: Int) -> Unit { return (); } "
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { consume(halt()); } else { value = 1; } "
+        "let copy = value; }\n"
+    )
+    open_nova(server, uri, text)
+
+    assert len(uninitialized_reads(server, uri)) == 1
+
+
+def test_cross_file_never_join_rebinds_after_annotation_change() -> None:
+    server = initialized_server()
+    helper_uri = "file:///workspace/helper.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        helper_uri,
+        "fn halt() -> ! { while (true) { continue; } }\n",
+    )
+    main_text = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { halt(); } else { value = 1; } let copy = value; }\n"
+    )
+    open_nova(server, main_uri, main_text)
+
+    assert uninitialized_reads(server, main_uri) == []
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": helper_uri, "version": 2},
+                "contentChanges": [
+                    {"text": "fn halt() -> Unit { return (); }\n"}
+                ],
+            },
+        )
+    )
+
+    assert len(uninitialized_reads(server, main_uri)) == 1
