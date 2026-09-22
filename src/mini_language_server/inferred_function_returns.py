@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .constant_control_flow import proven_dead_branch_spans
 from .function_call_locals import NovaProductLanguageServer as _NovaProductLanguageServer
 from .source import Span
 
@@ -124,7 +125,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         inferred: str | None = None
         body_code = code[opening + 1 : closing]
-        for statement in _RETURN.finditer(body_code):
+        for statement in self._reachable_return_statements(body_code):
             keyword_end = opening + 1 + statement.end()
             boundary = closing
             for delimiter in (";", "\n", "\r"):
@@ -154,6 +155,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             elif inferred != actual:
                 return None
         return inferred
+
+    @staticmethod
+    def _reachable_return_statements(body_code: str) -> tuple[re.Match[str], ...]:
+        """Keep return evidence outside branches proven dead by constant conditions."""
+        dead_spans = proven_dead_branch_spans(body_code)
+        return tuple(
+            statement
+            for statement in _RETURN.finditer(body_code)
+            if not any(
+                start <= statement.start() < end
+                for start, end in dead_spans
+            )
+        )
 
     def _inference_expression_type(
         self,
