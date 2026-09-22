@@ -85,19 +85,21 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     def _handle_document_notification(self, method: str, params: Any) -> None:
         uri = self._document_uri(params)
-        before = self._workspace_identity()
+        before = self.workspace_symbols.snapshots()
         super()._handle_document_notification(method, params)
-        after = self._workspace_identity()
-        if before == after or uri is None:
+        after = self.workspace_symbols.snapshots()
+        if self._same_workspace_identity(before, after) or uri is None:
             return
-        other_uris = {item[0] for item in (*before, *after)} - {uri}
+        other_uris = {
+            snapshot.uri for snapshot in (*before, *after)
+        } - {uri}
         if other_uris:
             self._queue_diagnostic_refresh()
 
-    def _workspace_identity(self) -> tuple[tuple[str, int], ...]:
-        return tuple(
-            (snapshot.uri, id(snapshot))
-            for snapshot in self.workspace_symbols.snapshots()
+    @staticmethod
+    def _same_workspace_identity(left: tuple[Any, ...], right: tuple[Any, ...]) -> bool:
+        return len(left) == len(right) and all(
+            old is new for old, new in zip(left, right, strict=True)
         )
 
     def _queue_diagnostic_refresh(self) -> None:
