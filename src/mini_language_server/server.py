@@ -46,10 +46,21 @@ class LanguageServer:
         self.diagnostics = DiagnosticStore(self.semantics)
         self.requests = RequestTracker(self.documents)
         self._notifications: list[dict[str, Any]] = []
+        self._server_requests: list[dict[str, Any]] = []
+        self._pending_server_requests: dict[str, str] = {}
+        self._next_server_request_id = 1
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         request_id = message.get("id")
         is_request = "id" in message
+
+        if (
+            message.get("jsonrpc") == "2.0"
+            and "method" not in message
+            and is_request
+        ):
+            self._handle_server_response(message)
+            return None
 
         if message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
             return self._error(request_id, -32600, "Invalid Request") if is_request else None
@@ -194,6 +205,48 @@ class LanguageServer:
         notifications = self._notifications
         self._notifications = []
         return notifications
+
+    def drain_server_requests(self) -> list[dict[str, Any]]:
+        """Return queued server-to-client requests and clear only that outbox."""
+        requests = self._server_requests
+        self._server_requests = []
+        return requests
+
+    def _queue_server_request(
+        self, method: str, params: dict[str, Any] | None = None
+    ) -> str:
+        """Queue one tracked server-to-client JSON-RPC request."""
+        request_id = f"server:{self._next_server_request_id}"
+        self._next_server_request_id += 1
+        request: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+        }
+        if params is not None:
+            request["params"] = params
+        self._pending_server_requests[request_id] = method
+        self._server_requests.append(request)
+        return request_id
+
+    def _has_pending_server_request(self, method: str) -> bool:
+        return method in self._pending_server_requests.values()
+
+    def _handle_server_response(self, message: dict[str, Any]) -> None:
+        """Consume a valid response to one tracked server-to-client request."""
+        request_id = message.get("id")
+        if not isinstance(request_id, str | int) or isinstance(request_id, bool):
+            return
+        key = str(request_id)
+        if key not in self._pending_server_requests:
+            return
+        has_result = "result" in message
+        has_error = "error" in message
+        if has_result == has_error:
+            return
+        if has_error and not isinstance(message.get("error"), dict):
+            return
+        self._pending_server_requests.pop(key, None)
 
     def _handle_cancel_request(self, params: Any) -> None:
         """Apply an LSP cancellation notification to the matching active request."""
