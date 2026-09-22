@@ -79,7 +79,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
             declaration = declarations[0]
             edits_by_uri: dict[str, list[tuple[int, dict[str, Any]]]] = {}
-            declaration_source = SourceText(
+            declaration_source = self._source_text(
                 declaration.snapshot.symbols.syntax.document.text
             )
             edits_by_uri.setdefault(declaration.uri, []).append(
@@ -98,7 +98,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 snapshot_tree = snapshot.symbols.syntax.tree
                 if not isinstance(snapshot_tree, NovaFunctionSyntax):
                     continue
-                source = SourceText(snapshot.symbols.syntax.document.text)
+                source = self._source_text(snapshot.symbols.syntax.document.text)
                 for call_name, span in snapshot_tree.calls:
                     if call_name != name:
                         continue
