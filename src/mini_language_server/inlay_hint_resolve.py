@@ -24,6 +24,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     def __init__(self) -> None:
         super().__init__()
+        self._inlay_hint_refresh_support = False
         self._inlay_hint_resolve_properties: frozenset[str] = frozenset()
         self._inlay_hint_resolve_next = 1
         self._inlay_hint_resolve_records: dict[int, _InlayHintResolveRecord] = {}
@@ -31,8 +32,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
         if method == "initialize" and self.state is ServerState.PRE_INITIALIZE:
+            params = message.get("params")
+            self._inlay_hint_refresh_support = (
+                self._client_supports_inlay_hint(params)
+                and self._client_supports_inlay_hint_refresh(params)
+            )
             self._inlay_hint_resolve_properties = (
-                self._client_inlay_hint_resolve_properties(message.get("params"))
+                self._client_inlay_hint_resolve_properties(params)
             )
             result = super().handle(message)
             if (
@@ -66,6 +72,46 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return self._handle_lazy_inlay_hint(message)
 
         return super().handle(message)
+
+    def _handle_document_notification(self, method: str, params: Any) -> None:
+        uri = self._document_uri(params)
+        before = self.workspace_symbols.snapshots()
+        super()._handle_document_notification(method, params)
+        after = self.workspace_symbols.snapshots()
+        if (
+            uri is None
+            or self._same_workspace_identity(before, after)
+        ):
+            return
+        other_uris = {
+            snapshot.uri for snapshot in (*before, *after)
+        } - {uri}
+        if other_uris:
+            self._queue_inlay_hint_refresh()
+
+    def _queue_inlay_hint_refresh(self) -> None:
+        if not self._inlay_hint_refresh_support:
+            return
+        method = "workspace/inlayHint/refresh"
+        if self._has_pending_server_request(method):
+            return
+        self._queue_server_request(method)
+
+    @staticmethod
+    def _client_supports_inlay_hint_refresh(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        inlay_hint = workspace.get("inlayHint")
+        return (
+            isinstance(inlay_hint, dict)
+            and inlay_hint.get("refreshSupport") is True
+        )
 
     def _handle_lazy_inlay_hint(
         self, message: dict[str, Any]
