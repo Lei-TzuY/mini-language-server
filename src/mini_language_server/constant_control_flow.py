@@ -98,6 +98,36 @@ def proven_non_fallthrough_while_spans(
     return tuple(spans)
 
 
+def proven_unreachable_suffix_spans(
+    code: str,
+) -> tuple[tuple[int, int], ...]:
+    """Return same-scope suffixes made unreachable by proven divergent loops."""
+    scopes: list[tuple[int, int]] = []
+    stack: list[int] = []
+    for offset, character in enumerate(code):
+        if character == "{":
+            stack.append(offset)
+        elif character == "}" and stack:
+            opening = stack.pop()
+            scopes.append((opening + 1, offset))
+
+    spans: list[tuple[int, int]] = []
+    for statement_start, statement_end in proven_non_fallthrough_while_spans(code):
+        scope_end = len(code)
+        containing_ends = [
+            end
+            for start, end in scopes
+            if start <= statement_start < end
+        ]
+        if containing_ends:
+            scope_end = min(containing_ends)
+        if statement_end < scope_end:
+            spans.append((statement_end, scope_end))
+
+    spans.sort()
+    return tuple(spans)
+
+
 def _has_reachable_break_targeting_current_loop(code: str) -> bool:
     dead_spans = proven_dead_branch_spans(code)
     nested_loop_bodies = _while_body_spans(code)
