@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .logical_expression_types import NovaProductLanguageServer as _NovaProductLanguageServer
+from .expression_types import NovaProductLanguageServer as _NovaProductLanguageServer
 
 _UNANNOTATED_INITIALIZER_PREFIX = re.compile(r"\s*=\s*")
 _ADDITIVE = frozenset({"+", "-"})
