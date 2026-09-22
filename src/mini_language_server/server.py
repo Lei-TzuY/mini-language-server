@@ -12,7 +12,14 @@ from .documents import DocumentError, DocumentStore
 from .protocol import JsonRpcError
 from .semantic import SemanticDatabase, SemanticError, SemanticSnapshot
 from .semantic_tokens import TOKEN_TYPES, encode_semantic_tokens
-from .source import Position, SourceError, SourceText, Span
+from .source import (
+    DEFAULT_POSITION_ENCODING,
+    SUPPORTED_POSITION_ENCODINGS,
+    Position,
+    SourceError,
+    SourceText,
+    Span,
+)
 from .symbols import SymbolIndex
 from .syntax import SyntaxStore
 
@@ -30,7 +37,8 @@ class LanguageServer:
     def __init__(self) -> None:
         self.state = ServerState.PRE_INITIALIZE
         self.exit_code: int | None = None
-        self.documents = DocumentStore()
+        self.position_encoding = DEFAULT_POSITION_ENCODING
+        self.documents = DocumentStore(position_encoding=self.position_encoding)
         self.syntax = SyntaxStore(self.documents)
         self.symbols = SymbolIndex(self.syntax)
         self.semantics = SemanticDatabase(self.symbols)
@@ -62,15 +70,18 @@ class LanguageServer:
                 return None
             if not is_request:
                 return None
+            params = message.get("params")
+            self.position_encoding = self._negotiate_position_encoding(params)
+            self.documents.set_position_encoding(self.position_encoding)
             self.state = ServerState.RUNNING
             capabilities: dict[str, Any] = {
+                "positionEncoding": self.position_encoding,
                 "textDocumentSync": 2,
                 "definitionProvider": True,
                 "referencesProvider": True,
                 "renameProvider": {"prepareProvider": True},
                 "hoverProvider": True,
             }
-            params = message.get("params")
             if self._client_supports_completion(params):
                 capabilities["completionProvider"] = {"resolveProvider": False}
             full_semantic_tokens = self._client_supports_semantic_tokens_full(params)
@@ -159,7 +170,7 @@ class LanguageServer:
         except DiagnosticError:
             return False
 
-        source = SourceText(snapshot.semantic.symbols.syntax.document.text)
+        source = self._source_text(snapshot.semantic.symbols.syntax.document.text)
         rendered = [
             self._diagnostic(source, diagnostic) for diagnostic in snapshot.diagnostics
         ]
@@ -342,7 +353,9 @@ class LanguageServer:
                 return self._result(request_id, {"data": []})
 
             data = encode_semantic_tokens(
-                semantics.symbols, requested_span=requested_span
+                semantics.symbols,
+                requested_span=requested_span,
+                position_encoding=self.position_encoding,
             )
             self.requests.checkpoint(context)
             return self._current_semantic_result(
@@ -471,6 +484,29 @@ class LanguageServer:
         return uri
 
     @staticmethod
+    def _negotiate_position_encoding(params: Any) -> str:
+        """Choose one LSP position encoding, preserving UTF-16 compatibility."""
+        if not isinstance(params, dict):
+            return DEFAULT_POSITION_ENCODING
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return DEFAULT_POSITION_ENCODING
+        general = capabilities.get("general")
+        if not isinstance(general, dict):
+            return DEFAULT_POSITION_ENCODING
+        advertised = general.get("positionEncodings")
+        if not isinstance(advertised, list):
+            return DEFAULT_POSITION_ENCODING
+        for encoding in advertised:
+            if encoding in SUPPORTED_POSITION_ENCODINGS:
+                return encoding
+        return DEFAULT_POSITION_ENCODING
+
+    def _source_text(self, text: str) -> SourceText:
+        """Create a source view using the session's negotiated position encoding."""
+        return SourceText(text, position_encoding=self.position_encoding)
+
+    @staticmethod
     def _client_supports_completion(params: Any) -> bool:
         if not isinstance(params, dict):
             return False
@@ -511,8 +547,7 @@ class LanguageServer:
         requests = cls._semantic_tokens_requests(params)
         return requests is not None and requests.get("range") is True
 
-    @staticmethod
-    def _semantic_tokens_range(params: Any, text: str) -> Span | None:
+    def _semantic_tokens_range(self, params: Any, text: str) -> Span | None:
         if not isinstance(params, dict):
             return None
         range_params = params.get("range")
@@ -523,7 +558,7 @@ class LanguageServer:
         if not isinstance(start, dict) or not isinstance(end, dict):
             return None
         try:
-            source = SourceText(text)
+            source = self._source_text(text)
             return source.span_from_range(
                 Position(line=start.get("line"), character=start.get("character")),
                 Position(line=end.get("line"), character=end.get("character")),
@@ -554,7 +589,7 @@ class LanguageServer:
         document = self.documents.get(uri)
         if document is None:
             return None
-        source = SourceText(document.text)
+        source = self._source_text(document.text)
         try:
             offset = source.offset_at(lsp_position)
         except SourceError:
