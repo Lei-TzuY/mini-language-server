@@ -34,7 +34,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     text[opening + 1 : closing],
                     base_offset=opening + 1,
                     loop_depth=0,
-                    include_explicit_never_calls=True,
+                    include_never_calls=True,
                 )
             )
         return tuple(diagnostics)
@@ -46,12 +46,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         *,
         base_offset: int,
         loop_depth: int,
-        include_explicit_never_calls: bool = False,
+        include_never_calls: bool = False,
     ) -> tuple[Diagnostic, ...]:
         termination = self._first_guaranteed_termination(
             code,
             text,
-            include_explicit_never_calls=include_explicit_never_calls,
+            include_never_calls=include_never_calls,
         )
         if termination is None:
             termination_end = None
@@ -106,7 +106,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     text[opening + 1 : closing],
                     base_offset=base_offset + opening + 1,
                     loop_depth=child_loop_depth,
-                    include_explicit_never_calls=include_explicit_never_calls,
+                    include_never_calls=include_never_calls,
                 )
             )
             cursor = closing + 1
