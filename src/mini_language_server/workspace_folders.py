@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from threading import RLock
+from typing import Any, TypeVar
 from urllib.parse import urlsplit
+
+
+_T = TypeVar("_T")
 
 
 class WorkspaceFolderError(ValueError):
@@ -34,19 +39,23 @@ class WorkspaceFolderSet:
     def __init__(self) -> None:
         self._folders: dict[str, WorkspaceFolder] | None = None
         self._generation = 0
+        self._lock = RLock()
 
     @property
     def generation(self) -> int:
-        return self._generation
+        with self._lock:
+            return self._generation
 
     @property
     def scoped(self) -> bool:
-        return self._folders is not None
+        with self._lock:
+            return self._folders is not None
 
     def folders(self) -> tuple[WorkspaceFolder, ...]:
-        if self._folders is None:
-            return ()
-        return tuple(self._folders[uri] for uri in sorted(self._folders))
+        with self._lock:
+            if self._folders is None:
+                return ()
+            return tuple(self._folders[uri] for uri in sorted(self._folders))
 
     def configure(self, params: Any) -> None:
         """Initialize scope from workspaceFolders with rootUri fallback."""
@@ -82,39 +91,52 @@ class WorkspaceFolderSet:
 
         additions = self._parse_folders(added)
         removals = self._parse_folders(removed)
-        current = {} if self._folders is None else dict(self._folders)
-        before = tuple(sorted(current))
-        before_names = {uri: folder.name for uri, folder in current.items()}
+        with self._lock:
+            current = {} if self._folders is None else dict(self._folders)
+            before = tuple(sorted(current))
+            before_names = {uri: folder.name for uri, folder in current.items()}
 
-        for folder in removals:
-            current.pop(folder.uri, None)
-        for folder in additions:
-            current[folder.uri] = folder
+            for folder in removals:
+                current.pop(folder.uri, None)
+            for folder in additions:
+                current[folder.uri] = folder
 
-        after = tuple(sorted(current))
-        renamed = any(
-            before_names.get(folder.uri) != folder.name
-            for folder in additions
-            if folder.uri in before_names
-        )
-        if self._folders is None or before != after or renamed:
+            after = tuple(sorted(current))
+            renamed = any(
+                before_names.get(folder.uri) != folder.name
+                for folder in additions
+                if folder.uri in before_names
+            )
+            if self._folders is None or before != after or renamed:
+                self._folders = current
+                self._generation += 1
+                return True
             self._folders = current
-            self._generation += 1
-            return True
-        self._folders = current
-        return False
+            return False
 
     def contains(self, uri: str) -> bool:
-        if self._folders is None:
-            return True
-        return any(self._contains(folder.uri, uri) for folder in self._folders.values())
+        with self._lock:
+            if self._folders is None:
+                return True
+            folders = tuple(self._folders.values())
+        return any(self._contains(folder.uri, uri) for folder in folders)
+
+    def commit_if_current(self, generation: int, callback: Callable[[], _T]) -> _T:
+        """Run a derived workspace publication only while folder scope is unchanged."""
+        if not callable(callback):
+            raise WorkspaceFolderError("workspace folder commit must be callable")
+        with self._lock:
+            if generation != self._generation:
+                raise WorkspaceFolderError("workspace folder generation changed")
+            return callback()
 
     def _replace(self, folders: tuple[WorkspaceFolder, ...]) -> None:
         replacement = {folder.uri: folder for folder in folders}
-        if self._folders == replacement:
-            return
-        self._folders = replacement
-        self._generation += 1
+        with self._lock:
+            if self._folders == replacement:
+                return
+            self._folders = replacement
+            self._generation += 1
 
     @staticmethod
     def _parse_folders(values: list[Any]) -> tuple[WorkspaceFolder, ...]:
