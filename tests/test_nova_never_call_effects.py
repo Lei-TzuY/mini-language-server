@@ -144,3 +144,88 @@ def test_compound_never_call_is_not_promoted_to_statement_termination() -> None:
 
     assert len(diagnostics(server, uri, "nova.missing-return")) == 1
     assert diagnostics(server, uri, "nova.unreachable-code") == ()
+
+def test_never_call_arm_can_close_value_return_branch_obligation() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        (
+            "fn halt() -> ! { while (true) { continue; } } "
+            "fn value(flag: Bool) -> Int { "
+            "if (flag) { halt(); } else { return 1; } }\n"
+        ),
+    )
+
+    assert diagnostics(server, uri, "nova.missing-return") == ()
+
+
+def test_bare_return_arm_remains_invalid_even_when_other_arm_never_returns() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        uri,
+        (
+            "fn halt() -> ! { while (true) { continue; } } "
+            "fn value(flag: Bool) -> Int { "
+            "if (flag) { return; } else { halt(); } }\n"
+        ),
+    )
+
+    assert len(diagnostics(server, uri, "nova.missing-return")) == 1
+
+
+def test_nested_never_call_kills_only_its_body_suffix() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn halt() -> ! { while (true) { continue; } } "
+        "fn main(flag: Bool) { "
+        "if (flag) { halt(); let dead = 1; } let live = 2; }\n"
+    )
+    open_nova(server, uri, text)
+
+    unreachable = diagnostics(server, uri, "nova.unreachable-code")
+    assert len(unreachable) == 1
+    assert unreachable[0].message == "unreachable code after never-returning call"
+    assert text[unreachable[0].span.start : unreachable[0].span.end] == "let dead = 1;"
+
+
+def test_cross_file_nested_never_effect_rebinds_after_annotation_change() -> None:
+    server = initialized_server()
+    helper_uri = "file:///workspace/helper.nova"
+    main_uri = "file:///workspace/main.nova"
+    open_nova(
+        server,
+        helper_uri,
+        "fn halt() -> ! { while (true) { continue; } }\n",
+    )
+    main_text = (
+        "fn value(flag: Bool) -> Int { "
+        "if (flag) { halt(); let dead = 1; } else { return 1; } }\n"
+    )
+    open_nova(server, main_uri, main_text)
+
+    assert diagnostics(server, main_uri, "nova.missing-return") == ()
+    unreachable = diagnostics(server, main_uri, "nova.unreachable-code")
+    assert len(unreachable) == 1
+    assert main_text[unreachable[0].span.start : unreachable[0].span.end] == (
+        "let dead = 1;"
+    )
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": helper_uri, "version": 2},
+                "contentChanges": [
+                    {"text": "fn halt() -> Unit { return (); }\n"}
+                ],
+            },
+        )
+    )
+
+    assert len(diagnostics(server, main_uri, "nova.missing-return")) == 1
+    assert diagnostics(server, main_uri, "nova.unreachable-code") == ()
