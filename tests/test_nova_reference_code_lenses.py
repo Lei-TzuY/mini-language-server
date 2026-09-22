@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from mini_language_server import NovaProductLanguageServer
+from mini_language_server.workspace import WorkspaceIndexError
 
 
 def request(method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
@@ -13,12 +14,26 @@ def notify(method: str, params: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialize(server: NovaProductLanguageServer) -> None:
+def initialize(
+    server: NovaProductLanguageServer,
+    *,
+    refresh_support: bool = False,
+) -> None:
+    workspace = (
+        {"codeLens": {"refreshSupport": True}}
+        if refresh_support
+        else {}
+    )
     result = server.handle(
         request(
             "initialize",
             1,
-            {"capabilities": {"textDocument": {"codeLens": {}}}},
+            {
+                "capabilities": {
+                    "textDocument": {"codeLens": {}},
+                    "workspace": workspace,
+                }
+            },
         )
     )
     assert result is not None
@@ -307,3 +322,167 @@ def test_code_lens_resolve_honors_cancellation_before_publication() -> None:
         "id": 3,
         "error": {"code": -32800, "message": "Request cancelled"},
     }
+
+def test_code_lens_refresh_requested_for_cross_file_workspace_change() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    target_uri = "file:///workspace/target.nova"
+    caller_uri = "file:///workspace/caller.nova"
+
+    open_nova(server, target_uri, "fn target() {}\n")
+    assert server.drain_server_requests() == []
+
+    open_nova(server, caller_uri, "fn caller() { target() }\n")
+    requests = server.drain_server_requests()
+    assert len(requests) == 1
+    refresh = requests[0]
+    assert refresh["method"] == "workspace/codeLens/refresh"
+    assert "params" not in refresh
+    request_id = refresh["id"]
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": caller_uri, "version": 2},
+                "contentChanges": [
+                    {"text": "fn caller() { target() target() }\n"}
+                ],
+            },
+        )
+    )
+    assert server.drain_server_requests() == []
+
+    assert server.handle(
+        {"jsonrpc": "2.0", "id": request_id, "result": None}
+    ) is None
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": caller_uri, "version": 3},
+                "contentChanges": [{"text": "fn caller() { target() }\n"}],
+            },
+        )
+    )
+    second = server.drain_server_requests()
+    assert len(second) == 1
+    assert second[0]["method"] == "workspace/codeLens/refresh"
+    assert second[0]["id"] != request_id
+
+
+def test_code_lens_refresh_error_response_rearms_future_refresh() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    target_uri = "file:///workspace/target.nova"
+    caller_uri = "file:///workspace/caller.nova"
+    open_nova(server, target_uri, "fn target() {}\n")
+    open_nova(server, caller_uri, "fn caller() { target() }\n")
+    refresh = server.drain_server_requests()[0]
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": refresh["id"],
+            "error": {"code": -32603, "message": "refresh failed"},
+        }
+    ) is None
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": caller_uri, "version": 2},
+                "contentChanges": [
+                    {"text": "fn caller() { target() target() }\n"}
+                ],
+            },
+        )
+    )
+    assert len(server.drain_server_requests()) == 1
+
+
+def test_code_lens_refresh_requires_workspace_client_support() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=False)
+    open_nova(server, "file:///workspace/target.nova", "fn target() {}\n")
+    open_nova(
+        server,
+        "file:///workspace/caller.nova",
+        "fn caller() { target() }\n",
+    )
+
+    assert server.drain_server_requests() == []
+
+
+def test_single_document_change_does_not_send_global_code_lens_refresh() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn target() {}\n")
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": "fn target(value: Int) {}\n"}],
+            },
+        )
+    )
+
+    assert server.drain_server_requests() == []
+
+
+def test_closing_workspace_document_requests_code_lens_refresh() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    target_uri = "file:///workspace/target.nova"
+    caller_uri = "file:///workspace/caller.nova"
+    open_nova(server, target_uri, "fn target() {}\n")
+    open_nova(server, caller_uri, "fn caller() { target() }\n")
+    first = server.drain_server_requests()[0]
+    server.handle({"jsonrpc": "2.0", "id": first["id"], "result": None})
+
+    server.handle(
+        notify(
+            "textDocument/didClose",
+            {"textDocument": {"uri": caller_uri}},
+        )
+    )
+
+    refresh = server.drain_server_requests()
+    assert len(refresh) == 1
+    assert refresh[0]["method"] == "workspace/codeLens/refresh"
+
+
+def test_failed_workspace_replacement_does_not_request_code_lens_refresh(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, refresh_support=True)
+    target_uri = "file:///workspace/target.nova"
+    caller_uri = "file:///workspace/caller.nova"
+    open_nova(server, target_uri, "fn target() {}\n")
+    open_nova(server, caller_uri, "fn caller() { target() }\n")
+    first = server.drain_server_requests()[0]
+    server.handle({"jsonrpc": "2.0", "id": first["id"], "result": None})
+
+    def reject_replace(*args: Any, **kwargs: Any) -> Any:
+        raise WorkspaceIndexError("stale workspace")
+
+    monkeypatch.setattr(server.workspace_symbols, "replace", reject_replace)
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": caller_uri, "version": 2},
+                "contentChanges": [
+                    {"text": "fn caller() { target() target() }\n"}
+                ],
+            },
+        )
+    )
+
+    assert server.drain_server_requests() == []
