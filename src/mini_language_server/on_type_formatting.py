@@ -100,7 +100,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 or not isinstance(character, int)
             ):
                 return self._error(request_id, -32602, "Invalid params")
-            source = SourceText(document.text)
+            source = self._source_text(document.text)
             try:
                 source.offset_at(Position(line=line, character=character))
             except SourceError:
