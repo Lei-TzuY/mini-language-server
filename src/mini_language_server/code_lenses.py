@@ -105,7 +105,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         try:
             self.requests.checkpoint(context)
-            source = SourceText(semantic.symbols.syntax.document.text)
+            source = self._source_text(semantic.symbols.syntax.document.text)
             pending: list[tuple[dict[str, Any], str]] = []
             for symbol in semantic.symbols.symbols:
                 if symbol.kind != "function":
@@ -278,7 +278,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
                 continue
-            source = SourceText(snapshot.symbols.syntax.document.text)
+            source = self._source_text(snapshot.symbols.syntax.document.text)
             for call_name, span in tree.calls:
                 if call_name != name:
                     continue
