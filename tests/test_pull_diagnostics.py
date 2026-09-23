@@ -86,12 +86,16 @@ def workspace_diagnostics(
     server: NovaProductLanguageServer,
     request_id: int = 20,
     previous_result_ids: list[dict[str, str]] | None = None,
+    partial_result_token: str | int | None = None,
 ) -> dict:
+    params: dict[str, Any] = {"previousResultIds": previous_result_ids or []}
+    if partial_result_token is not None:
+        params["partialResultToken"] = partial_result_token
     response = server.handle(
         request(
             "workspace/diagnostic",
             request_id=request_id,
-            params={"previousResultIds": previous_result_ids or []},
+            params=params,
         )
     )
     assert response is not None
@@ -685,3 +689,163 @@ def test_unscoped_workspace_diagnostics_reject_new_document_after_capture(
         "id": 20,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+def test_workspace_diagnostics_emit_deterministic_partial_result_chunks() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    uris = [f"file:///workspace/{index:02d}.nova" for index in range(17)]
+    for index, uri in enumerate(uris):
+        open_document(server, uri, f"fn item{index}() {{}}\n")
+    server.drain_notifications()
+
+    response = workspace_diagnostics(
+        server,
+        partial_result_token="workspace:diagnostics",
+    )
+
+    assert response["result"] == {"items": []}
+    progress = [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ]
+    assert len(progress) == 2
+    assert [item["params"]["token"] for item in progress] == [
+        "workspace:diagnostics",
+        "workspace:diagnostics",
+    ]
+    chunks = [item["params"]["value"]["items"] for item in progress]
+    assert [len(chunk) for chunk in chunks] == [16, 1]
+    assert [report["uri"] for chunk in chunks for report in chunk] == uris
+    assert all(report["kind"] == "full" for chunk in chunks for report in chunk)
+
+
+def test_workspace_diagnostic_partial_results_preserve_unchanged_reports() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    a_uri = "file:///workspace/a.nova"
+    b_uri = "file:///workspace/b.nova"
+    open_document(server, a_uri, "fn a() {}\n")
+    open_document(server, b_uri, "fn b() {}\n")
+    server.drain_notifications()
+
+    first = workspace_diagnostics(server)["result"]["items"]
+    previous = [
+        {"uri": report["uri"], "value": report["resultId"]}
+        for report in first
+    ]
+
+    response = workspace_diagnostics(
+        server,
+        request_id=21,
+        previous_result_ids=previous,
+        partial_result_token=7,
+    )
+
+    assert response["result"] == {"items": []}
+    progress = [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ]
+    assert len(progress) == 1
+    assert progress[0]["params"]["token"] == 7
+    reports = progress[0]["params"]["value"]["items"]
+    assert [report["uri"] for report in reports] == [a_uri, b_uri]
+    assert [report["kind"] for report in reports] == ["unchanged", "unchanged"]
+
+
+def test_workspace_diagnostic_partial_result_token_is_validated() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    open_document(server, "file:///workspace/main.nova", "fn main() {}\n")
+    server.drain_notifications()
+
+    for request_id, token in enumerate((None, True, [], {}), start=30):
+        response = server.handle(
+            request(
+                "workspace/diagnostic",
+                request_id=request_id,
+                params={
+                    "previousResultIds": [],
+                    "partialResultToken": token,
+                },
+            )
+        )
+        assert response == {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32602, "message": "Invalid params"},
+        }
+
+    assert [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ] == []
+
+
+def test_cancelled_workspace_diagnostic_emits_no_partial_result(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    open_document(server, "file:///workspace/main.nova", "fn main() {}\n")
+    server.drain_notifications()
+    real_checkpoint = server.requests.checkpoint
+
+    def cancel_before_checkpoint(context: Any) -> None:
+        server.requests.cancel(context.request_id)
+        real_checkpoint(context)
+
+    monkeypatch.setattr(server.requests, "checkpoint", cancel_before_checkpoint)
+
+    assert workspace_diagnostics(
+        server,
+        partial_result_token="partial",
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 20,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
+    assert [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ] == []
+
+
+def test_stale_workspace_membership_emits_no_partial_result(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize_with_workspace_folder(server)
+    first_uri = "file:///workspace/a/first.nova"
+    second_uri = "file:///workspace/a/second.nova"
+    open_document(server, first_uri, "fn first() {}\n")
+    server.drain_notifications()
+    real_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def open_before_publication(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        real_checkpoint(context)
+        if calls == 3:
+            open_document(server, second_uri, "fn second() {}\n")
+
+    monkeypatch.setattr(server.requests, "checkpoint", open_before_publication)
+
+    assert workspace_diagnostics(
+        server,
+        partial_result_token="partial",
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 20,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ] == []
