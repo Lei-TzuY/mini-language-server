@@ -228,6 +228,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def _sync_closed_workspace_files(self) -> bool:
         """Reconcile bounded local closed files without displacing open buffers."""
+        if not self.workspace_folders.scoped:
+            return False
         open_uris = frozenset(
             document.uri
             for document in self.documents.snapshots()
@@ -272,7 +274,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def _restore_closed_workspace_file(self, uri: str) -> bool:
         """Restore current disk content after an editor buffer relinquishes one URI."""
-        if self.documents.get(uri) is not None or not self.workspace_folders.contains(uri):
+        if (
+            not self.workspace_folders.scoped
+            or self.documents.get(uri) is not None
+            or not self.workspace_folders.contains(uri)
+        ):
             return False
         item = read_closed_workspace_file(uri)
         if item is None or not self.workspace_folders.contains(item.uri):
@@ -297,6 +303,20 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             text=item.text,
         )
         return self.nova_adapter.publish(detached, document)
+
+    def _workspace_edit_versions(
+        self, snapshots: tuple[SemanticSnapshot, ...]
+    ) -> dict[str, int | None]:
+        """Return exact open-buffer versions and null for detached closed files."""
+        versions: dict[str, int | None] = {}
+        for snapshot in snapshots:
+            document = self.documents.get(snapshot.uri)
+            versions[snapshot.uri] = (
+                document.version
+                if document is snapshot.symbols.syntax.document
+                else None
+            )
+        return versions
 
     def _workspace_documents(
         self, scope: WorkspaceFolderSnapshot | None = None
@@ -931,10 +951,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 ordered = sorted(edits_by_uri[uri], key=lambda item: item[0])
                 changes[uri] = [edit for _, edit in ordered]
 
-            versions = {
-                snapshot.uri: snapshot.symbols.syntax.document.version
-                for snapshot in snapshots
-            }
+            versions = self._workspace_edit_versions(snapshots)
             workspace_edit = self._workspace_edit(
                 changes,
                 versions=versions,
