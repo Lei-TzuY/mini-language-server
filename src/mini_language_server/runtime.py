@@ -142,6 +142,7 @@ def run_session(
     pending_lock = Lock()
     active_request_thread: Thread | None = None
     active_request_id: str | int | None = None
+    transport_failed = False
 
     def read_inbound() -> None:
         while True:
@@ -189,6 +190,16 @@ def run_session(
         with pending_lock:
             pending_ids.discard(request_id)
 
+    def discard_deferred_after_transport_failure() -> None:
+        """Drop already-read work that must not start after the transport dies."""
+        while deferred:
+            queued = deferred.popleft()
+            if not isinstance(queued, dict):
+                continue
+            request_id = _client_request_id(queued)
+            if request_id is not None:
+                finish_transport_request(request_id)
+
     def dispatch_request(message: dict[str, Any], request_id: str | int) -> None:
         try:
             response = active_server.handle(message)
@@ -214,7 +225,7 @@ def run_session(
     while active_server.state is not ServerState.EXITED:
         item = (
             deferred.popleft()
-            if active_request_thread is None and deferred
+            if not transport_failed and active_request_thread is None and deferred
             else events.get()
         )
 
@@ -226,16 +237,23 @@ def run_session(
             active_request_id = None
             replay_controls()
             if item.error is not None:
+                reader_thread.join()
                 raise item.error
             _write_batch(
                 output_stream,
                 _drain_after_dispatch(active_server, item.response),
             )
+            if transport_failed:
+                reader_thread.join()
+                return 1
             continue
 
         if item is _TRANSPORT_FAILURE:
+            transport_failed = True
+            discard_deferred_after_transport_failure()
             if active_request_thread is not None:
-                deferred.append(item)
+                assert active_request_id is not None
+                active_server.requests.stage_cancel(active_request_id)
                 continue
             replay_controls()
             _write_batch(
