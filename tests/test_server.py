@@ -425,7 +425,7 @@ def test_initialize_falls_back_to_utf16_without_supported_advertisement() -> Non
             params={
                 "capabilities": {
                     "general": {
-                        "positionEncodings": ["utf-32"],
+                        "positionEncodings": ["utf-7"],
                     }
                 }
             },
@@ -749,3 +749,121 @@ def test_malformed_server_response_never_reaches_consumer_hook() -> None:
     ) is None
     assert server.completed == 0
     assert server._has_pending_server_request("workspace/configuration")
+
+def test_initialize_can_negotiate_utf32_position_encoding() -> None:
+    server = LanguageServer()
+    response = server.handle(
+        request(
+            "initialize",
+            params={
+                "capabilities": {
+                    "general": {
+                        "positionEncodings": ["utf-32", "utf-8", "utf-16"],
+                    }
+                }
+            },
+        )
+    )
+
+    assert response is not None
+    assert response["result"]["capabilities"]["positionEncoding"] == "utf-32"
+    assert server.position_encoding == "utf-32"
+    assert server.documents.position_encoding == "utf-32"
+
+
+def test_definition_maps_utf32_positions_and_spans() -> None:
+    server = LanguageServer()
+    server.handle(
+        request(
+            "initialize",
+            params={
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-32"]},
+                }
+            },
+        )
+    )
+    uri = "file:///workspace/utf32.nova"
+    text = "😀foo\nfoo\n"
+    open_document(server, uri, text)
+    symbol = Symbol("foo", "variable", Span(1, 4))
+    publish_semantics(
+        server,
+        uri,
+        [symbol],
+        [Reference(Span(5, 8), symbol)],
+    )
+
+    response = server.handle(
+        request(
+            "textDocument/definition",
+            params={
+                "textDocument": {"uri": uri},
+                "position": {"line": 1, "character": 1},
+            },
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "uri": uri,
+            "range": {
+                "start": {"line": 0, "character": 1},
+                "end": {"line": 0, "character": 4},
+            },
+        },
+    }
+
+
+def test_push_diagnostics_render_ranges_in_negotiated_utf32_units() -> None:
+    server = LanguageServer()
+    server.handle(
+        request(
+            "initialize",
+            params={
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-32"]},
+                    "textDocument": {
+                        "publishDiagnostics": {"versionSupport": True}
+                    },
+                }
+            },
+        )
+    )
+    uri = "file:///workspace/utf32.nova"
+    open_document(server, uri, "😀foo")
+    symbol = Symbol("foo", "variable", Span(1, 4))
+    publish_semantics(server, uri, [symbol], [])
+    semantic = server.semantics.get(uri)
+    assert semantic is not None
+
+    assert server.publish_diagnostics(
+        semantic,
+        [Diagnostic(Span(1, 4), "example", code="example", source="test")],
+    )
+    notifications = server.drain_notifications()
+
+    assert notifications == [
+        {
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": uri,
+                "version": 1,
+                "diagnostics": [
+                    {
+                        "range": {
+                            "start": {"line": 0, "character": 1},
+                            "end": {"line": 0, "character": 4},
+                        },
+                        "severity": 1,
+                        "message": "example",
+                        "code": "example",
+                        "source": "test",
+                    }
+                ],
+            },
+        }
+    ]
