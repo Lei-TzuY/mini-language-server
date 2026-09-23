@@ -141,6 +141,8 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
                 ]
             },
         )
+        if request_id is None:
+            return
         self._formatting_configuration_registration_request = request_id
 
     def _workspace_folder_scope_changed(self, before: Any, after: Any) -> None:
@@ -178,6 +180,8 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
             "workspace/configuration",
             {"items": items},
         )
+        if request_id is None:
+            return
         self._formatting_configuration_requests[request_id] = (
             self._formatting_configuration_generation,
             scopes,
