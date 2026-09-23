@@ -1066,3 +1066,33 @@ def test_server_request_outbox_is_thread_safe() -> None:
     assert len(queued) == 100
     assert {request["id"] for request in queued} == set(ids)
     assert set(server._pending_server_requests) == set(ids)
+
+def test_live_server_response_guard_requires_delivered_pending_request() -> None:
+    server = LanguageServer()
+    request_id = server._queue_server_request(
+        "workspace/configuration",
+        {"items": [{"section": "mini-language-server.formatting"}]},
+    )
+    response = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": [{"tabSize": 2, "insertSpaces": True}],
+    }
+
+    assert server._can_dispatch_server_response_live(response) is False
+
+    sent = server.drain_server_requests()
+    assert [message["id"] for message in sent] == [request_id]
+    assert server._can_dispatch_server_response_live(response) is True
+
+    assert server._can_dispatch_server_response_live(
+        {"jsonrpc": "2.0", "id": "server:unknown", "result": None}
+    ) is False
+    assert server._can_dispatch_server_response_live(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": None,
+            "error": {"code": -32603, "message": "mixed"},
+        }
+    ) is False
