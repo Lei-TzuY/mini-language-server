@@ -160,6 +160,26 @@ class DiagnosticStore:
                 return None
         return snapshot
 
+    def get_primary_current(
+        self, semantic: SemanticSnapshot
+    ) -> DiagnosticSnapshot | None:
+        """Return a primary-current snapshot solely for deterministic recomputation.
+
+        Related semantic parents may already be stale. Callers must rebuild any
+        diagnostics that depend on those parents before publishing or rendering.
+        """
+        if not isinstance(semantic, SemanticSnapshot):
+            raise DiagnosticError(
+                "primary-current lookup requires a SemanticSnapshot"
+            )
+        if self._semantic.get(semantic.uri) is not semantic:
+            return None
+        with self._lock:
+            snapshot = self._snapshots.get(semantic.uri)
+            if snapshot is None or snapshot.semantic is not semantic:
+                return None
+            return snapshot
+
     def commit_if_current(
         self, snapshot: DiagnosticSnapshot, commit: Callable[[], _T]
     ) -> _T:
