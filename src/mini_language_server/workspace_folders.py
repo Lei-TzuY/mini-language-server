@@ -255,6 +255,11 @@ class WorkspaceFolderSet:
         )
 
     @staticmethod
+    def uri_identity(uri: str) -> tuple[str, str, str, str, str]:
+        """Return one RFC-safe URI identity without filesystem-specific guesses."""
+        return WorkspaceFolderSet._folder_identity(uri)
+
+    @staticmethod
     def _folder_identity(uri: str) -> tuple[str, str, str, str, str]:
         """Return one RFC-safe identity key while preserving the original URI."""
         try:

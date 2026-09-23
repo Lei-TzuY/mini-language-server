@@ -17,7 +17,7 @@ The checkpoint covers:
 9. request cancellation, including shutdown/exit retirement of all active client-to-server request generations
 10. tracked server-to-client JSON-RPC requests with lock-backed pending/outbox ownership, atomic consumer `on_queued` publication, coalesced empty-to-non-empty transport wakeups, live response delivery after proven send, cancellation/retirement of stale generation-bound requests, shutdown/exit retirement that prevents post-lifecycle response delivery, dynamic capability registration, coalesced negotiated workspace refresh lifecycles, standard `$/progress` partial-result and negotiated work-done lifecycles including exact-commit workspace-symbol streaming, response retirement, and validated consumer response delivery
 11. terminal outbound-notification quiescence: shutdown preserves only lifecycle-required cancellation notifications for already-delivered server requests, exit preserves no notification traffic, and diagnostics/progress/trace publication shares one lock-backed terminal append gate
-11. workspace-folder scope generations for cross-file tooling
+11. workspace-folder scope generations for cross-file tooling, including bounded detached local closed-file Nova indexing with open-buffer precedence and disk revalidation before source-mutating rename publication
 12. stale-result suppression across concurrent document, semantic, workspace-scope, and workspace-dependent semantic-token delta publication
 
 The core invariant is generational identity: a derived result is valid only while the exact parent snapshot that produced it remains current. Structural equality or a matching numeric document version is not enough. Workspace-wide derived results that capture a complete semantic or scoped open-document workspace must also reject publication when a relevant URI is added, removed, or leaves/re-enters workspace-folder scope after capture, even if every previously captured snapshot object remains current. Scoped queries may ignore mutations to documents that were outside the captured scope.
@@ -54,7 +54,7 @@ The following remain deliberate future work:
 - hover and completion
 - semantic tokens
 - multi-file/workspace symbol and reference indexing
-- remaining WorkspaceEdit/file-operation surfaces (create/delete, unopened-file indexing) when Nova gains a concrete module/filesystem workflow; negotiated `willRenameFiles` preflight plus `didRenameFiles` commit for already-open Nova documents now form an exact two-phase URI-rename lifecycle
+- remaining filesystem lifecycle surfaces: `willRenameFiles` still preflights only open-document ownership, while create/delete notifications, filesystem watchers or remote providers, closed-file diagnostics, and module/import rewrite semantics remain future executable phases; bounded unopened local-file indexing and didRename-triggered reconciliation are now part of the stable workspace substrate
 - broader LSP compliance surface
 - editor-specific integration layers
 

@@ -858,10 +858,10 @@ class LanguageServer:
         self,
         changes: dict[str, list[dict[str, Any]]],
         *,
-        versions: dict[str, int],
+        versions: dict[str, int | None],
         annotation_label: str | None = None,
     ) -> dict[str, Any]:
-        """Render deterministic WorkspaceEdit payloads from captured snapshot versions."""
+        """Render deterministic WorkspaceEdits from captured open/closed version state."""
         ordered = {uri: changes[uri] for uri in sorted(changes)}
         if not self._workspace_edit_document_changes:
             return {"changes": ordered}
@@ -875,10 +875,16 @@ class LanguageServer:
         annotation_id = "edit:1"
         document_changes: list[dict[str, Any]] = []
         for uri, edits in ordered.items():
-            version = versions.get(uri)
-            if not isinstance(version, int) or isinstance(version, bool):
+            if uri not in versions:
                 raise AssertionError(
-                    f"versioned workspace edit requires captured version for {uri}"
+                    f"workspace edit requires captured version state for {uri}"
+                )
+            version = versions[uri]
+            if version is not None and (
+                not isinstance(version, int) or isinstance(version, bool)
+            ):
+                raise AssertionError(
+                    f"workspace edit requires integer or null version for {uri}"
                 )
             rendered_edits = (
                 [

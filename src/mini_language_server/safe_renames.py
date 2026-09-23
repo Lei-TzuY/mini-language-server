@@ -114,16 +114,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 ordered = sorted(edits_by_uri[uri], key=lambda item: item[0])
                 changes[uri] = [edit for _, edit in ordered]
 
-            versions = {
-                snapshot.uri: snapshot.symbols.syntax.document.version
-                for snapshot in snapshots
-            }
+            versions = self._workspace_edit_versions(snapshots)
             workspace_edit = self._workspace_edit(
                 changes,
                 versions=versions,
                 annotation_label=f"Rename '{name}' to '{new_name}'",
             )
             self.requests.checkpoint(context)
+            if not self._closed_workspace_snapshots_current(snapshots):
+                self._refresh_closed_workspace_files()
+                return self._error(request_id, -32801, "Content modified")
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
                     snapshots,
