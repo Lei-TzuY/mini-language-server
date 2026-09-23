@@ -30,6 +30,7 @@ def initialized_server(
     document_changes: bool = False,
     change_annotations: bool = False,
     resolve_edit: bool = False,
+    tag_values: list[int] | None = None,
 ) -> NovaProductLanguageServer:
     server = NovaProductLanguageServer()
     code_action: dict[str, Any] = {}
@@ -46,13 +47,19 @@ def initialized_server(
     if workspace_edit:
         workspace["workspaceEdit"] = workspace_edit
 
+    text_document: dict[str, Any] = {"codeAction": code_action}
+    if tag_values is not None:
+        text_document["publishDiagnostics"] = {
+            "tagSupport": {"valueSet": tag_values}
+        }
+
     initialized = server.handle(
         request(
             "initialize",
             1,
             {
                 "capabilities": {
-                    "textDocument": {"codeAction": code_action},
+                    "textDocument": text_document,
                     "workspace": workspace,
                 },
                 "workspaceFolders": [
@@ -377,7 +384,11 @@ def test_open_buffer_takes_over_closed_quick_fix_version_ownership(
     source = tmp_path / "main.nova"
     text = "fn main() { missing() }\n"
     source.write_text(text, encoding="utf-8")
-    server = initialized_server(tmp_path, document_changes=True)
+    server = initialized_server(
+        tmp_path,
+        document_changes=True,
+        tag_values=[1],
+    )
     uri = source.absolute().as_uri()
 
     server.handle(
