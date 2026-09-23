@@ -16,6 +16,12 @@ Closing the notification outbox discards queued diagnostics, progress, trace, re
 
 `exit` is stricter. It retires both request directions locally, closes the notification outbox, and preserves no new protocol traffic. Any notifications that were queued but not yet drained are discarded.
 
+## Lifecycle message-shape ownership
+
+The lifecycle treats `exit` and `initialized` as notification-only methods. A message carrying either method together with a JSON-RPC request `id` is rejected deterministically and cannot mutate lifecycle state, retire request ownership, close the notification outbox, or trigger product-layer initialization side effects such as `workspace/configuration`.
+
+Terminal exit is idempotent. Once the server is `EXITED`, later messages—including duplicate `exit` notifications—are ignored without recomputing the process exit code or replaying lifecycle cleanup. A clean `shutdown` → `exit` sequence therefore remains a successful exit even if a duplicate terminal notification arrives.
+
 ## Concurrency invariant
 
 Notification publication and terminal close share one re-entrant lock. The lifecycle gate and append happen under the same lock, so a worker that began racing with shutdown cannot read an open state and append after the close boundary. A worker blocked behind the close observes the terminal state and its notification is rejected.
