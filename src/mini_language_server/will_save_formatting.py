@@ -135,7 +135,10 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
         ):
             return
         self._formatting_configuration_registration_attempted = True
-        request_id = self._queue_server_request(
+        def own_registration(request_id: str) -> None:
+            self._formatting_configuration_registration_request = request_id
+
+        self._queue_server_request(
             "client/registerCapability",
             {
                 "registrations": [
@@ -148,8 +151,8 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
                     }
                 ]
             },
+            on_queued=own_registration,
         )
-        self._formatting_configuration_registration_request = request_id
 
     def _workspace_folder_scope_changed(self, before: Any, after: Any) -> None:
         super()._workspace_folder_scope_changed(before, after)
@@ -183,16 +186,21 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
             if scope is not None:
                 item["scopeUri"] = scope
             items.append(item)
-        request_id = self._queue_server_request(
-            "workspace/configuration",
-            {"items": items},
-        )
         with self._formatting_configuration_lock:
             generation = self._formatting_configuration_generation
-            self._formatting_configuration_requests[request_id] = (
-                generation,
-                scopes,
-            )
+
+        def own_configuration(request_id: str) -> None:
+            with self._formatting_configuration_lock:
+                self._formatting_configuration_requests[request_id] = (
+                    generation,
+                    scopes,
+                )
+
+        self._queue_server_request(
+            "workspace/configuration",
+            {"items": items},
+            on_queued=own_configuration,
+        )
 
     def _server_request_cancelled(self, request_id: str, method: str) -> None:
         super()._server_request_cancelled(request_id, method)
