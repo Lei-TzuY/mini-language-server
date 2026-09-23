@@ -30,7 +30,7 @@ The core invariant is generational identity: a derived result is valid only whil
 | syntax store | current parsed result for one exact document | symbol resolution |
 | symbol index | deterministic symbols for one exact syntax snapshot | reference semantics |
 | semantic database | resolved references bound to exact symbol objects | protocol rendering |
-| diagnostic store | diagnostics bound to one exact semantic snapshot | document mutation |
+| diagnostic store | diagnostics bound to the primary semantic snapshot plus any exact cross-file related semantic parents | document mutation |
 | request tracker | cancellation and stale-document checkpoints | semantic freshness publication |
 
 ## Maintenance triggers
