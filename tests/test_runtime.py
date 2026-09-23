@@ -1671,11 +1671,12 @@ def test_stdout_failure_retires_worker_created_server_request() -> None:
 @pytest.mark.parametrize(
     "method",
     [
+        "workspace/didChangeWatchedFiles",
         "workspace/didCreateFiles",
         "workspace/didDeleteFiles",
     ],
 )
-def test_workspace_create_delete_notifications_are_live_snapshot_mutations(
+def test_workspace_file_notifications_are_live_snapshot_mutations(
     method: str,
 ) -> None:
     assert _is_live_snapshot_mutation(
