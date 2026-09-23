@@ -331,3 +331,94 @@ def test_closed_file_create_requests_workspace_diagnostic_refresh(
     queued = server.drain_server_requests()
     assert len(queued) == 1
     assert queued[0]["method"] == "workspace/diagnostic/refresh"
+
+
+def test_closed_same_file_argument_count_diagnostic(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_bytes(
+        b"fn target(value: Int) -> Int { return value; } "
+        b"fn caller() { target(); }\n"
+    )
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+
+    report = reports_by_uri(workspace_diagnostics(server))[uri]
+
+    assert report["version"] is None
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+    ] == [
+        (
+            "nova.argument-count",
+            "function 'target' expects 1 argument(s) but got 0",
+        )
+    ]
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_cross_file_argument_count_uses_exact_target_signature(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_bytes(
+        b"fn target(first: Int, second: Int) -> Int { return first; }\n"
+    )
+    caller.write_bytes(b"fn caller() { target(1); }\n")
+    server = initialized_server(tmp_path)
+
+    reports = reports_by_uri(workspace_diagnostics(server))
+    caller_report = reports[caller.absolute().as_uri()]
+    provider_report = reports[provider.absolute().as_uri()]
+
+    assert provider_report["items"] == []
+    assert [
+        (item["code"], item["message"])
+        for item in caller_report["items"]
+    ] == [
+        (
+            "nova.argument-count",
+            "function 'target' expects 2 argument(s) but got 1",
+        )
+    ]
+
+
+def test_closed_ambiguous_call_does_not_guess_argument_count(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.nova"
+    second = tmp_path / "second.nova"
+    caller = tmp_path / "caller.nova"
+    first.write_bytes(b"fn target(value: Int) {}\n")
+    second.write_bytes(b"fn target() {}\n")
+    caller.write_bytes(b"fn caller() { target(1, 2); }\n")
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        caller.absolute().as_uri()
+    ]
+
+    assert [item["code"] for item in report["items"]] == [
+        "nova.ambiguous-function"
+    ]
+
+
+def test_closed_argument_count_uses_literal_aware_call_boundaries(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "literal.nova"
+    source.write_bytes(
+        b"fn target(value: String) {} "
+        b'fn caller() { target("a,b"); }\n'
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert all(
+        item["code"] != "nova.argument-count"
+        for item in report["items"]
+    )
