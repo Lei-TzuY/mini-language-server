@@ -16,7 +16,7 @@ After the `initialized` notification, the server queues one tracked `client/regi
 - glob: `**/*.nova`
 - kind: `7` (create + change + delete)
 
-The registration ID is stable for the session and registration is attempted at most once. Notifications are ignored until the exact registration request succeeds with a null result. Registration error, cancellation, shutdown retirement, or a client without dynamic-registration support leaves watched-file handling inactive. Duplicate `initialized` notifications never create a second registration.
+The registration ID is stable for the session and registration is attempted at most once. Notifications are ignored until the exact registration request succeeds with a null result. That success boundary immediately performs one bounded closed-index rescan so filesystem changes that occurred between the initial workspace scan and watcher installation cannot be permanently missed. Registration error, cancellation, shutdown retirement, or a client without dynamic-registration support leaves watched-file handling inactive and does not perform the registration-window rescan. Duplicate `initialized` notifications never create a second registration.
 
 ## Workspace transition
 
