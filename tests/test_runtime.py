@@ -413,13 +413,13 @@ def test_runtime_dispatches_document_change_while_request_is_active() -> None:
         },
     )
     tail = framed(
-        change_notification(uri, version=2, text="fn main() { let x = 1; }\n"),
         {
             "jsonrpc": "2.0",
             "id": 3,
             "method": "test/after",
             "params": {},
         },
+        change_notification(uri, version=2, text="fn main() { let x = 1; }\n"),
         shutdown(4),
         exit_notification(),
     )
