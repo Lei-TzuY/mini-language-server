@@ -17,13 +17,25 @@ def notify(method: str, params: dict) -> dict:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialized_server() -> NovaProductLanguageServer:
+def initialized_server(
+    *, tag_values: list[int] | None = None
+) -> NovaProductLanguageServer:
     server = NovaProductLanguageServer()
+    publish_diagnostics: dict[str, Any] = {}
+    if tag_values is not None:
+        publish_diagnostics["tagSupport"] = {"valueSet": tag_values}
     response = server.handle(
         request(
             "initialize",
             1,
-            {"capabilities": {"textDocument": {"diagnostic": {}}}},
+            {
+                "capabilities": {
+                    "textDocument": {
+                        "diagnostic": {},
+                        "publishDiagnostics": publish_diagnostics,
+                    }
+                }
+            },
         )
     )
     assert response is not None
@@ -84,7 +96,7 @@ def test_diagnostic_tags_are_validated_as_language_independent_values() -> None:
 
 
 def test_unreachable_code_is_tagged_unnecessary_in_push_and_pull_protocol() -> None:
-    server = initialized_server()
+    server = initialized_server(tag_values=[1])
     uri = "file:///workspace/main.nova"
     open_nova(server, uri, "fn main() { return; let value = 1; }\n")
 
@@ -133,7 +145,7 @@ def test_pull_result_id_changes_when_only_diagnostic_tags_change() -> None:
 
 
 def test_unreachable_tag_tracks_change_close_and_reopen_lifecycle() -> None:
-    server = initialized_server()
+    server = initialized_server(tag_values=[1])
     uri = "file:///workspace/main.nova"
     open_nova(server, uri, "fn main() { return; let value = 1; }\n", version=1)
     assert tagged_unreachable(pull(server, uri)["result"]["items"])["tags"] == [1]
@@ -177,3 +189,78 @@ def test_tagged_pull_rejects_same_version_semantic_replacement(monkeypatch: Any)
         "id": 2,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+def test_unreachable_tag_is_omitted_without_client_tag_support() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() { return; let value = 1; }\n")
+
+    published = next(
+        notification
+        for notification in server.drain_notifications()
+        if notification["method"] == "textDocument/publishDiagnostics"
+        and any(
+            item.get("code") == "nova.unreachable-code"
+            for item in notification["params"]["diagnostics"]
+        )
+    )
+    push_item = tagged_unreachable(published["params"]["diagnostics"])
+    assert "tags" not in push_item
+
+    pull_item = tagged_unreachable(pull(server, uri)["result"]["items"])
+    assert "tags" not in pull_item
+
+    snapshot = server.diagnostics.get(uri)
+    assert snapshot is not None
+    internal = next(
+        item
+        for item in snapshot.diagnostics
+        if item.code == "nova.unreachable-code"
+    )
+    assert internal.tags == ("unnecessary",)
+
+
+def test_diagnostic_tag_value_set_filters_unadvertised_tags() -> None:
+    server = initialized_server(tag_values=[2])
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() { return; let value = 1; }\n")
+
+    published = next(
+        notification
+        for notification in server.drain_notifications()
+        if notification["method"] == "textDocument/publishDiagnostics"
+        and any(
+            item.get("code") == "nova.unreachable-code"
+            for item in notification["params"]["diagnostics"]
+        )
+    )
+    assert "tags" not in tagged_unreachable(
+        published["params"]["diagnostics"]
+    )
+    assert "tags" not in tagged_unreachable(
+        pull(server, uri)["result"]["items"]
+    )
+
+
+def test_malformed_diagnostic_tag_capability_fails_closed() -> None:
+    server = NovaProductLanguageServer()
+    response = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "textDocument": {
+                        "diagnostic": {},
+                        "publishDiagnostics": {
+                            "tagSupport": {
+                                "valueSet": [True, "1", 99, 1]
+                            }
+                        },
+                    }
+                }
+            },
+        )
+    )
+    assert response is not None
+    assert server._diagnostic_tag_values == frozenset({1})
