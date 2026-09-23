@@ -327,22 +327,15 @@ def test_cross_file_workspace_drift_rejects_inline_completion(monkeypatch) -> No
 
     entered = Event()
     release = Event()
-    original = server.workspace_symbols.commit_snapshots_if_current
-    blocked_once = False
+    original = server._typed_completion_items
 
-    def blocked(snapshots, commit):
-        nonlocal blocked_once
-        if not blocked_once:
-            blocked_once = True
-            entered.set()
-            assert release.wait(timeout=5)
-        return original(snapshots, commit)
+    def blocked(*args, **kwargs):
+        result = original(*args, **kwargs)
+        entered.set()
+        assert release.wait(timeout=5)
+        return result
 
-    monkeypatch.setattr(
-        server.workspace_symbols,
-        "commit_snapshots_if_current",
-        blocked,
-    )
+    monkeypatch.setattr(server, "_typed_completion_items", blocked)
     responses: list[dict[str, Any] | None] = []
     thread = Thread(
         target=lambda: responses.append(
