@@ -120,6 +120,38 @@ class DocumentStore:
                     )
             return commit()
 
+    def commit_matching_if_current(
+        self,
+        documents: Iterable[Document],
+        include: Callable[[Document], bool],
+        commit: Callable[[], _T],
+    ) -> _T:
+        """Run *commit* while the complete matching snapshot set remains current."""
+        materialized = tuple(documents)
+        if not callable(include) or not callable(commit):
+            raise DocumentError("matching snapshot guard requires callable values")
+        if any(not isinstance(document, Document) for document in materialized):
+            raise DocumentError("matching snapshot guard requires Document values")
+        uris = tuple(document.uri for document in materialized)
+        if len(set(uris)) != len(uris):
+            raise DocumentError("matching snapshot guard requires unique document URIs")
+
+        with self._lock:
+            current = {
+                uri: document
+                for uri, document in self._documents.items()
+                if include(document)
+            }
+            if set(current) != set(uris):
+                raise DocumentError("matching open document set changed")
+            for document in materialized:
+                if current.get(document.uri) is not document:
+                    raise DocumentError(
+                        f"stale document snapshot for {document.uri} "
+                        f"at version {document.version}"
+                    )
+            return commit()
+
     def commit_subset_if_current(
         self, documents: Iterable[Document], commit: Callable[[], _T]
     ) -> _T:
