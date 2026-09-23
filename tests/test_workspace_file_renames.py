@@ -626,7 +626,7 @@ def test_will_rename_rejects_detached_disk_drift_and_refreshes_index(
 ) -> None:
     source = tmp_path / "source.nova"
     destination = tmp_path / "renamed.nova"
-    source.write_text("fn before() {}\n", encoding="utf-8")
+    source.write_bytes(b"fn before() {}\n")
     server = initialized_closed_workspace_server(tmp_path)
     source_uri = source.absolute().as_uri()
     before = server.workspace_symbols.get(source_uri)
@@ -639,7 +639,7 @@ def test_will_rename_rejects_detached_disk_drift_and_refreshes_index(
         nonlocal drifted
         if not drifted:
             drifted = True
-            source.write_text("fn after() {}\n", encoding="utf-8")
+            source.write_bytes(b"fn after() {}\n")
         return original(snapshots, callback)
 
     monkeypatch.setattr(
