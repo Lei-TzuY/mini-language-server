@@ -223,6 +223,49 @@ class GatedBytesIO(BytesIO):
         return super().read(size)
 
 
+class SequencedGatedBytesIO(BytesIO):
+    def __init__(
+        self,
+        payload: bytes,
+        *,
+        gates: tuple[tuple[int, Event], ...],
+    ) -> None:
+        super().__init__(payload)
+        self._gates = gates
+        self._gate_index = 0
+
+    def _wait_for_gate(self) -> None:
+        while self._gate_index < len(self._gates):
+            offset, gate = self._gates[self._gate_index]
+            if self.tell() < offset:
+                return
+            assert gate.wait(timeout=5)
+            self._gate_index += 1
+
+    def readline(self, size: int = -1) -> bytes:
+        self._wait_for_gate()
+        return super().readline(size)
+
+    def read(self, size: int = -1) -> bytes:
+        self._wait_for_gate()
+        return super().read(size)
+
+
+class SignalingBytesIO(BytesIO):
+    def __init__(self, *, signal_after_writes: int) -> None:
+        super().__init__()
+        self._signal_after_writes = signal_after_writes
+        self._write_count = 0
+        self.signaled = Event()
+
+    def write(self, data: bytes) -> int:
+        written = super().write(data)
+        self._write_count += 1
+        if self._write_count >= self._signal_after_writes:
+            self.signaled.set()
+        return written
+
+
 class LiveCancellationServer(LanguageServer):
     def __init__(self) -> None:
         super().__init__()
@@ -1057,4 +1100,118 @@ def test_shutdown_stages_cancel_when_worker_has_not_registered_context() -> None
         "shutdown-dispatched",
         "context-started",
         "context-cancelled",
+    ]
+
+class LiveServerResponseRuntimeServer(LanguageServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.response_received = Event()
+        self.events: list[str] = []
+        self.dependency_request_id: str | None = None
+        self.dependency_result: object = None
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if message.get("method") == "initialized" and "id" not in message:
+            response = super().handle(message)
+            self.dependency_request_id = self._queue_server_request(
+                "test/dependency",
+                {"value": "needed"},
+            )
+            self.events.append("server-request-queued")
+            return response
+
+        if (
+            message.get("method") == "test/wait-for-dependency"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            self.events.append("worker-started")
+            self.entered.set()
+            assert self.response_received.wait(timeout=5)
+            self.events.append("worker-finished")
+            return self._result(
+                message["id"],
+                {"dependency": self.dependency_result},
+            )
+
+        return super().handle(message)
+
+    def _server_request_completed(
+        self,
+        request_id: str,
+        method: str,
+        *,
+        result: Any,
+        error: dict[str, Any] | None,
+    ) -> None:
+        super()._server_request_completed(
+            request_id,
+            method,
+            result=result,
+            error=error,
+        )
+        if request_id != self.dependency_request_id:
+            return
+        assert method == "test/dependency"
+        assert error is None
+        self.dependency_result = result
+        self.events.append("server-response")
+        self.response_received.set()
+
+
+def test_runtime_delivers_sent_server_response_while_request_is_active() -> None:
+    server = LiveServerResponseRuntimeServer()
+    first = framed(
+        initialize(),
+        {"jsonrpc": "2.0", "method": "initialized", "params": {}},
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/wait-for-dependency",
+            "params": {},
+        },
+    )
+    dependency_response = framed(
+        {
+            "jsonrpc": "2.0",
+            "id": "server:1",
+            "result": {"value": 7},
+        }
+    )
+    lifecycle_tail = framed(shutdown(3), exit_notification())
+    output_stream = SignalingBytesIO(signal_after_writes=3)
+    input_stream = SequencedGatedBytesIO(
+        first + dependency_response + lifecycle_tail,
+        gates=(
+            (len(first), server.entered),
+            (len(first) + len(dependency_response), output_stream.signaled),
+        ),
+    )
+
+    assert run_session(input_stream, output_stream, server=server) == 0
+
+    messages = decoded(output_stream.getvalue())
+    assert [message.get("id") for message in messages] == [
+        1,
+        "server:1",
+        2,
+        3,
+    ]
+    assert messages[1] == {
+        "jsonrpc": "2.0",
+        "id": "server:1",
+        "method": "test/dependency",
+        "params": {"value": "needed"},
+    }
+    assert messages[2] == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {"dependency": {"value": 7}},
+    }
+    assert server.events == [
+        "server-request-queued",
+        "worker-started",
+        "server-response",
+        "worker-finished",
     ]
