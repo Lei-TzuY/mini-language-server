@@ -199,6 +199,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def _handle_document_notification(self, method: str, params: Any) -> None:
         uri = self._document_uri(params)
+        if uri is not None and method == "textDocument/didOpen":
+            self._drop_closed_workspace_identity(uri)
         previous = self.workspace_symbols.get(uri) if uri is not None else None
         super()._handle_document_notification(method, params)
         if uri is None:
@@ -207,6 +209,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if previous is not None:
                 with suppress(WorkspaceIndexError):
                     self.workspace_symbols.remove(uri, expected=previous)
+            self._restore_closed_workspace_file(uri)
             self._publish_workspace_diagnostics()
             return
         if method not in {"textDocument/didOpen", "textDocument/didChange"}:
@@ -322,6 +325,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         except DocumentError:
             return
         if not renames:
+            self._refresh_closed_workspace_files()
             return
 
         before = self.workspace_symbols.snapshots()
@@ -334,6 +338,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         except DocumentError:
             return
         if not moved:
+            self._refresh_closed_workspace_files()
             return
 
         for previous, current in moved:
@@ -359,6 +364,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 expected=self.workspace_symbols.get(document.uri),
             )
 
+        self._sync_closed_workspace_files()
         self._publish_workspace_diagnostics()
         after = self.workspace_symbols.snapshots()
         if before.generation != after.generation:
@@ -402,6 +408,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             with suppress(WorkspaceIndexError):
                 self.workspace_symbols.replace(semantic, expected=current)
 
+        self._sync_closed_workspace_files()
         self._publish_workspace_diagnostics()
         after = self.workspace_symbols.snapshots()
         self._workspace_folder_scope_changed(
@@ -410,6 +417,134 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         )
         if before.generation != after.generation:
             self._workspace_scope_changed(before, after)
+
+    def _refresh_closed_workspace_files(self) -> None:
+        """Rescan bounded local closed Nova files as one workspace transition."""
+        before = self.workspace_symbols.snapshots()
+        if not self._sync_closed_workspace_files():
+            return
+        self._publish_workspace_diagnostics()
+        after = self.workspace_symbols.snapshots()
+        if before.generation != after.generation:
+            self._workspace_scope_changed(before, after)
+
+    def _sync_closed_workspace_files(self) -> bool:
+        """Reconcile local closed-file snapshots without displacing open buffers."""
+        if not self.workspace_folders.scoped:
+            return False
+
+        open_identities = frozenset(
+            WorkspaceFolderSet.uri_identity(document.uri)
+            for document in self.documents.snapshots()
+        )
+        files = scan_closed_workspace_files(
+            tuple(folder.uri for folder in self.workspace_folders.folders()),
+            exclude_identities=open_identities,
+        )
+        discovered = {item.identity: item for item in files}
+        changed = False
+
+        for identity, tracked_uri in tuple(self._closed_workspace_uris.items()):
+            item = discovered.get(identity)
+            if item is not None and item.uri == tracked_uri:
+                continue
+            current = self.workspace_symbols.get(tracked_uri)
+            if current is not None:
+                with suppress(WorkspaceIndexError):
+                    removed = self.workspace_symbols.remove(
+                        tracked_uri,
+                        expected=current,
+                    )
+                    changed = changed or removed is not None
+            self._closed_workspace_uris.pop(identity, None)
+
+        for identity in sorted(discovered):
+            item = discovered[identity]
+            current = self.workspace_symbols.get(item.uri)
+            if (
+                self._closed_workspace_uris.get(identity) == item.uri
+                and current is not None
+                and current.symbols.syntax.document.text == item.text
+            ):
+                continue
+
+            semantic = self._detached_nova_semantic(item)
+            try:
+                self.workspace_symbols.replace(semantic, expected=current)
+            except WorkspaceIndexError:
+                continue
+            self._closed_workspace_uris[identity] = item.uri
+            changed = True
+        return changed
+
+    def _drop_closed_workspace_identity(self, uri: str) -> bool:
+        """Remove a detached contribution before an editor buffer owns its identity."""
+        identity = WorkspaceFolderSet.uri_identity(uri)
+        tracked_uri = self._closed_workspace_uris.pop(identity, None)
+        if tracked_uri is None:
+            return False
+        current = self.workspace_symbols.get(tracked_uri)
+        if current is None:
+            return False
+        try:
+            return (
+                self.workspace_symbols.remove(tracked_uri, expected=current)
+                is not None
+            )
+        except WorkspaceIndexError:
+            return False
+
+    def _restore_closed_workspace_file(self, uri: str) -> bool:
+        """Restore disk content after the last open buffer relinquishes one URI."""
+        if not self.workspace_folders.scoped:
+            return False
+        identity = WorkspaceFolderSet.uri_identity(uri)
+        if any(
+            WorkspaceFolderSet.uri_identity(document.uri) == identity
+            for document in self.documents.snapshots()
+        ):
+            return False
+        if not self.workspace_folders.contains(uri):
+            return False
+
+        item = read_closed_workspace_file(uri)
+        if item is None or not self.workspace_folders.contains(item.uri):
+            return False
+        current = self.workspace_symbols.get(item.uri)
+        semantic = self._detached_nova_semantic(item)
+        try:
+            self.workspace_symbols.replace(semantic, expected=current)
+        except WorkspaceIndexError:
+            return False
+        self._closed_workspace_uris[item.identity] = item.uri
+        return True
+
+    def _detached_nova_semantic(
+        self, item: ClosedWorkspaceFile
+    ) -> SemanticSnapshot:
+        """Build one read-only Nova snapshot outside the live document stores."""
+        detached = LanguageServer()
+        document = detached.documents.open(
+            uri=item.uri,
+            language_id=self.nova_adapter.language_id,
+            version=0,
+            text=item.text,
+        )
+        return self.nova_adapter.publish(detached, document)
+
+    def _workspace_edit_versions(
+        self, snapshots: tuple[SemanticSnapshot, ...]
+    ) -> dict[str, int | None]:
+        """Use exact buffer versions for open files and null for closed files."""
+        versions: dict[str, int | None] = {}
+        for snapshot in snapshots:
+            document = self.documents.get(snapshot.uri)
+            versions[snapshot.uri] = (
+                document.version
+                if document is snapshot.symbols.syntax.document
+                else None
+            )
+        return versions
 
     def _workspace_documents(
         self, scope: WorkspaceFolderSnapshot | None = None
@@ -1124,10 +1259,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 ordered = sorted(edits_by_uri[uri], key=lambda item: item[0])
                 changes[uri] = [edit for _, edit in ordered]
 
-            versions = {
-                snapshot.uri: snapshot.symbols.syntax.document.version
-                for snapshot in snapshots
-            }
+            versions = self._workspace_edit_versions(snapshots)
             workspace_edit = self._workspace_edit(
                 changes,
                 versions=versions,
