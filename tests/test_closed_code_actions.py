@@ -626,3 +626,172 @@ def test_closed_type_mismatch_repair_uses_lazy_resolve(tmp_path: Path) -> None:
             ],
         }
     ]
+
+def test_closed_argument_count_gets_captured_call_repair(tmp_path: Path) -> None:
+    source = tmp_path / "main.nova"
+    text = (
+        "fn target(left: Int, right: Int) {}\n"
+        "fn caller(value: Int) { target(value) }\n"
+    )
+    source.write_bytes(text.encode("utf-8"))
+    server = initialized_server(tmp_path, document_changes=True)
+    uri = source.absolute().as_uri()
+    call_start = text.splitlines()[1].index("target")
+
+    action = closed_action(
+        server,
+        uri,
+        request_id=40,
+        line=1,
+        start=call_start,
+        end=call_start + len("target"),
+    )["result"][0]
+
+    assert action["title"] == "Adjust 'target' to 2 argument(s)"
+    assert action["diagnostics"][0]["code"] == "nova.argument-count"
+    assert action["edit"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": None},
+            "edits": [
+                {
+                    "range": {
+                        "start": {
+                            "line": 1,
+                            "character": call_start + len("target("),
+                        },
+                        "end": {
+                            "line": 1,
+                            "character": call_start + len("target(value"),
+                        },
+                    },
+                    "newText": "value, 0",
+                }
+            ],
+        }
+    ]
+    assert server.documents.get(uri) is None
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_argument_count_uses_cross_file_provider_signature(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_bytes(b"fn target(left: Int, right: Int, third: Int) {}\n")
+    text = "fn caller(value: Int) { target(value) }\n"
+    caller.write_bytes(text.encode("utf-8"))
+    server = initialized_server(tmp_path)
+    uri = caller.absolute().as_uri()
+    start = text.index("target")
+
+    action = closed_action(
+        server,
+        uri,
+        request_id=41,
+        start=start,
+        end=start + len("target"),
+    )["result"][0]
+
+    assert action["title"] == "Adjust 'target' to 3 argument(s)"
+    assert action["edit"]["changes"][uri][0]["newText"] == "value, 0, 0"
+
+
+def test_closed_argument_type_uses_cross_file_provider_type(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_bytes(b"fn target(value: String) {}\n")
+    text = "fn caller() { target(1) }\n"
+    caller.write_bytes(text.encode("utf-8"))
+    server = initialized_server(tmp_path, document_changes=True)
+    uri = caller.absolute().as_uri()
+    literal = text.index("1")
+
+    action = closed_action(
+        server,
+        uri,
+        request_id=42,
+        start=literal,
+        end=literal + 1,
+    )["result"][0]
+
+    assert action["title"] == "Replace argument 1 to 'target' with String literal"
+    assert action["diagnostics"][0]["code"] == "nova.argument-type"
+    assert action["edit"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": None},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": literal},
+                        "end": {"line": 0, "character": literal + 1},
+                    },
+                    "newText": '""',
+                }
+            ],
+        }
+    ]
+    assert server.documents.get(uri) is None
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_call_site_repairs_respect_range_and_lazy_resolve(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "calls.nova"
+    first = "fn pair(left: Int, right: Int) {}"
+    second = "fn text(value: String) {}"
+    third = "fn caller(value: Int) { pair(value) text(1) }"
+    source.write_bytes(f"{first}\n{second}\n{third}\n".encode())
+    server = initialized_server(
+        tmp_path,
+        document_changes=True,
+        resolve_edit=True,
+    )
+    uri = source.absolute().as_uri()
+
+    count_start = third.index("pair")
+    count_action = closed_action(
+        server,
+        uri,
+        request_id=43,
+        line=2,
+        start=count_start,
+        end=count_start + len("pair"),
+    )["result"]
+    assert [item["title"] for item in count_action] == [
+        "Adjust 'pair' to 2 argument(s)"
+    ]
+
+    literal = third.index("1")
+    type_actions = closed_action(
+        server,
+        uri,
+        request_id=44,
+        line=2,
+        start=literal,
+        end=literal + 1,
+    )["result"]
+    assert [item["title"] for item in type_actions] == [
+        "Replace argument 1 to 'text' with String literal"
+    ]
+    action = type_actions[0]
+    assert "edit" not in action
+    resolved = server.handle(request("codeAction/resolve", 45, action))
+    assert resolved is not None
+    assert resolved["result"]["edit"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": None},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 2, "character": literal},
+                        "end": {"line": 2, "character": literal + 1},
+                    },
+                    "newText": '""',
+                }
+            ],
+        }
+    ]

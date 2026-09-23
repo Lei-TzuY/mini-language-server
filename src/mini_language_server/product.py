@@ -399,7 +399,7 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
         end_offset: int,
     ) -> list[dict[str, Any]]:
         """Build detached repairs that do not require live-store ownership."""
-        return self._nova_unresolved_function_actions(
+        actions = self._nova_unresolved_function_actions(
             uri,
             document,
             source,
@@ -407,6 +407,27 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
             start_offset,
             end_offset,
         )
+        for diagnostic in diagnostics:
+            if diagnostic.code != "nova.argument-count":
+                continue
+            if not self._diagnostic_span_overlaps(
+                diagnostic,
+                start_offset=start_offset,
+                end_offset=end_offset,
+            ):
+                continue
+            repair = self._argument_count_repair(document, diagnostic)
+            if repair is None:
+                continue
+            actions.append(
+                self._argument_count_action(
+                    uri,
+                    source,
+                    diagnostic,
+                    repair,
+                )
+            )
+        return actions
 
     def _nova_code_actions(
         self,
@@ -423,17 +444,17 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
         for diagnostic in diagnostics:
             if diagnostic.code != "nova.argument-count":
                 continue
-            if start_offset == end_offset:
-                overlaps = diagnostic.span.start <= start_offset <= diagnostic.span.end
-            else:
-                overlaps = (
-                    diagnostic.span.start < end_offset
-                    and start_offset < diagnostic.span.end
-                )
-            if not overlaps:
+            if not self._diagnostic_span_overlaps(
+                diagnostic,
+                start_offset=start_offset,
+                end_offset=end_offset,
+            ):
                 continue
 
-            name = document.text[diagnostic.span.start : diagnostic.span.end]
+            repair = self._argument_count_repair(document, diagnostic)
+            if repair is None:
+                continue
+            name, expected, _, _, _ = repair
             declarations = tuple(
                 declaration
                 for declaration in self.workspace_symbols.declarations(name)
@@ -441,36 +462,98 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
             )
             if len(declarations) != 1:
                 continue
-            expected = self._declaration_parameter_count(declarations[0])
-            parsed = self._call_arguments(document.text, diagnostic.span.end)
-            if parsed is None:
+            if self._declaration_parameter_count(declarations[0]) != expected:
                 continue
-            opening, closing, arguments = parsed
-            if len(arguments) == expected:
-                continue
-
-            replacement = list(arguments[:expected])
-            replacement.extend("0" for _ in range(expected - len(replacement)))
             actions.append(
-                {
-                    "title": f"Adjust '{name}' to {expected} argument(s)",
-                    "kind": "quickfix",
-                    "diagnostics": [self._diagnostic(source, diagnostic)],
-                    "edit": {
-                        "changes": {
-                            uri: [
-                                {
-                                    "range": self._range(
-                                        source, Span(opening + 1, closing)
-                                    ),
-                                    "newText": ", ".join(replacement),
-                                }
-                            ]
-                        }
-                    },
-                }
+                self._argument_count_action(
+                    uri,
+                    source,
+                    diagnostic,
+                    repair,
+                )
             )
         return actions
+
+    def _argument_count_repair(
+        self,
+        document: Any,
+        diagnostic: Diagnostic,
+    ) -> tuple[str, int, int, int, str] | None:
+        """Reconstruct one count repair from captured diagnostic/source evidence."""
+        parsed_message = self._argument_count_message(diagnostic.message)
+        if parsed_message is None:
+            return None
+        name, expected, actual = parsed_message
+        if document.text[diagnostic.span.start : diagnostic.span.end] != name:
+            return None
+        parsed = self._call_arguments(document.text, diagnostic.span.end)
+        if parsed is None:
+            return None
+        opening, closing, arguments = parsed
+        if len(arguments) != actual or actual == expected:
+            return None
+        replacement = list(arguments[:expected])
+        replacement.extend("0" for _ in range(expected - len(replacement)))
+        return name, expected, opening, closing, ", ".join(replacement)
+
+    @staticmethod
+    def _argument_count_message(message: str) -> tuple[str, int, int] | None:
+        prefix = "function '"
+        separator = "' expects "
+        suffix = " argument(s) but got "
+        if not message.startswith(prefix):
+            return None
+        name_end = message.find(separator, len(prefix))
+        if name_end < 0:
+            return None
+        name = message[len(prefix) : name_end]
+        remainder = message[name_end + len(separator) :]
+        count_end = remainder.find(suffix)
+        if not name or count_end < 0:
+            return None
+        expected_text = remainder[:count_end]
+        actual_text = remainder[count_end + len(suffix) :]
+        if not expected_text.isdecimal() or not actual_text.isdecimal():
+            return None
+        return name, int(expected_text), int(actual_text)
+
+    def _argument_count_action(
+        self,
+        uri: str,
+        source: Any,
+        diagnostic: Diagnostic,
+        repair: tuple[str, int, int, int, str],
+    ) -> dict[str, Any]:
+        name, expected, opening, closing, replacement = repair
+        return {
+            "title": f"Adjust '{name}' to {expected} argument(s)",
+            "kind": "quickfix",
+            "diagnostics": [self._diagnostic(source, diagnostic)],
+            "edit": {
+                "changes": {
+                    uri: [
+                        {
+                            "range": self._range(
+                                source,
+                                Span(opening + 1, closing),
+                            ),
+                            "newText": replacement,
+                        }
+                    ]
+                }
+            },
+        }
+
+    @staticmethod
+    def _diagnostic_span_overlaps(
+        diagnostic: Diagnostic,
+        *,
+        start_offset: int,
+        end_offset: int,
+    ) -> bool:
+        if start_offset == end_offset:
+            return diagnostic.span.start <= start_offset <= diagnostic.span.end
+        return diagnostic.span.start < end_offset and start_offset < diagnostic.span.end
 
     def _handle_signature_help(self, request_id: Any, params: Any) -> dict[str, Any]:
         parsed = self._semantic_query(params)
