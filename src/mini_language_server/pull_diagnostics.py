@@ -241,12 +241,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             workspace_snapshots = self.workspace_symbols.snapshots()
             requested_identity = WorkspaceFolderSet.uri_identity(requested_uri)
 
+            closed_diagnostics = tuple(
+                snapshot
+                for snapshot in self._closed_workspace_diagnostic_snapshots(
+                    tuple(workspace_snapshots)
+                )
+                if folder_scope.contains(snapshot.uri)
+            )
             target: DiagnosticSnapshot | None = None
-            for snapshot in self._closed_workspace_diagnostic_snapshots(
-                tuple(workspace_snapshots)
-            ):
-                if not folder_scope.contains(snapshot.uri):
-                    continue
+            for snapshot in closed_diagnostics:
                 if WorkspaceFolderSet.uri_identity(snapshot.uri) != requested_identity:
                     continue
                 target = snapshot
@@ -271,6 +274,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 result_id,
                 items,
             )
+            try:
+                (
+                    related_documents,
+                    related_snapshots,
+                    related_reports,
+                ) = self._pull_closed_related_document_reports(
+                    target,
+                    closed_diagnostics,
+                )
+            except DiagnosticError:
+                return self._error(request_id, -32801, "Content modified")
             self.requests.checkpoint(context)
 
             def publish() -> dict[str, Any]:
@@ -278,8 +292,24 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 return self._document_diagnostic_result(
                     request_id,
                     report,
-                    {},
+                    related_reports,
                     partial_result_token,
+                )
+
+            def commit_diagnostics() -> dict[str, Any]:
+                if not related_snapshots:
+                    return publish()
+                return self.diagnostics.commit_all_if_current(
+                    related_snapshots,
+                    publish,
+                )
+
+            def commit_documents() -> dict[str, Any]:
+                if not related_documents:
+                    return commit_diagnostics()
+                return self.documents.commit_subset_if_current(
+                    related_documents,
+                    commit_diagnostics,
                 )
 
             try:
@@ -287,10 +317,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     folder_scope.generation,
                     lambda: self.workspace_symbols.commit_snapshots_if_current(
                         workspace_snapshots,
-                        publish,
+                        commit_documents,
                     ),
                 )
-            except (WorkspaceFolderError, WorkspaceIndexError):
+            except (
+                DocumentError,
+                DiagnosticError,
+                WorkspaceFolderError,
+                WorkspaceIndexError,
+            ):
                 return self._error(request_id, -32801, "Content modified")
         except RequestCancelled:
             return self._error(request_id, -32800, "Request cancelled")
@@ -298,6 +333,79 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
+
+    def _pull_closed_related_document_reports(
+        self,
+        snapshot: DiagnosticSnapshot,
+        closed_diagnostics: tuple[DiagnosticSnapshot, ...],
+    ) -> tuple[
+        tuple[Document, ...],
+        tuple[DiagnosticSnapshot, ...],
+        dict[str, dict[str, Any]],
+    ]:
+        """Render mixed open/closed direct dependencies for one detached primary."""
+        closed_by_uri = {
+            item.uri: item
+            for item in closed_diagnostics
+        }
+        documents: list[Document] = []
+        snapshots: list[DiagnosticSnapshot] = []
+        reports: dict[str, dict[str, Any]] = {}
+
+        for semantic in snapshot.related_semantics:
+            if semantic.uri == snapshot.uri:
+                continue
+            document = semantic.symbols.syntax.document
+            current_document = self.documents.get(semantic.uri)
+
+            if current_document is document:
+                related_snapshot = self.diagnostics.get(semantic.uri)
+                if (
+                    related_snapshot is not None
+                    and related_snapshot.semantic is not semantic
+                ):
+                    raise DiagnosticError(
+                        "related diagnostic snapshot does not match its semantic parent"
+                    )
+                if related_snapshot is not None:
+                    source = self._source_text(document.text)
+                    items = [
+                        self._diagnostic(source, diagnostic)
+                        for diagnostic in related_snapshot.diagnostics
+                    ]
+                    snapshots.append(related_snapshot)
+                else:
+                    items = []
+                result_id = self._diagnostic_result_id(
+                    document,
+                    related_snapshot,
+                )
+                documents.append(document)
+            else:
+                related_snapshot = closed_by_uri.get(semantic.uri)
+                if related_snapshot is None or related_snapshot.semantic is not semantic:
+                    raise DiagnosticError(
+                        "related detached diagnostic snapshot is not exact-current"
+                    )
+                source = self._source_text(document.text)
+                items = [
+                    self._diagnostic(source, diagnostic)
+                    for diagnostic in related_snapshot.diagnostics
+                ]
+                result_id = self._diagnostic_result_id_values(
+                    uri=document.uri,
+                    version=None,
+                    text=document.text,
+                    snapshot=related_snapshot,
+                )
+
+            reports[semantic.uri] = self._diagnostic_report(
+                None,
+                result_id,
+                items,
+            )
+
+        return tuple(documents), tuple(snapshots), reports
 
     def _document_diagnostic_result(
         self,
