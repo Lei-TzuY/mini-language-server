@@ -54,7 +54,7 @@ The following remain deliberate future work:
 - hover and completion
 - semantic tokens
 - multi-file/workspace symbol and reference indexing
-- WorkspaceEdit resource operations when a concrete editor workflow requires file create/rename/delete semantics
+- remaining WorkspaceEdit/file-operation surfaces (`willRenameFiles`, create/delete, unopened-file indexing) when Nova gains a concrete module/filesystem workflow; negotiated `didRenameFiles` for already-open Nova documents is now implemented as an exact URI-rekey transaction
 - broader LSP compliance surface
 - editor-specific integration layers
 
