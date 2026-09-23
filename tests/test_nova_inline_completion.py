@@ -118,14 +118,14 @@ def test_inline_completion_reuses_visible_typed_parameter_candidates() -> None:
     text = "fn main(value: Int) -> Unit { valfoo; }\n"
     open_nova(server, uri, text)
 
-    response = inline_completion(server, uri, 2, line=0, character=34)
+    response = inline_completion(server, uri, 2, line=0, character=33)
 
     assert response["result"] == [
         {
             "insertText": "value",
             "range": {
-                "start": {"line": 0, "character": 31},
-                "end": {"line": 0, "character": 37},
+                "start": {"line": 0, "character": 30},
+                "end": {"line": 0, "character": 36},
             },
         }
     ]
