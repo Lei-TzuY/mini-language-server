@@ -16,8 +16,10 @@ from .symbols import SymbolError
 from .syntax import SyntaxError
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
 from .workspace_files import (
+    MAX_CLOSED_WORKSPACE_FILES,
     ClosedWorkspaceFile,
     WorkspaceUriIdentity,
+    is_local_nova_file_uri,
     read_closed_workspace_file,
     scan_closed_workspace_files,
 )
@@ -44,6 +46,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self.workspace_symbols = WorkspaceSymbolIndex()
         self.workspace_folders = WorkspaceFolderSet()
         self._workspace_folder_change_support = False
+        self._file_create_support = False
+        self._file_delete_support = False
         self._file_rename_support = False
         self._file_will_rename_support = False
         self._moniker_support = False
@@ -57,6 +61,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             self._workspace_folder_change_support = (
                 self._client_supports_workspace_folders(params)
             )
+            self._file_create_support = self._client_supports_file_create(params)
+            self._file_delete_support = self._client_supports_file_delete(params)
             self._file_rename_support = self._client_supports_file_rename(params)
             self._file_will_rename_support = (
                 self._client_supports_file_will_rename(params)
@@ -76,6 +82,24 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         ):
             if self._workspace_folder_change_support:
                 self._handle_workspace_folder_change(message.get("params"))
+            return None
+
+        if (
+            method == "workspace/didCreateFiles"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+        ):
+            if self._file_create_support:
+                self._handle_workspace_file_creates(message.get("params"))
+            return None
+
+        if (
+            method == "workspace/didDeleteFiles"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+        ):
+            if self._file_delete_support:
+                self._handle_workspace_file_deletes(message.get("params"))
             return None
 
         if (
@@ -165,6 +189,22 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                             "supported": True,
                             "changeNotifications": True,
                         }
+                if self._file_create_support:
+                    workspace_capabilities = capabilities.setdefault("workspace", {})
+                    if isinstance(workspace_capabilities, dict):
+                        file_operations = workspace_capabilities.setdefault(
+                            "fileOperations", {}
+                        )
+                        if isinstance(file_operations, dict):
+                            file_operations["didCreate"] = self._nova_file_operation_options()
+                if self._file_delete_support:
+                    workspace_capabilities = capabilities.setdefault("workspace", {})
+                    if isinstance(workspace_capabilities, dict):
+                        file_operations = workspace_capabilities.setdefault(
+                            "fileOperations", {}
+                        )
+                        if isinstance(file_operations, dict):
+                            file_operations["didDelete"] = self._nova_file_operation_options()
                 if self._file_rename_support:
                     workspace_capabilities = capabilities.setdefault("workspace", {})
                     if isinstance(workspace_capabilities, dict):
@@ -172,14 +212,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                             "fileOperations", {}
                         )
                         if isinstance(file_operations, dict):
-                            file_operations["didRename"] = {
-                                "filters": [
-                                    {
-                                        "scheme": "file",
-                                        "pattern": {"glob": "**/*.nova"},
-                                    }
-                                ]
-                            }
+                            file_operations["didRename"] = self._nova_file_operation_options()
                 if self._file_will_rename_support:
                     workspace_capabilities = capabilities.setdefault("workspace", {})
                     if isinstance(workspace_capabilities, dict):
@@ -187,14 +220,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                             "fileOperations", {}
                         )
                         if isinstance(file_operations, dict):
-                            file_operations["willRename"] = {
-                                "filters": [
-                                    {
-                                        "scheme": "file",
-                                        "pattern": {"glob": "**/*.nova"},
-                                    }
-                                ]
-                            }
+                            file_operations["willRename"] = self._nova_file_operation_options()
         return result
 
     def _handle_document_notification(self, method: str, params: Any) -> None:
