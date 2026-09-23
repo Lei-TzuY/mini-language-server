@@ -16,7 +16,7 @@ from .server import ServerState
 from .source import Span
 from .tracing import TraceLanguageServerMixin
 from .uint_conversion_operand_completion import _direct_conversion_operand
-from .unary_plus import NovaProductLanguageServer as _ProductLanguageServer
+from .closed_unreachable import NovaProductLanguageServer as _ProductLanguageServer
 from .workspace import WorkspaceIndexError
 
 _COMPLETION_KIND_FUNCTION = 3
