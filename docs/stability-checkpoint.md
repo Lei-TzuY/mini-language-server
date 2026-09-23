@@ -6,7 +6,7 @@ This document defines the first stable maintenance boundary for `mini-language-s
 
 The checkpoint covers:
 
-1. bounded JSON-RPC/LSP framing with per-line, total-header-byte, header-count, and payload limits, plus an executable cancellation-aware stdio host that keeps ordinary dispatch serialized while a dedicated reader can stage cancellation for an already-read pending request generation; lifecycle/outbox ordering, notification-only message-shape ownership, terminal exit idempotence, and standard redacted `$/setTrace` / `$/logTrace` observability remain preserved
+1. bounded JSON-RPC/LSP framing with per-line, total-header-byte, header-count, and payload limits, plus an executable cancellation-aware stdio host with one active client-request worker, foreground `didOpen`/`didChange`/`didClose` mutation that can invalidate the active exact snapshot, and a dedicated reader that can stage cancellation for an already-read pending request generation; client requests remain serial, lifecycle/workspace traffic remains bounded and deferred, lifecycle/outbox ordering, notification-only message-shape ownership, terminal exit idempotence, and standard redacted `$/setTrace` / `$/logTrace` observability remain preserved
 2. document snapshots, versions, and incremental edits
 3. source positions and spans with session-wide LSP UTF-8/UTF-16/UTF-32 position encoding negotiation
 4. syntax snapshot publication
@@ -26,7 +26,7 @@ The core invariant is generational identity: a derived result is valid only whil
 
 | Layer | Owns | Must not silently own |
 | --- | --- | --- |
-| protocol/server | bounded JSON-RPC/LSP framing, cancellation-aware single-dispatch stdio session hosting, lifecycle and message-shape ownership, bidirectional request routing, server-request tracking/response delivery/cancellation, terminal request/notification quiescence and exit idempotence, redacted trace observability, session position-encoding negotiation, workspace-folder lifecycle, negotiated diagnostic metadata, LSP result rendering | language parsing/type rules |
+| protocol/server | bounded JSON-RPC/LSP framing, cancellation-aware single-request-worker stdio session hosting with foreground document mutation, lifecycle and message-shape ownership, bidirectional request routing, lock-backed server-request tracking/response delivery/cancellation, terminal request/notification quiescence and exit idempotence, redacted trace observability, session position-encoding negotiation, workspace-folder lifecycle, negotiated diagnostic metadata, LSP result rendering | language parsing/type rules |
 | document store | current text snapshot, version/generation transitions | syntax or semantic interpretation |
 | syntax store | current parsed result for one exact document | symbol resolution |
 | symbol index | deterministic symbols for one exact syntax snapshot | reference semantics |

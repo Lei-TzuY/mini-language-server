@@ -20,18 +20,20 @@ Both entry points instantiate the final `NovaProductLanguageServer` and use bina
 
 ## Dispatch loop
 
-The runtime keeps ordinary server dispatch deliberately serialized while separating framing from dispatch:
+The runtime separates framing, one active client request, and foreground document mutation without becoming a general worker pool:
 
 1. one background reader decodes bounded `Content-Length` frames with `MessageReader`;
-2. ordinary requests, responses, and notifications enter one FIFO dispatch queue;
-3. the calling thread dispatches those queued objects through `LanguageServer.handle()` one at a time;
-4. `$/cancelRequest` is the only control message allowed to cross that queue boundary: once its target request frame has been read, the reader can mark that exact pending request generation cancelled immediately, even while the foreground dispatcher is still inside the request handler;
-5. the original cancellation notification is replayed through the normal server handle surface at the dispatch boundary so lifecycle and trace behavior are preserved;
-6. after each ordinary dispatch, queued notifications are written first, tracked server-to-client requests second, and the direct response last;
-7. every outbound object uses the existing UTF-8 `encode_message()` framing primitive and the batch is flushed once;
-8. the loop ends when the server reaches `EXITED` or the transport fails.
+2. at most one ordinary running-state client request executes on a request worker;
+3. while that request is active, `textDocument/didOpen`, `didChange`, and `didClose` may dispatch on the foreground thread so exact document/syntax/semantic snapshot guards can observe real transport-time mutation;
+4. a live document mutation may overtake queued client requests, but client requests never execute in parallel with each other;
+5. shutdown, exit, server-response delivery, workspace/configuration notifications, and other ordinary traffic remain deferred until the active client request completes, preserving the bounded concurrency surface;
+6. `$/cancelRequest` remains an out-of-band control message: once its target request frame has been read, the reader can mark that exact pending request generation cancelled immediately before or during worker execution;
+7. the original cancellation notification is replayed through the normal server handle surface at a dispatch boundary so lifecycle and trace behavior remain owned by server layers;
+8. after every foreground dispatch or request completion, queued notifications are written first, tracked server-to-client requests second, and a direct response last;
+9. every outbound object uses the existing UTF-8 `encode_message()` framing primitive and the batch is flushed once;
+10. the loop ends when the server reaches `EXITED` or the transport fails.
 
-This is not a worker pool. Document changes, workspace mutations, shutdown, server-response delivery, and ordinary client requests remain single-dispatch ordered. The reader thread exists specifically so an executing request can observe cancellation at its next existing `RequestTracker.checkpoint()` instead of waiting for that request to finish before stdin is read again.
+The server-to-client request queue/pending map is lock-backed because foreground document mutation may trigger refresh/configuration traffic while a request worker is still executing. The notification outbox was already lock-backed. This keeps request IDs unique and preserves terminal retirement semantics under the new bounded concurrency surface.
 
 A cancel frame may arrive after the request frame has been read but before the handler calls `RequestTracker.start()`. The runtime stages a one-shot cancellation only for request ids it has already read and still owns as pending. `start()` consumes that staged state, and dispatch completion clears any unconsumed stage, so an early cancel cannot poison a later reuse of the same JSON-RPC id. Generic cancellation of unknown ids remains harmless.
 
@@ -47,4 +49,4 @@ The server's terminal notification/request quiescence remains authoritative. Aft
 
 ## Scope
 
-This milestone keeps the executable server single-dispatch while adding one framing reader thread for live request cancellation. It deliberately does not add asyncio, a request worker pool, parallel document/workspace mutation, socket transports, process supervision, logging to stdout, or editor-specific launch configuration. Any future broader concurrent host must preserve the same ordering and lifecycle ownership invariants with separate deterministic evidence.
+This milestone keeps exactly one active client-request worker and one foreground mutation lane. It deliberately does not add asyncio, a multi-request worker pool, parallel client requests, parallel workspace/configuration mutation, concurrent shutdown/exit, socket transports, process supervision, logging to stdout, or editor-specific launch configuration. Any future broader concurrent host must preserve the same exact-snapshot, ordering, cancellation, lifecycle, and outbound-channel invariants with separate deterministic evidence.
