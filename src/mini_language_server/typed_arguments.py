@@ -28,8 +28,8 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
                 continue
-            current = self.diagnostics.get(snapshot.uri)
-            if current is None or current.semantic is not snapshot:
+            current = self.diagnostics.get_primary_current(snapshot)
+            if current is None:
                 continue
             text = snapshot.symbols.syntax.document.text
             diagnostics = [
