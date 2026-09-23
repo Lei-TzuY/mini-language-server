@@ -47,23 +47,36 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             ):
                 continue
             actions.append(
-                {
-                    "title": "Remove unreachable code",
-                    "kind": "quickfix",
-                    "diagnostics": [self._diagnostic(source, diagnostic)],
-                    "edit": {
-                        "changes": {
-                            uri: [
-                                {
-                                    "range": self._range(source, diagnostic.span),
-                                    "newText": "",
-                                }
-                            ]
-                        }
-                    },
-                }
+                self._unreachable_code_action(
+                    uri,
+                    source,
+                    diagnostic,
+                )
             )
         return actions
+
+    def _unreachable_code_action(
+        self,
+        uri: str,
+        source: Any,
+        diagnostic: Diagnostic,
+    ) -> dict[str, Any]:
+        """Render the shared exact-span unreachable removal repair."""
+        return {
+            "title": "Remove unreachable code",
+            "kind": "quickfix",
+            "diagnostics": [self._diagnostic(source, diagnostic)],
+            "edit": {
+                "changes": {
+                    uri: [
+                        {
+                            "range": self._range(source, diagnostic.span),
+                            "newText": "",
+                        }
+                    ]
+                }
+            },
+        }
 
     @staticmethod
     def _diagnostic_overlaps(
