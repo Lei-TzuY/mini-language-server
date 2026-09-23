@@ -861,7 +861,7 @@ class LanguageServer:
         versions: dict[str, int | None],
         annotation_label: str | None = None,
     ) -> dict[str, Any]:
-        """Render deterministic WorkspaceEdit payloads from captured snapshot versions."""
+        """Render deterministic WorkspaceEdits from captured open/closed version state."""
         ordered = {uri: changes[uri] for uri in sorted(changes)}
         if not self._workspace_edit_document_changes:
             return {"changes": ordered}
