@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
-from .closed_definite_initialization import (
+from .closed_assignment_semantics import (
     NovaProductLanguageServer as _ProductLanguageServer,
 )
 from .nova import NovaFunctionSyntax
