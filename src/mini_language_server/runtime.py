@@ -85,8 +85,8 @@ def _is_exit_notification(message: dict[str, Any]) -> bool:
     )
 
 
-def _is_live_document_mutation(message: dict[str, Any]) -> bool:
-    """Return whether one notification may advance snapshots during a request."""
+def _is_live_snapshot_mutation(message: dict[str, Any]) -> bool:
+    """Return whether one notification may invalidate active exact snapshots."""
     return (
         message.get("jsonrpc") == "2.0"
         and "id" not in message
@@ -95,6 +95,7 @@ def _is_live_document_mutation(message: dict[str, Any]) -> bool:
             "textDocument/didOpen",
             "textDocument/didChange",
             "textDocument/didClose",
+            "workspace/didChangeWorkspaceFolders",
         }
     )
 
@@ -126,12 +127,12 @@ def run_session(
     """Run one stdio session with one request worker and live document mutation.
 
     Framing stays on one background reader. At most one ordinary client request executes
-    on a request worker. While that request is active, only didOpen/didChange/didClose
-    notifications may advance on the foreground dispatcher; all other ordinary inbound
-    client requests and lifecycle traffic remain deferred in FIFO order. Live document
-    mutations may overtake queued requests while the active request runs, so exact
-    snapshot guards can observe transport-time version changes without introducing
-    parallel request execution or parallel lifecycle/workspace mutation.
+    on a request worker. While that request is active, document lifecycle mutations and
+    workspace-folder scope changes may advance on the foreground dispatcher; all other
+    ordinary inbound client requests and lifecycle/configuration traffic remain deferred
+    in FIFO order. Live snapshot mutations may overtake queued requests while the active
+    request runs, so exact document and workspace guards can observe transport-time
+    changes without introducing parallel client-request execution.
     """
     active_server = server if server is not None else NovaProductLanguageServer()
     reader = MessageReader(input_stream)
@@ -249,7 +250,7 @@ def run_session(
         replay_controls()
 
         if active_request_thread is not None:
-            if _is_live_document_mutation(item):
+            if _is_live_snapshot_mutation(item):
                 response = dispatch_foreground(item)
                 replay_controls()
                 _write_batch(

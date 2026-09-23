@@ -9,6 +9,8 @@ import pytest
 from mini_language_server import LanguageServer, MessageReader, ServerState, encode_message
 from mini_language_server.cancellation import RequestCancelled, StaleRequest
 from mini_language_server.runtime import run_session
+from mini_language_server.workspace_folders import WorkspaceFolderError
+from mini_language_server.workspace_lsp import WorkspaceNovaLanguageServer
 
 
 def framed(*messages: dict[str, Any]) -> bytes:
@@ -481,3 +483,139 @@ def test_runtime_propagates_worker_programming_errors() -> None:
 
     with pytest.raises(RuntimeError, match="worker exploded"):
         run_session(input_stream, BytesIO(), server=WorkerFailureServer())
+
+
+class LiveWorkspaceMutationServer(WorkspaceNovaLanguageServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.changed = Event()
+        self.events: list[str] = []
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/workspace-snapshot"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            context = self.requests.start(message["id"])
+            scope = self.workspace_folders.snapshot()
+            try:
+                self.events.append("workspace-start")
+                self.entered.set()
+                assert self.changed.wait(timeout=5)
+                self.requests.checkpoint(context)
+                self.workspace_folders.commit_if_current(
+                    scope.generation,
+                    lambda: None,
+                )
+                raise AssertionError("stale workspace scope passed commit guard")
+            except WorkspaceFolderError:
+                self.events.append("workspace-stale")
+                return self._error(message["id"], -32801, "Content modified")
+            finally:
+                self.requests.finish(context)
+
+        if (
+            message.get("method") == "test/after-workspace"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            self.events.append("after-workspace")
+            return self._result(message["id"], {"ok": True})
+
+        before = self.workspace_folders.generation
+        response = super().handle(message)
+        if (
+            message.get("method") == "workspace/didChangeWorkspaceFolders"
+            and self.workspace_folders.generation != before
+        ):
+            self.events.append("workspace-change")
+            self.changed.set()
+        return response
+
+
+def workspace_initialize(request_id: int = 1) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "initialize",
+        "params": {
+            "capabilities": {
+                "workspace": {"workspaceFolders": True},
+            },
+            "workspaceFolders": [
+                {"uri": "file:///workspace/a", "name": "a"},
+            ],
+        },
+    }
+
+
+def workspace_folder_change() -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "method": "workspace/didChangeWorkspaceFolders",
+        "params": {
+            "event": {
+                "added": [{"uri": "file:///workspace/b", "name": "b"}],
+                "removed": [],
+            }
+        },
+    }
+
+
+def test_runtime_dispatches_workspace_folder_change_while_request_is_active() -> None:
+    server = LiveWorkspaceMutationServer()
+    first = framed(
+        workspace_initialize(),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/workspace-snapshot",
+            "params": {},
+        },
+    )
+    tail = framed(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "test/after-workspace",
+            "params": {},
+        },
+        workspace_folder_change(),
+        shutdown(4),
+        exit_notification(),
+    )
+    input_stream = GatedBytesIO(
+        first + tail,
+        gate_offset=len(first),
+        gate=server.entered,
+    )
+    output_stream = BytesIO()
+
+    assert run_session(input_stream, output_stream, server=server) == 0
+
+    messages = decoded(output_stream.getvalue())
+    assert [message.get("id") for message in messages if "id" in message] == [
+        1,
+        2,
+        3,
+        4,
+    ]
+    stale = next(message for message in messages if message.get("id") == 2)
+    assert stale == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert server.workspace_folders.generation == 2
+    assert [folder.uri for folder in server.workspace_folders.folders()] == [
+        "file:///workspace/a",
+        "file:///workspace/b",
+    ]
+    assert server.events == [
+        "workspace-start",
+        "workspace-change",
+        "workspace-stale",
+        "after-workspace",
+    ]
