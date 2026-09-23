@@ -26,7 +26,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         self,
         snapshot: Any,
         functions: dict[str, list[tuple[Any, Any]]],
-    ) -> tuple[Any, ...]:
+    ) -> tuple[Diagnostic, ...]:
         """Extend detached call typing with exact same-snapshot reference evidence."""
         diagnostics = list(
             super()._closed_workspace_product_diagnostics(snapshot, functions)
