@@ -24,14 +24,15 @@ The runtime separates framing, one active client request, and foreground documen
 
 1. one background reader decodes bounded `Content-Length` frames with `MessageReader`;
 2. at most one ordinary running-state client request executes on a request worker;
-3. while that request is active, `textDocument/didOpen`, `didChange`, `didClose`, negotiated `workspace/didChangeWorkspaceFolders`, and `workspace/didChangeConfiguration` may dispatch on the foreground thread so exact document/syntax/semantic/workspace-scope/configuration guards can observe real transport-time mutation;
+3. while that request is active, `textDocument/didOpen`, `didChange`, `didClose`, negotiated `workspace/didChangeWorkspaceFolders`, `workspace/didChangeConfiguration`, and valid responses to already-delivered pending server-to-client requests may dispatch on the foreground thread so exact snapshot/configuration guards and existing bidirectional request dependencies can observe real transport-time input;
 4. a live snapshot mutation may overtake queued client requests, but client requests never execute in parallel with each other;
 5. the first valid `shutdown` request may overtake queued ordinary client requests while a worker is active only when no earlier deferred non-worker frame must preserve transport order and no live snapshot/configuration mutation has already advanced that active request generation; under that bounded condition the server's existing shutdown boundary retires the worker immediately, runtime stages the exact id for the pre-registration race, and the shutdown response is held until the cancelled worker completion is emitted first; otherwise shutdown itself is deferred in FIFO order so earlier server responses and stale-snapshot outcomes win;
-6. `$/cancelRequest` remains an out-of-band control message: once its target request frame has been read, the reader can mark that exact pending request generation cancelled immediately before or during worker execution;
-7. the original cancellation notification is replayed through the normal server handle surface at a dispatch boundary so lifecycle and trace behavior remain owned by server layers;
-8. after every foreground dispatch or request completion, queued notifications are written first, tracked server-to-client requests second, and a direct response last;
-9. every outbound object uses the existing UTF-8 `encode_message()` framing primitive and the batch is flushed once;
-10. the loop ends when the server reaches `EXITED` or the transport fails.
+6. a server response is eligible for the live lane only when its id still owns a pending request and that request has already left the local server-request outbox; responses for unknown ids, malformed responses, and guessed responses to requests that have not yet been sent stay outside the live path;
+7. `$/cancelRequest` remains an out-of-band control message: once its target request frame has been read, the reader can mark that exact pending request generation cancelled immediately before or during worker execution;
+8. the original cancellation notification is replayed through the normal server handle surface at a dispatch boundary so lifecycle and trace behavior remain owned by server layers;
+9. after every foreground dispatch or request completion, queued notifications are written first, tracked server-to-client requests second, and a direct response last;
+10. every outbound object uses the existing UTF-8 `encode_message()` framing primitive and the batch is flushed once;
+11. the loop ends when the server reaches `EXITED` or the transport fails.
 
 The server-to-client request queue/pending map is lock-backed because foreground document mutation may trigger refresh/configuration traffic while a request worker is still executing. The notification outbox was already lock-backed. This keeps request IDs unique and preserves terminal retirement semantics under the new bounded concurrency surface.
 
@@ -50,3 +51,5 @@ The server's terminal notification/request quiescence remains authoritative. Pro
 ## Scope
 
 This milestone keeps exactly one active client-request worker and one foreground snapshot-mutation lane. Document lifecycle changes and workspace-folder scope changes may invalidate the active request through existing exact-generation guards; server-response delivery, `exit`, repeated shutdown, and all other ordinary lifecycle/notification traffic remain serialized behind the worker; formatting-configuration invalidation is the only configuration notification admitted to the live lane, and save-time edits are generation-guarded before publication. It deliberately does not add asyncio, a multi-request worker pool, parallel client requests, general parallel workspace/configuration mutation, concurrent shutdown/exit, socket transports, process supervision, logging to stdout, or editor-specific launch configuration. Any future broader concurrent host must preserve the same exact-snapshot, ordering, cancellation, lifecycle, and outbound-channel invariants with separate deterministic evidence.
+
+A deliberately later phase is required for requests created by the active worker itself and awaited synchronously by that same worker: this milestone does not add an outbound wakeup channel from the server-request outbox to the runtime. It only makes responses to requests that were already delivered before the worker blocked live-dispatchable.
