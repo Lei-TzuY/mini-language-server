@@ -128,3 +128,39 @@ def test_retire_all_cancels_and_detaches_active_generations() -> None:
         tracker.checkpoint(second)
     assert tracker.finish(first) is False
     assert tracker.finish(second) is False
+
+def test_staged_cancel_is_consumed_by_exact_next_generation() -> None:
+    tracker = RequestTracker(DocumentStore())
+
+    tracker.stage_cancel(7)
+    first = tracker.start(7)
+
+    assert first.cancelled is True
+    with pytest.raises(RequestCancelled):
+        tracker.checkpoint(first)
+    assert tracker.finish(first) is True
+
+    second = tracker.start(7)
+    assert second.cancelled is False
+    assert tracker.is_current(second) is True
+
+
+def test_clearing_staged_cancel_prevents_future_id_poisoning() -> None:
+    tracker = RequestTracker(DocumentStore())
+
+    tracker.stage_cancel("queued")
+    tracker.clear_staged_cancel("queued")
+    context = tracker.start("queued")
+
+    assert context.cancelled is False
+    assert tracker.is_current(context) is True
+
+
+def test_retire_all_clears_unconsumed_staged_cancellation() -> None:
+    tracker = RequestTracker(DocumentStore())
+
+    tracker.stage_cancel(9)
+    assert tracker.retire_all() == ()
+    context = tracker.start(9)
+
+    assert context.cancelled is False
