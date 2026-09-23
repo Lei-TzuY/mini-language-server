@@ -1,6 +1,6 @@
 # Workspace file rename transactions
 
-The Nova workspace layer supports one bounded LSP file-operation workflow: negotiated `workspace/didRenameFiles` for Nova documents that are already open in the current session.
+The Nova workspace layer supports a bounded LSP file-operation workflow for already-open Nova documents and uses the same `workspace/didRenameFiles` notification as a rescan trigger for the local closed-file workspace index.
 
 ## Contract
 
@@ -18,4 +18,4 @@ The server explicitly clears push diagnostics for the old URI. New diagnostics a
 
 ## Deliberate boundary
 
-This milestone does not implement file creation/deletion operations, unopened-file indexing, filesystem I/O, or speculative source edits for module/import paths. `willRenameFiles` deliberately validates only server-owned open-document identity; it does not pretend to validate filesystem permissions or paths the server does not index. Those require a concrete Nova module/file semantic model rather than empty protocol handlers.
+`willRenameFiles` still preflights only server-owned open-document identity; it does not claim filesystem permission checks or closed-file resource-rename validation. After the client commits a rename, `didRenameFiles` reconciles the bounded local closed-file index so disk-only Nova declarations move to their current URI. File creation/deletion notifications, filesystem watchers, remote providers, and module/import path rewrites remain separate milestones.
