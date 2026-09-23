@@ -6,7 +6,7 @@ This document defines the first stable maintenance boundary for `mini-language-s
 
 The checkpoint covers:
 
-1. bounded JSON-RPC/LSP framing with per-line, total-header-byte, header-count, and payload limits; lifecycle includes notification-only message-shape ownership, terminal exit idempotence, and standard redacted `$/setTrace` / `$/logTrace` observability
+1. bounded JSON-RPC/LSP framing with per-line, total-header-byte, header-count, and payload limits, plus an executable synchronous stdio host that connects framing to the final product and preserves lifecycle/outbox ordering; lifecycle includes notification-only message-shape ownership, terminal exit idempotence, and standard redacted `$/setTrace` / `$/logTrace` observability
 2. document snapshots, versions, and incremental edits
 3. source positions and spans with session-wide LSP UTF-8/UTF-16/UTF-32 position encoding negotiation
 4. syntax snapshot publication
@@ -26,7 +26,7 @@ The core invariant is generational identity: a derived result is valid only whil
 
 | Layer | Owns | Must not silently own |
 | --- | --- | --- |
-| protocol/server | bounded JSON-RPC/LSP framing, lifecycle and message-shape ownership, bidirectional request routing, server-request tracking/response delivery/cancellation, terminal request/notification quiescence and exit idempotence, redacted trace observability, session position-encoding negotiation, workspace-folder lifecycle, negotiated diagnostic metadata, LSP result rendering | language parsing/type rules |
+| protocol/server | bounded JSON-RPC/LSP framing, executable synchronous stdio session hosting, lifecycle and message-shape ownership, bidirectional request routing, server-request tracking/response delivery/cancellation, terminal request/notification quiescence and exit idempotence, redacted trace observability, session position-encoding negotiation, workspace-folder lifecycle, negotiated diagnostic metadata, LSP result rendering | language parsing/type rules |
 | document store | current text snapshot, version/generation transitions | syntax or semantic interpretation |
 | syntax store | current parsed result for one exact document | symbol resolution |
 | symbol index | deterministic symbols for one exact syntax snapshot | reference semantics |

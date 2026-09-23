@@ -18,6 +18,7 @@ LSP / JSON-RPC lifecycle
 ## Current capabilities
 
 - bounded LSP `Content-Length` framing with fail-fast per-line, total-header-byte, header-count, and payload limits, plus JSON-RPC lifecycle handling with notification-only `initialized`/`exit` shape enforcement and idempotent terminal exit semantics
+- executable synchronous stdio host (`mini-language-server` and `python -m mini_language_server`) that wires bounded framing to the final Nova product, drains notifications/server-requests before direct responses, preserves lifecycle quiescence, and fails closed on malformed framing or EOF before `exit`
 - standard LSP `$/setTrace` (`off` / `messages` / `verbose`) with product-wide `$/logTrace` lifecycle observability for client traffic, outbound notifications/progress, and tracked server-to-client requests; verbose mode records deterministic structural metadata without copying source text or arbitrary payload values
 - document open/change/close with monotonic versions and incremental edits
 - negotiated LSP position encoding across the complete session (`utf-8`, `utf-16`, and `utf-32`, defaulting compatibly to `utf-16`), with one coordinate contract for incremental edits, navigation/diagnostic/formatting ranges, workspace edits, and semantic-token starts/lengths
@@ -67,6 +68,7 @@ See [`docs/stability-checkpoint.md`](docs/stability-checkpoint.md) for the maint
 python -m pip install -e '.[dev]'
 pytest
 ruff check .
+mini-language-server
 ```
 
 Every derived result must remain bound to the exact document/syntax/symbol/semantic generation that produced it. Late work must be rejected rather than overwrite a newer snapshot.
