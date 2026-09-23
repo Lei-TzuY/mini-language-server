@@ -12,6 +12,8 @@ from .folding_ranges import NovaProductLanguageServer as _NovaProductLanguageSer
 from .server import ServerState
 from .workspace_folders import WorkspaceFolderError
 
+_WORKSPACE_DIAGNOSTIC_PARTIAL_CHUNK_SIZE = 16
+
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product server with exact-snapshot pull diagnostics."""
@@ -184,6 +186,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         previous = self._workspace_previous_result_ids(params.get("previousResultIds", []))
         if previous is None:
             return self._error(request_id, -32602, "Invalid params")
+        valid_partial, partial_result_token = self._workspace_partial_result_token(params)
+        if not valid_partial:
+            return self._error(request_id, -32602, "Invalid params")
         try:
             context = self.requests.start(request_id)
         except RequestError:
@@ -219,7 +224,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         lambda document: folder_scope.contains(document.uri),
                         lambda: self.diagnostics.commit_all_if_current(
                             diagnostic_snapshots,
-                            lambda: self._result(request_id, {"items": reports}),
+                            lambda: self._workspace_diagnostic_result(
+                                request_id,
+                                reports,
+                                partial_result_token,
+                            ),
                         ),
                     ),
                 )
@@ -229,6 +238,37 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return self._error(request_id, -32800, "Request cancelled")
         finally:
             self.requests.finish(context)
+
+    def _workspace_diagnostic_result(
+        self,
+        request_id: Any,
+        reports: list[dict[str, Any]],
+        partial_result_token: str | int | None,
+    ) -> dict[str, Any]:
+        if partial_result_token is None:
+            return self._result(request_id, {"items": reports})
+
+        for start in range(0, len(reports), _WORKSPACE_DIAGNOSTIC_PARTIAL_CHUNK_SIZE):
+            self._queue_progress(
+                partial_result_token,
+                {
+                    "items": reports[
+                        start : start + _WORKSPACE_DIAGNOSTIC_PARTIAL_CHUNK_SIZE
+                    ]
+                },
+            )
+        return self._result(request_id, {"items": []})
+
+    @staticmethod
+    def _workspace_partial_result_token(
+        params: dict[str, Any],
+    ) -> tuple[bool, str | int | None]:
+        if "partialResultToken" not in params:
+            return True, None
+        token = params["partialResultToken"]
+        if isinstance(token, bool) or not isinstance(token, str | int):
+            return False, None
+        return True, token
 
     @staticmethod
     def _workspace_previous_result_ids(value: Any) -> dict[str, str] | None:
