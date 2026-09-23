@@ -18,7 +18,20 @@ def notification(method: str, params: object | None = None) -> dict:
 
 def initialized_server() -> LanguageServer:
     server = LanguageServer()
-    server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+    server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {
+                    "textDocument": {
+                        "publishDiagnostics": {"versionSupport": True}
+                    }
+                }
+            },
+        }
+    )
     return server
 
 
