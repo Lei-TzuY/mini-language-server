@@ -10,6 +10,7 @@ from .diagnostics import DiagnosticError, DiagnosticSnapshot
 from .documents import Document, DocumentError
 from .folding_ranges import NovaProductLanguageServer as _NovaProductLanguageServer
 from .server import ServerState
+from .workspace import WorkspaceIndexError
 from .workspace_folders import WorkspaceFolderError
 
 _DIAGNOSTIC_PARTIAL_CHUNK_SIZE = 16
@@ -301,6 +302,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             self.requests.checkpoint(context)
             folder_scope = self.workspace_folders.snapshot()
             documents = self._workspace_documents(folder_scope)
+            workspace_snapshots = self.workspace_symbols.snapshots()
+            closed_diagnostics = tuple(
+                snapshot
+                for snapshot in self._closed_workspace_diagnostic_snapshots(
+                    tuple(workspace_snapshots)
+                )
+                if folder_scope.contains(snapshot.uri)
+            )
             if active_work_done_token is not None:
                 self._queue_progress(
                     active_work_done_token,
@@ -315,7 +324,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
             reports: list[dict[str, Any]] = []
             diagnostic_snapshots: list[DiagnosticSnapshot] = []
-            total_documents = len(documents)
+            total_documents = len(documents) + len(closed_diagnostics)
             for index, document in enumerate(documents, start=1):
                 self.requests.checkpoint(context)
                 snapshot = self.diagnostics.get(document.uri)
@@ -345,24 +354,74 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         },
                     )
 
+            for index, snapshot in enumerate(
+                closed_diagnostics,
+                start=len(documents) + 1,
+            ):
+                self.requests.checkpoint(context)
+                document = snapshot.semantic.symbols.syntax.document
+                source = self._source_text(document.text)
+                items = [
+                    self._diagnostic(source, item)
+                    for item in snapshot.diagnostics
+                ]
+                result_id = self._diagnostic_result_id_values(
+                    uri=document.uri,
+                    version=None,
+                    text=document.text,
+                    snapshot=snapshot,
+                )
+                report = self._diagnostic_report(
+                    previous.get(document.uri),
+                    result_id,
+                    items,
+                )
+                reports.append(
+                    {
+                        "uri": document.uri,
+                        "version": None,
+                        **report,
+                    }
+                )
+                if active_work_done_token is not None and total_documents:
+                    self._queue_progress(
+                        active_work_done_token,
+                        {
+                            "kind": "report",
+                            "message": (
+                                f"Processed {index} of {total_documents} "
+                                "workspace documents"
+                            ),
+                            "percentage": (index * 100) // total_documents,
+                        },
+                    )
+
             self.requests.checkpoint(context)
             try:
                 result = self.workspace_folders.commit_if_current(
                     folder_scope.generation,
-                    lambda: self.documents.commit_matching_if_current(
-                        documents,
-                        lambda document: folder_scope.contains(document.uri),
-                        lambda: self.diagnostics.commit_all_if_current(
-                            diagnostic_snapshots,
-                            lambda: self._workspace_diagnostic_result(
-                                request_id,
-                                reports,
-                                partial_result_token,
+                    lambda: self.workspace_symbols.commit_snapshots_if_current(
+                        workspace_snapshots,
+                        lambda: self.documents.commit_matching_if_current(
+                            documents,
+                            lambda document: folder_scope.contains(document.uri),
+                            lambda: self.diagnostics.commit_all_if_current(
+                                diagnostic_snapshots,
+                                lambda: self._workspace_diagnostic_result(
+                                    request_id,
+                                    reports,
+                                    partial_result_token,
+                                ),
                             ),
                         ),
                     ),
                 )
-            except (DocumentError, DiagnosticError, WorkspaceFolderError) as exc:
+            except (
+                DocumentError,
+                DiagnosticError,
+                WorkspaceFolderError,
+                WorkspaceIndexError,
+            ) as exc:
                 raise StaleRequest("workspace diagnostic inputs changed") from exc
 
             if active_work_done_token is not None:
@@ -461,12 +520,28 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _diagnostic_result_id(
         document: Document, snapshot: DiagnosticSnapshot | None
     ) -> str:
+        return NovaProductLanguageServer._diagnostic_result_id_values(
+            uri=document.uri,
+            version=document.version,
+            text=document.text,
+            snapshot=snapshot,
+        )
+
+    @staticmethod
+    def _diagnostic_result_id_values(
+        *,
+        uri: str,
+        version: int | None,
+        text: str,
+        snapshot: DiagnosticSnapshot | None,
+    ) -> str:
+        version_token = "null" if version is None else str(version)
         digest = sha256()
-        digest.update(document.uri.encode("utf-8"))
+        digest.update(uri.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(str(document.version).encode("ascii"))
+        digest.update(version_token.encode("ascii"))
         digest.update(b"\0")
-        digest.update(document.text.encode("utf-8"))
+        digest.update(text.encode("utf-8"))
         if snapshot is not None:
             for diagnostic in snapshot.diagnostics:
                 digest.update(b"\0")
@@ -491,4 +566,4 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     digest.update(str(related.span.end).encode("ascii"))
                     digest.update(b"\0")
                     digest.update(related.message.encode("utf-8"))
-        return f"{document.version}:{digest.hexdigest()[:24]}"
+        return f"{version_token}:{digest.hexdigest()[:24]}"

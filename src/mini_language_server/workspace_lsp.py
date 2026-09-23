@@ -6,7 +6,11 @@ from contextlib import suppress
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
-from .diagnostics import Diagnostic
+from .diagnostics import (
+    Diagnostic,
+    DiagnosticRelatedInformation,
+    DiagnosticSnapshot,
+)
 from .documents import Document, DocumentError
 from .nova import NovaFunctionSyntax, NovaLanguageServer
 from .semantic import SemanticError, SemanticSnapshot
@@ -52,6 +56,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self._moniker_support = False
         self._closed_workspace_index_initialized = False
         self._closed_workspace_uris: dict[WorkspaceUriIdentity, str] = {}
+        self._closed_workspace_base_diagnostics: dict[
+            WorkspaceUriIdentity, DiagnosticSnapshot
+        ] = {}
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -544,6 +551,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     )
                     changed = changed or removed is not None
             self._closed_workspace_uris.pop(identity, None)
+            self._closed_workspace_base_diagnostics.pop(identity, None)
 
         for identity in sorted(discovered):
             item = discovered[identity]
@@ -555,12 +563,13 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             ):
                 continue
 
-            semantic = self._detached_nova_semantic(item)
+            semantic, base_diagnostics = self._detached_nova_snapshot(item)
             try:
                 self.workspace_symbols.replace(semantic, expected=current)
             except WorkspaceIndexError:
                 continue
             self._closed_workspace_uris[identity] = item.uri
+            self._closed_workspace_base_diagnostics[identity] = base_diagnostics
             changed = True
         return changed
 
@@ -568,6 +577,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         """Remove a detached contribution before an editor buffer owns its identity."""
         identity = WorkspaceFolderSet.uri_identity(uri)
         tracked_uri = self._closed_workspace_uris.pop(identity, None)
+        self._closed_workspace_base_diagnostics.pop(identity, None)
         if tracked_uri is None:
             return False
         current = self.workspace_symbols.get(tracked_uri)
@@ -598,18 +608,19 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if item is None or not self.workspace_folders.contains(item.uri):
             return False
         current = self.workspace_symbols.get(item.uri)
-        semantic = self._detached_nova_semantic(item)
+        semantic, base_diagnostics = self._detached_nova_snapshot(item)
         try:
             self.workspace_symbols.replace(semantic, expected=current)
         except WorkspaceIndexError:
             return False
         self._closed_workspace_uris[item.identity] = item.uri
+        self._closed_workspace_base_diagnostics[item.identity] = base_diagnostics
         return True
 
-    def _detached_nova_semantic(
+    def _detached_nova_snapshot(
         self, item: ClosedWorkspaceFile
-    ) -> SemanticSnapshot:
-        """Build one read-only Nova snapshot outside the live document stores."""
+    ) -> tuple[SemanticSnapshot, DiagnosticSnapshot]:
+        """Build one read-only Nova semantic + base diagnostic snapshot."""
         detached = LanguageServer()
         document = detached.documents.open(
             uri=item.uri,
@@ -617,7 +628,97 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             version=0,
             text=item.text,
         )
-        return self.nova_adapter.publish(detached, document)
+        semantic = self.nova_adapter.publish(detached, document)
+        diagnostics = detached.diagnostics.get(item.uri)
+        if diagnostics is None or diagnostics.semantic is not semantic:
+            raise SemanticError("detached Nova diagnostics failed to publish")
+        return semantic, diagnostics
+
+    def _closed_workspace_diagnostic_snapshots(
+        self,
+        snapshots: tuple[SemanticSnapshot, ...],
+    ) -> tuple[DiagnosticSnapshot, ...]:
+        """Recompute closed-file base + function resolution diagnostics."""
+        functions: dict[str, list[tuple[SemanticSnapshot, Any]]] = {}
+        for snapshot in snapshots:
+            for symbol in snapshot.symbols.symbols:
+                if symbol.kind == "function":
+                    functions.setdefault(symbol.name, []).append((snapshot, symbol))
+
+        rendered: list[DiagnosticSnapshot] = []
+        for snapshot in snapshots:
+            identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
+            if self._closed_workspace_uris.get(identity) != snapshot.uri:
+                continue
+            base = self._closed_workspace_base_diagnostics.get(identity)
+            if base is None or base.semantic is not snapshot:
+                continue
+            tree = snapshot.symbols.syntax.tree
+            if not isinstance(tree, NovaFunctionSyntax):
+                continue
+
+            diagnostics = [
+                diagnostic
+                for diagnostic in base.diagnostics
+                if diagnostic.code
+                in {
+                    "nova.duplicate-function",
+                    "nova.duplicate-parameter",
+                    "nova.duplicate-variable",
+                }
+            ]
+            for name, span in tree.calls:
+                candidates = functions.get(name, [])
+                if not candidates:
+                    diagnostics.append(
+                        Diagnostic(
+                            span,
+                            f"unresolved function '{name}'",
+                            code="nova.unresolved-function",
+                            source="nova",
+                        )
+                    )
+                elif len(candidates) > 1:
+                    diagnostics.append(
+                        Diagnostic(
+                            span,
+                            f"ambiguous function call '{name}'",
+                            code="nova.ambiguous-function",
+                            source="nova",
+                            related_information=tuple(
+                                DiagnosticRelatedInformation(
+                                    candidate_snapshot.uri,
+                                    symbol.span,
+                                    (
+                                        f"candidate function declaration "
+                                        f"'{name}' is here"
+                                    ),
+                                    semantic=candidate_snapshot,
+                                )
+                                for candidate_snapshot, symbol in candidates
+                            ),
+                        )
+                    )
+
+            rendered.append(
+                DiagnosticSnapshot(
+                    semantic=snapshot,
+                    diagnostics=tuple(
+                        sorted(
+                            diagnostics,
+                            key=lambda diagnostic: (
+                                diagnostic.span.start,
+                                diagnostic.span.end,
+                                diagnostic.severity,
+                                diagnostic.message,
+                                diagnostic.code or "",
+                                diagnostic.source or "",
+                            ),
+                        )
+                    ),
+                )
+            )
+        return tuple(rendered)
 
     def _closed_workspace_snapshots_current(
         self, snapshots: tuple[SemanticSnapshot, ...]
