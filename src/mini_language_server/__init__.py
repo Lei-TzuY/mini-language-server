@@ -8,7 +8,13 @@ from .cancellation import (
     StaleRequest,
 )
 from .completion_pipeline import NovaProductLanguageServer
-from .diagnostics import Diagnostic, DiagnosticError, DiagnosticSnapshot, DiagnosticStore
+from .diagnostics import (
+    Diagnostic,
+    DiagnosticError,
+    DiagnosticRelatedInformation,
+    DiagnosticSnapshot,
+    DiagnosticStore,
+)
 from .documents import Document, DocumentError, DocumentStore
 from .protocol import FramingError, JsonRpcError, MessageReader, encode_message
 from .semantic import Reference, SemanticDatabase, SemanticError, SemanticSnapshot
@@ -20,6 +26,7 @@ from .syntax import SyntaxError, SyntaxSnapshot, SyntaxStore
 __all__ = [
     "Diagnostic",
     "DiagnosticError",
+    "DiagnosticRelatedInformation",
     "DiagnosticSnapshot",
     "DiagnosticStore",
     "Document",
