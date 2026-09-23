@@ -481,3 +481,110 @@ def test_runtime_propagates_worker_programming_errors() -> None:
 
     with pytest.raises(RuntimeError, match="worker exploded"):
         run_session(input_stream, BytesIO(), server=WorkerFailureServer())
+
+class TransportFailureCancellationServer(LanguageServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.cancelled = Event()
+        self.events: list[str] = []
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/wait-for-transport"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            context = self.requests.start(message["id"])
+            try:
+                self.events.append("active-start")
+                self.entered.set()
+                assert context._cancelled.wait(timeout=5)
+                self.events.append("active-cancelled")
+                self.cancelled.set()
+                self.requests.checkpoint(context)
+                raise AssertionError("transport-cancelled request passed checkpoint")
+            except RequestCancelled:
+                return self._error(
+                    message["id"],
+                    -32800,
+                    "Request cancelled",
+                )
+            finally:
+                self.requests.finish(context)
+
+        if (
+            message.get("method") == "test/queued-after-active"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            self.events.append("queued-ran")
+            return self._result(message["id"], {"ok": True})
+
+        return super().handle(message)
+
+
+def test_eof_cancels_active_request_and_runtime_exits_nonzero() -> None:
+    server = TransportFailureCancellationServer()
+    payload = framed(
+        initialize(),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/wait-for-transport",
+            "params": {},
+        },
+    )
+    input_stream = GatedBytesIO(
+        payload,
+        gate_offset=len(payload),
+        gate=server.entered,
+    )
+    output_stream = BytesIO()
+
+    assert run_session(input_stream, output_stream, server=server) == 1
+    assert server.cancelled.is_set()
+    assert server.events == ["active-start", "active-cancelled"]
+
+    messages = decoded(output_stream.getvalue())
+    assert [message.get("id") for message in messages] == [1, 2]
+    assert messages[1] == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
+
+
+def test_transport_failure_discards_queued_client_request() -> None:
+    server = TransportFailureCancellationServer()
+    payload = framed(
+        initialize(),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/wait-for-transport",
+            "params": {},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "test/queued-after-active",
+            "params": {},
+        },
+    )
+    input_stream = GatedBytesIO(
+        payload,
+        gate_offset=len(payload),
+        gate=server.entered,
+    )
+    output_stream = BytesIO()
+
+    assert run_session(input_stream, output_stream, server=server) == 1
+    assert server.events == ["active-start", "active-cancelled"]
+
+    messages = decoded(output_stream.getvalue())
+    assert [message.get("id") for message in messages] == [1, 2]
+
+    context = server.requests.start(3)
+    assert context.cancelled is False
+    assert server.requests.finish(context) is True
