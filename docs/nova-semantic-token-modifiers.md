@@ -24,3 +24,9 @@ Clients that support semantic tokens but no modifiers still receive reference an
 The implementation stays in the Nova product layer; the language-independent `Symbol`, `SymbolSnapshot`, and semantic-token encoder remain unchanged. Reference and intrinsic modifier tokens are derived from the exact current `SemanticSnapshot`, while the existing semantic-token request path retains its workspace snapshot publication gate, cancellation checkpoints, and same-version replacement rejection.
 
 Full and range requests share the same token construction. Range requests include only declarations, references, and intrinsic tokens intersecting the requested half-open span. Existing full/delta support therefore consumes the same deterministic modifier-aware token stream.
+
+## Workspace refresh
+
+Reference semantic tokens can change when another open workspace document adds, removes, or changes a uniquely resolved declaration, even when the visible document itself is untouched. When the client supports both semantic tokens and `workspace.semanticTokens.refreshSupport`, the Nova product queues a coalesced `workspace/semanticTokens/refresh` request after a committed cross-file workspace identity transition. A single-document-only transition does not trigger a global refresh. Workspace-folder scope changes also request a refresh because declarations entering or leaving scope can change reference token resolution.
+
+Only one semantic-token refresh request may remain pending at a time. Additional qualifying changes coalesce until the client replies with either success or error, after which a later transition may queue another request. Failed workspace publication does not emit refresh. The refresh invalidates the client cache only; subsequent full/range/delta pulls retain the existing exact document/semantic/workspace snapshot guards.
