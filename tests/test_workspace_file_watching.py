@@ -163,9 +163,15 @@ def test_watched_notification_is_ignored_before_registration_success(
     assert server.workspace_symbols.get(uri) is before
 
     activate_watcher(server)
+    after_registration = server.workspace_symbols.get(uri)
+    assert after_registration is not None
+    assert after_registration is not before
+    assert after_registration.symbols.syntax.document.text == (
+        "fn changed() {}\n"
+    )
+
     server.handle(watched_change(uri, 2))
-    after = server.workspace_symbols.get(uri)
-    assert after is not None and after is not before
+    assert server.workspace_symbols.get(uri) is after_registration
 
 
 def test_registration_error_keeps_watched_notifications_inactive(
