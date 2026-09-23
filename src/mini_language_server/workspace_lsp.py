@@ -38,6 +38,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self.workspace_symbols = WorkspaceSymbolIndex()
         self.workspace_folders = WorkspaceFolderSet()
         self._workspace_folder_change_support = False
+        self._moniker_support = False
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -46,6 +47,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             self._workspace_folder_change_support = (
                 self._client_supports_workspace_folders(params)
             )
+            self._moniker_support = self._client_supports_moniker(params)
             try:
                 self.workspace_folders.configure(params)
             except WorkspaceFolderError:
@@ -65,6 +67,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if "id" in message and self.state is ServerState.RUNNING:
             if method == "workspace/symbol":
                 return self._handle_workspace_symbol(
+                    message.get("id"), message.get("params")
+                )
+            if method == "textDocument/moniker" and self._moniker_support:
+                return self._handle_project_function_moniker(
                     message.get("id"), message.get("params")
                 )
             if method == "textDocument/completion":
@@ -115,6 +121,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     capabilities["workspaceSymbolProvider"] = True
                 if self._client_supports_call_hierarchy(params):
                     capabilities["callHierarchyProvider"] = True
+                if self._moniker_support:
+                    capabilities["monikerProvider"] = True
                 if self._workspace_folder_change_support:
                     workspace_capabilities = capabilities.setdefault("workspace", {})
                     if isinstance(workspace_capabilities, dict):
@@ -288,6 +296,86 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if span.start <= offset < span.end:
                 return semantics, call_name
         return None
+
+    def _handle_project_function_moniker(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any]:
+        query = self._workspace_function_query(params)
+        if query is None:
+            return self._result(request_id, [])
+        semantics, name = query
+        snapshots = self.workspace_symbols.snapshots()
+        folder_scope = self.workspace_folders.snapshot()
+
+        try:
+            context = self.requests.start(request_id, uri=semantics.uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            result = self._project_function_moniker(
+                name,
+                snapshots=snapshots,
+                folder_scope=folder_scope,
+            )
+            self.requests.checkpoint(context)
+
+            def publish() -> dict[str, Any]:
+                self.requests.checkpoint(context)
+                return self._result(request_id, result)
+
+            try:
+                return self.semantics.commit_if_current(
+                    semantics,
+                    lambda: self.workspace_symbols.commit_snapshots_if_current(
+                        snapshots,
+                        lambda: self.workspace_folders.commit_if_current(
+                            folder_scope.generation,
+                            publish,
+                        ),
+                    ),
+                )
+            except (SemanticError, WorkspaceIndexError, WorkspaceFolderError):
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _project_function_moniker(
+        self,
+        name: str,
+        *,
+        snapshots: Any,
+        folder_scope: WorkspaceFolderSnapshot,
+    ) -> list[dict[str, str]]:
+        """Return one conservative project-level moniker for an exact function."""
+        declarations = tuple(
+            declaration
+            for declaration in self.workspace_symbols.declarations(name)
+            if declaration.symbol.kind == "function"
+        )
+        if len(declarations) != 1:
+            return []
+
+        declaration = declarations[0]
+        if not any(snapshot is declaration.snapshot for snapshot in snapshots):
+            return []
+        project_uri = folder_scope.scope_uri_for(declaration.uri)
+        if project_uri is None:
+            return []
+
+        return [
+            {
+                "scheme": "nova",
+                "identifier": name,
+                "unique": "project",
+                "kind": "local",
+            }
+        ]
 
     def _handle_workspace_completion(
         self, request_id: Any, params: Any
@@ -1005,6 +1093,18 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if isinstance(token, bool) or not isinstance(token, str | int):
             return False, None
         return True, token
+
+    @staticmethod
+    def _client_supports_moniker(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        text_document = capabilities.get("textDocument")
+        if not isinstance(text_document, dict):
+            return False
+        return isinstance(text_document.get("moniker"), dict)
 
     @staticmethod
     def _client_supports_workspace_folders(params: Any) -> bool:

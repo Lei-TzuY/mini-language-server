@@ -214,3 +214,29 @@ def test_scope_uri_for_preserves_configured_uri_spelling() -> None:
         )
         == "file://server/work/~app/packages/core"
     )
+
+def test_workspace_folder_snapshot_resolves_most_specific_scope_uri() -> None:
+    folders = WorkspaceFolderSet()
+    folders.configure(
+        {
+            "workspaceFolders": [
+                {"uri": "file:///workspace", "name": "root"},
+                {"uri": "file:///workspace/app", "name": "app"},
+            ]
+        }
+    )
+    snapshot = folders.snapshot()
+
+    assert snapshot.scope_uri_for("file:///workspace/app/main.nova") == (
+        "file:///workspace/app"
+    )
+    assert snapshot.scope_uri_for("file:///workspace/lib/main.nova") == (
+        "file:///workspace"
+    )
+
+
+def test_unscoped_workspace_folder_snapshot_has_no_project_scope_uri() -> None:
+    folders = WorkspaceFolderSet()
+    snapshot = folders.snapshot()
+
+    assert snapshot.scope_uri_for("file:///workspace/main.nova") is None
