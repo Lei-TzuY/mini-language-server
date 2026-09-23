@@ -686,3 +686,151 @@ def test_closed_cross_file_target_uses_caller_parameter_reference_type(
             "argument 1 to 'target' has type 'Int'; expected 'String'",
         )
     ]
+
+
+def test_closed_integer_arithmetic_argument_type(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn target(value: String) {} "
+        "fn caller(input: Int) { target(input + 2 * 3); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'target' has type 'Int'; expected 'String'",
+        )
+    ]
+
+
+def test_closed_string_concatenation_argument_type(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        'fn target(value: Int) {} '
+        'fn caller(label: String) { target(label + "!"); }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [item["code"] for item in report["items"]] == [
+        "nova.argument-type"
+    ]
+
+
+def test_closed_comparison_and_logical_argument_types(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn wants_int(value: Int) {} "
+        "fn wants_string(value: String) {} "
+        "fn caller(left: Int, right: Int, flag: Bool) { "
+        "wants_int((left < right) && flag); "
+        "wants_string(left == right); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'wants_int' has type 'Bool'; expected 'Int'",
+        ),
+        (
+            "nova.argument-type",
+            "argument 1 to 'wants_string' has type 'Bool'; expected 'String'",
+        ),
+    ]
+
+
+def test_closed_unary_and_parenthesized_argument_types(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn wants_string(value: String) {} "
+        "fn wants_int(value: Int) {} "
+        "fn caller(value: Int, flag: Bool) { "
+        "wants_string((-(value))); wants_int(!flag); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [item["code"] for item in report["items"]] == [
+        "nova.argument-type",
+        "nova.argument-type",
+    ]
+
+
+def test_closed_mixed_expression_remains_conservative(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        'fn target(value: String) {} '
+        'fn caller(input: Int) { target(input + "x"); }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert all(item["code"] != "nova.argument-type" for item in report["items"])
+
+
+def test_closed_direct_function_call_argument_stays_outside_expression_scope(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn helper() -> Int { return 1; } "
+        "fn target(value: String) {} "
+        "fn caller() { target(helper()); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert all(item["code"] != "nova.argument-type" for item in report["items"])
+
+
+def test_closed_function_call_operand_does_not_leak_workspace_inference(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn helper() -> Int { return 1; } "
+        "fn target(value: String) {} "
+        "fn caller() { target(helper() + 1); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert all(item["code"] != "nova.argument-type" for item in report["items"])
