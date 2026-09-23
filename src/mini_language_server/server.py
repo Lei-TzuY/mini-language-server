@@ -48,6 +48,7 @@ class LanguageServer:
         self._publish_diagnostic_version_support = False
         self._diagnostic_tag_values: frozenset[int] = frozenset()
         self._diagnostic_related_information_support = False
+        self._work_done_progress_support = False
         self.documents = DocumentStore(position_encoding=self.position_encoding)
         self.syntax = SyntaxStore(self.documents)
         self.symbols = SymbolIndex(self.syntax)
@@ -106,6 +107,9 @@ class LanguageServer:
             self._diagnostic_tag_values = self._client_diagnostic_tag_values(params)
             self._diagnostic_related_information_support = (
                 self._client_supports_diagnostic_related_information(params)
+            )
+            self._work_done_progress_support = (
+                self._client_supports_work_done_progress(params)
             )
             self.documents.set_position_encoding(self.position_encoding)
             self.state = ServerState.RUNNING
@@ -615,6 +619,19 @@ class LanguageServer:
     def _source_text(self, text: str) -> SourceText:
         """Create a source view using the session's negotiated position encoding."""
         return SourceText(text, position_encoding=self.position_encoding)
+
+    @staticmethod
+    def _client_supports_work_done_progress(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        window = capabilities.get("window")
+        return (
+            isinstance(window, dict)
+            and window.get("workDoneProgress") is True
+        )
 
     @staticmethod
     def _client_supports_workspace_document_changes(params: Any) -> bool:
