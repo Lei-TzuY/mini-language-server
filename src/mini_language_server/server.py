@@ -80,6 +80,7 @@ class LanguageServer:
         method = message["method"]
 
         if method == "exit":
+            self.requests.retire_all()
             self._retire_all_server_requests(cancel_remote=False)
             self.exit_code = 0 if self.state is ServerState.SHUTDOWN else 1
             self.state = ServerState.EXITED
@@ -154,6 +155,7 @@ class LanguageServer:
                 return None
             if self.state is ServerState.SHUTDOWN:
                 return self._error(request_id, -32600, "Shutdown already requested")
+            self.requests.retire_all()
             self._retire_all_server_requests(cancel_remote=True)
             self.state = ServerState.SHUTDOWN
             return self._result(request_id, None)
