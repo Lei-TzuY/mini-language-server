@@ -497,7 +497,7 @@ def test_closed_unknown_argument_expression_does_not_guess_type(tmp_path: Path) 
     source = tmp_path / "closed.nova"
     source.write_text(
         "fn target(value: String) {} "
-        "fn caller() { let local = 1; target(local); }\n",
+        "fn caller() { let local = 1 + 2 target(local) }\n",
         encoding="utf-8",
     )
     server = initialized_server(tmp_path)
@@ -542,4 +542,147 @@ def test_closed_count_mismatch_does_not_stack_argument_type(tmp_path: Path) -> N
 
     assert [item["code"] for item in report["items"]] == [
         "nova.argument-count"
+    ]
+
+
+def test_closed_typed_parameter_reference_reports_argument_type(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn target(value: String) {} "
+        "fn caller(input: Int) { target(input); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'target' has type 'Int'; expected 'String'",
+        )
+    ]
+
+
+def test_closed_literal_initialized_local_reports_argument_type(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn target(value: String) {} "
+        "fn caller() { let local = 1 target(local) }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [item["code"] for item in report["items"]] == [
+        "nova.argument-type"
+    ]
+
+
+def test_closed_local_alias_chain_reports_argument_type(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn target(value: Bool) {} "
+        "fn caller(input: Int) { "
+        "let first = input let second = first target(second) }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'target' has type 'Int'; expected 'Bool'",
+        )
+    ]
+
+
+def test_closed_explicit_local_annotation_reports_argument_type(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn target(value: Int) {} "
+        'fn caller() { let local: String = "x"; target(local); }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'target' has type 'String'; expected 'Int'",
+        )
+    ]
+
+
+def test_closed_local_alias_cycle_remains_conservative(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn target(value: String) {} "
+        "fn caller() { let left = right; let right = left; target(right); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert all(item["code"] != "nova.argument-type" for item in report["items"])
+
+
+def test_closed_cross_file_target_uses_caller_parameter_reference_type(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        "fn target(value: String) {}\n",
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn caller(input: Int) { target(input); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        caller.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'target' has type 'Int'; expected 'String'",
+        )
     ]
