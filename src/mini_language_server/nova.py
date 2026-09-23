@@ -416,7 +416,7 @@ class NovaLanguageServer(LanguageServer):
             uri = self._document_uri(params)
             assert uri is not None
             document = self.documents.get(uri)
-            if document is None or document.language_id != self.nova_adapter.language_id:
+            if document is None:
                 self.requests.checkpoint(context)
                 return self._result(request_id, [])
 
@@ -425,6 +425,9 @@ class NovaLanguageServer(LanguageServer):
                 return self._error(request_id, -32602, "Invalid params")
             source, start_offset, end_offset, supports_quickfix = parsed
             if not supports_quickfix:
+                self.requests.checkpoint(context)
+                return self._result(request_id, [])
+            if document.language_id != self.nova_adapter.language_id:
                 self.requests.checkpoint(context)
                 return self._result(request_id, [])
 
