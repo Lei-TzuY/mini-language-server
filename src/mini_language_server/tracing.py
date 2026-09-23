@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .server import ServerState
+
 _TRACE_VALUES = frozenset({"off", "messages", "verbose"})
 
 
@@ -20,8 +22,12 @@ class TraceLanguageServerMixin:
         return self._trace_value
 
     def handle(self, message: Any) -> dict[str, Any] | None:
+        if self.state is ServerState.EXITED:
+            return super().handle(message)
+
         if self._is_set_trace_notification(message):
-            self._set_trace_value(message.get("params"))
+            if self.state is not ServerState.SHUTDOWN:
+                self._set_trace_value(message.get("params"))
             return None
 
         mode = self._trace_value
