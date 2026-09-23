@@ -40,10 +40,10 @@ class TraceLanguageServerMixin:
             )
         return response
 
-    def _queue_notification(self, method: str, params: Any = None) -> None:
-        super()._queue_notification(method, params)
-        if method == "$/logTrace" or self._trace_value == "off":
-            return
+    def _queue_notification(self, method: str, params: Any = None) -> bool:
+        queued = super()._queue_notification(method, params)
+        if not queued or method == "$/logTrace" or self._trace_value == "off":
+            return queued
         self._emit_trace(
             f"server -> client notification {method}",
             (
@@ -52,6 +52,7 @@ class TraceLanguageServerMixin:
                 else None
             ),
         )
+        return queued
 
     def _queue_server_request(
         self, method: str, params: dict[str, Any] | None = None
@@ -94,8 +95,9 @@ class TraceLanguageServerMixin:
         params: dict[str, Any] = {"message": message}
         if verbose is not None:
             params["verbose"] = verbose
-        # Bypass _queue_notification deliberately: tracing the trace would recurse.
-        self._notifications.append(
+        # Bypass _queue_notification deliberately: tracing the trace would recurse,
+        # but still use the lifecycle-gated append primitive.
+        self._append_notification(
             {
                 "jsonrpc": "2.0",
                 "method": "$/logTrace",
