@@ -752,3 +752,148 @@ def test_runtime_dispatches_configuration_change_while_save_request_is_active() 
         and message.get("params") == {"id": "server:1"}
         for message in messages
     )
+
+
+class ActiveTransportAbortServer(LanguageServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.events: list[str] = []
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/wait-for-transport"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            context = self.requests.start(message["id"])
+            try:
+                self._queue_notification("test/stale-notification", {"value": 1})
+                self._queue_server_request(
+                    "workspace/configuration",
+                    {"items": [{"section": "test"}]},
+                )
+                self.events.append("request-started")
+                self.entered.set()
+                assert context._cancelled.wait(timeout=5)
+                self.events.append("request-cancelled")
+                self.requests.checkpoint(context)
+                raise AssertionError("transport-aborted request passed checkpoint")
+            except RequestCancelled:
+                return self._error(message["id"], -32800, "Request cancelled")
+            finally:
+                self.requests.finish(context)
+        return super().handle(message)
+
+
+def test_eof_aborts_active_request_and_discards_late_outbound_traffic() -> None:
+    server = ActiveTransportAbortServer()
+    payload = framed(
+        initialize(),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/wait-for-transport",
+            "params": {},
+        },
+    )
+    input_stream = GatedBytesIO(
+        payload,
+        gate_offset=len(payload),
+        gate=server.entered,
+    )
+    output_stream = BytesIO()
+
+    assert run_session(input_stream, output_stream, server=server) == 1
+
+    assert decoded(output_stream.getvalue()) == [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "capabilities": {
+                    "positionEncoding": "utf-16",
+                    "textDocumentSync": 2,
+                    "definitionProvider": True,
+                    "referencesProvider": True,
+                    "renameProvider": {"prepareProvider": True},
+                    "hoverProvider": True,
+                },
+                "serverInfo": {
+                    "name": "mini-language-server",
+                    "version": "0.1.0",
+                },
+            },
+        }
+    ]
+    assert server.events == ["request-started", "request-cancelled"]
+    assert len(server.requests) == 0
+    assert server.drain_notifications() == []
+    assert server.drain_server_requests() == []
+
+
+class PreStartTransportAbortServer(LanguageServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.before_start = Event()
+        self.release_start = Event()
+        self.events: list[str] = []
+
+    def abort_transport(
+        self, *, active_request_id: str | int | None = None
+    ) -> None:
+        super().abort_transport(active_request_id=active_request_id)
+        self.events.append("transport-aborted")
+        self.release_start.set()
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/start-after-abort"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            self.events.append("worker-entered")
+            self.before_start.set()
+            assert self.release_start.wait(timeout=5)
+            context = self.requests.start(message["id"])
+            try:
+                self.events.append("context-started")
+                self.requests.checkpoint(context)
+                raise AssertionError("staged transport abort was not consumed")
+            except RequestCancelled:
+                self.events.append("context-cancelled")
+                return self._error(message["id"], -32800, "Request cancelled")
+            finally:
+                self.requests.finish(context)
+        return super().handle(message)
+
+
+def test_eof_stages_abort_before_worker_registers_request_context() -> None:
+    server = PreStartTransportAbortServer()
+    payload = framed(
+        initialize(),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/start-after-abort",
+            "params": {},
+        },
+    )
+    input_stream = GatedBytesIO(
+        payload,
+        gate_offset=len(payload),
+        gate=server.before_start,
+    )
+    output_stream = BytesIO()
+
+    assert run_session(input_stream, output_stream, server=server) == 1
+
+    messages = decoded(output_stream.getvalue())
+    assert [message.get("id") for message in messages] == [1]
+    assert server.events == [
+        "worker-entered",
+        "transport-aborted",
+        "context-started",
+        "context-cancelled",
+    ]
+    assert len(server.requests) == 0

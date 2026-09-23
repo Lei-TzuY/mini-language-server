@@ -41,6 +41,8 @@ After shutdown, response-shaped JSON-RPC messages are ignored even though respon
 
 An `exit` notification performs final local retirement without emitting new cancellation traffic because no further protocol exchange is expected. This also covers abnormal exit without a preceding shutdown.
 
+A terminal stdio EOF or framing failure uses the same local-only ownership principle without pretending that an LSP `exit` notification was received. `LanguageServer.abort_transport()` cancels/detaches active request contexts, stages cancellation for the exact request thread that may not yet have registered its context, retires every pending server-to-client request without remote cancellation traffic, and closes the notification outbox. The runtime suppresses any worker response produced after that boundary and returns a non-zero process status.
+
 Session termination also retires the opposite request direction. Before shutdown is acknowledged, the generic `RequestTracker` marks every in-flight client-to-server request context cancelled and detaches it from the active map. Workers that resume after the lifecycle boundary therefore fail their existing cancellation checkpoints instead of successfully publishing a late semantic result. `exit` applies the same terminal request-context retirement even when the client skipped shutdown.
 
 This capability does not otherwise change refresh coalescing or generation supersession. Supersession is used when a payload becomes stale during normal operation; lifecycle retirement closes all remaining request ownership when the session itself ends.

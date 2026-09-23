@@ -41,11 +41,11 @@ A cancel frame may arrive after the request frame has been read but before the h
 
 A normal `shutdown` request followed by an `exit` notification returns the exit code chosen by the server lifecycle.
 
-EOF before `exit` is treated as an abnormal transport termination and returns a non-zero process status, including when `shutdown` was received but the required `exit` notification never arrived.
+EOF before `exit` is treated as an abnormal transport termination and returns a non-zero process status, including when `shutdown` was received but the required `exit` notification never arrived. If a client request worker is still active when EOF is observed, the runtime immediately establishes a transport-abort boundary: the exact transport-owned request generation is cancelled (or pre-cancelled if its worker has not registered the context yet), pending server-to-client requests are retired locally, the notification outbox is closed, and the runtime waits only for cooperative worker termination. The worker's post-failure response and outbound traffic are not flushed.
 
-A `FramingError` is also fail-closed and returns non-zero without inventing a JSON-RPC response. Once the byte stream has violated the framing contract, the runtime does not guess where a later frame begins.
+A `FramingError` uses the same fail-closed transport-abort boundary and returns non-zero without inventing a JSON-RPC response. Once the byte stream has violated the framing contract, the runtime does not guess where a later frame begins.
 
-The server's terminal notification/request quiescence remains authoritative. After `exit`, queued traffic discarded by the lifecycle layer is not resurrected by the runtime.
+The server's terminal notification/request quiescence remains authoritative. Protocol `exit` and abnormal transport abort are separate terminal boundaries, but both retire request/outbound ownership so queued traffic cannot be resurrected after the session can no longer deliver it.
 
 ## Scope
 

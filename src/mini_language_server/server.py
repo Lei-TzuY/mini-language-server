@@ -64,6 +64,22 @@ class LanguageServer:
         self._pending_server_requests: dict[str, str] = {}
         self._next_server_request_id = 1
 
+    def abort_transport(
+        self, *, active_request_id: str | int | None = None
+    ) -> None:
+        """Retire request/outbound ownership after terminal transport failure.
+
+        The runtime may know one request thread has started before that thread has
+        registered its RequestTracker context. Retire current contexts first, then
+        stage cancellation for that exact transport-owned request id so either the
+        existing context or its imminent start observes cancellation.
+        """
+        self.requests.retire_all()
+        if active_request_id is not None:
+            self.requests.stage_cancel(active_request_id)
+        self._retire_all_server_requests(cancel_remote=False)
+        self._close_notification_outbox()
+
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         request_id = message.get("id")
         is_request = "id" in message
