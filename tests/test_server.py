@@ -425,7 +425,7 @@ def test_initialize_falls_back_to_utf16_without_supported_advertisement() -> Non
             params={
                 "capabilities": {
                     "general": {
-                        "positionEncodings": ["utf-32"],
+                        "positionEncodings": ["utf-7"],
                     }
                 }
             },
