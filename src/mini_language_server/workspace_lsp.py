@@ -292,50 +292,105 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
     def _handle_workspace_will_rename(
         self, request_id: Any, params: Any
     ) -> dict[str, Any]:
-        """Preflight one open-Nova rename batch without mutating workspace state."""
+        """Preflight one open + detached Nova rename batch without mutation."""
         try:
-            renames = self._workspace_file_rename_pairs(params)
+            renames = self._workspace_file_rename_pairs(
+                params,
+                include_closed=True,
+            )
         except DocumentError:
             return self._error(request_id, -32602, "Invalid params")
         if not renames:
             return self._result(request_id, None)
 
-        affected_uris = {
-            uri
+        affected_identities = frozenset(
+            WorkspaceFolderSet.uri_identity(uri)
             for old_uri, new_uri in renames
             for uri in (old_uri, new_uri)
-        }
-        captured = tuple(
+        )
+        captured_documents = tuple(
             document
             for document in self.documents.snapshots()
-            if document.uri in affected_uris
+            if WorkspaceFolderSet.uri_identity(document.uri) in affected_identities
         )
+        captured_workspace = self.workspace_symbols.snapshots()
+        captured_folders = self.workspace_folders.snapshot()
+        captured_closed = {
+            identity: uri
+            for identity, uri in self._closed_workspace_uris.items()
+            if identity in affected_identities
+        }
+        captured_closed_snapshots = tuple(
+            snapshot
+            for snapshot in captured_workspace
+            if (
+                identity := WorkspaceFolderSet.uri_identity(snapshot.uri)
+            ) in captured_closed
+            and captured_closed[identity] == snapshot.uri
+        )
+
         try:
             context = self.requests.start(request_id)
         except RequestError:
             return self._error(request_id, -32602, "Invalid params")
 
         validation_error: DocumentError | None = None
+        stale_closed_inputs = False
         try:
             self.requests.checkpoint(context)
+            if not self._closed_workspace_snapshots_current(
+                captured_closed_snapshots
+            ):
+                self._refresh_closed_workspace_files()
+                return self._error(request_id, -32801, "Content modified")
 
             def publish() -> dict[str, Any] | None:
-                nonlocal validation_error
+                nonlocal validation_error, stale_closed_inputs
+                if any(
+                    self._closed_workspace_uris.get(identity) != uri
+                    for identity, uri in captured_closed.items()
+                ):
+                    stale_closed_inputs = True
+                    return None
                 try:
                     self.documents.validate_renames(renames)
+                    self._validate_closed_workspace_rename_preflight(
+                        renames,
+                        captured_documents=captured_documents,
+                        captured_closed=captured_closed,
+                    )
                 except DocumentError as exc:
                     validation_error = exc
+                    return None
+
+                if not self._closed_workspace_snapshots_current(
+                    captured_closed_snapshots
+                ):
+                    stale_closed_inputs = True
                     return None
                 self.requests.checkpoint(context)
                 return self._result(request_id, None)
 
             try:
                 response = self.documents.commit_matching_if_current(
-                    captured,
-                    lambda document: document.uri in affected_uris,
-                    publish,
+                    captured_documents,
+                    lambda document: (
+                        WorkspaceFolderSet.uri_identity(document.uri)
+                        in affected_identities
+                    ),
+                    lambda: self.workspace_symbols.commit_snapshots_if_current(
+                        captured_workspace,
+                        lambda: self.workspace_folders.commit_if_current(
+                            captured_folders.generation,
+                            publish,
+                        ),
+                    ),
                 )
-            except DocumentError:
+            except (DocumentError, WorkspaceIndexError, WorkspaceFolderError):
+                return self._error(request_id, -32801, "Content modified")
+
+            if stale_closed_inputs:
+                self._refresh_closed_workspace_files()
                 return self._error(request_id, -32801, "Content modified")
             if validation_error is not None:
                 return self._error(
@@ -349,6 +404,54 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return self._error(request_id, -32800, "Request cancelled")
         finally:
             self.requests.finish(context)
+
+    def _validate_closed_workspace_rename_preflight(
+        self,
+        renames: tuple[tuple[str, str], ...],
+        *,
+        captured_documents: tuple[Document, ...],
+        captured_closed: dict[WorkspaceUriIdentity, str],
+    ) -> None:
+        """Validate canonical open/detached ownership for one rename batch."""
+        source_identities = tuple(
+            WorkspaceFolderSet.uri_identity(old_uri)
+            for old_uri, _ in renames
+        )
+        destination_identities = tuple(
+            WorkspaceFolderSet.uri_identity(new_uri)
+            for _, new_uri in renames
+        )
+        if len(set(source_identities)) != len(source_identities):
+            raise DocumentError("rename source identities must be unique")
+        if len(set(destination_identities)) != len(destination_identities):
+            raise DocumentError("rename destination identities must be unique")
+
+        moving_sources = set(source_identities)
+        open_by_identity = {
+            WorkspaceFolderSet.uri_identity(document.uri): document.uri
+            for document in captured_documents
+        }
+        for new_uri, destination_identity in zip(
+            (new_uri for _, new_uri in renames),
+            destination_identities,
+            strict=True,
+        ):
+            open_uri = open_by_identity.get(destination_identity)
+            if (
+                open_uri is not None
+                and destination_identity not in moving_sources
+            ):
+                raise DocumentError(
+                    f"rename destination already open: {new_uri}"
+                )
+            closed_uri = captured_closed.get(destination_identity)
+            if (
+                closed_uri is not None
+                and destination_identity not in moving_sources
+            ):
+                raise DocumentError(
+                    f"rename destination already indexed: {closed_uri}"
+                )
 
     def _handle_workspace_file_index_change(self, params: Any) -> None:
         """Reconcile detached Nova files after negotiated create/delete notifications."""
@@ -385,7 +488,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         return path is not None and path.suffix == ".nova"
 
     def _workspace_file_rename_pairs(
-        self, params: Any
+        self,
+        params: Any,
+        *,
+        include_closed: bool = False,
     ) -> tuple[tuple[str, str], ...]:
         if not isinstance(params, dict):
             raise DocumentError("file rename params must be an object")
@@ -407,9 +513,17 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             ):
                 raise DocumentError("file rename entries require oldUri and newUri")
             document = self.documents.get(old_uri)
-            if document is None or document.language_id != self.nova_adapter.language_id:
+            if (
+                document is not None
+                and document.language_id == self.nova_adapter.language_id
+            ):
+                renames.append((old_uri, new_uri))
                 continue
-            renames.append((old_uri, new_uri))
+            if include_closed and (
+                self._workspace_file_affects_closed_index(old_uri)
+                or self._workspace_file_affects_closed_index(new_uri)
+            ):
+                renames.append((old_uri, new_uri))
         return tuple(renames)
 
     def _handle_workspace_file_renames(self, params: Any) -> None:

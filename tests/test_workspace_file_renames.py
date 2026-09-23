@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -62,6 +63,19 @@ def initialized_server(
         }
     else:
         assert "willRename" not in workspace["fileOperations"]
+    return server
+
+
+def initialized_closed_workspace_server(
+    root: Path,
+    *,
+    will_rename: bool = True,
+) -> NovaProductLanguageServer:
+    server = initialized_server(
+        workspace_folders=[{"uri": root.as_uri(), "name": "workspace"}],
+        will_rename=will_rename,
+    )
+    server.handle(notify("initialized", {}))
     return server
 
 
@@ -510,3 +524,144 @@ def test_will_rename_honors_cancellation_before_publication(
     }
     assert server.documents.get(old_uri) is previous
     assert server.documents.get(new_uri) is None
+
+
+def test_will_rename_preflights_closed_source_without_mutation(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.nova"
+    destination = tmp_path / "renamed.nova"
+    source.write_text("fn source() {}\n", encoding="utf-8")
+    server = initialized_closed_workspace_server(tmp_path)
+
+    source_uri = source.absolute().as_uri()
+    destination_uri = destination.absolute().as_uri()
+    before = server.workspace_symbols.get(source_uri)
+    assert before is not None
+    assert server.documents.get(source_uri) is None
+
+    response = will_rename_files(
+        server,
+        (source_uri, destination_uri),
+        request_id=30,
+    )
+
+    assert response == {"jsonrpc": "2.0", "id": 30, "result": None}
+    assert source.exists()
+    assert not destination.exists()
+    assert server.workspace_symbols.get(source_uri) is before
+    assert server.workspace_symbols.get(destination_uri) is None
+
+
+def test_will_rename_rejects_closed_destination_collision(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.nova"
+    occupied = tmp_path / "occupied.nova"
+    source.write_text("fn source() {}\n", encoding="utf-8")
+    occupied.write_text("fn occupied() {}\n", encoding="utf-8")
+    server = initialized_closed_workspace_server(tmp_path)
+
+    response = will_rename_files(
+        server,
+        (source.absolute().as_uri(), occupied.absolute().as_uri()),
+        request_id=31,
+    )
+
+    assert response is not None
+    assert response["error"]["code"] == -32803
+    assert "destination already indexed" in response["error"]["message"]
+    assert source.exists()
+    assert occupied.exists()
+
+
+def test_will_rename_allows_closed_file_swap_batch(tmp_path: Path) -> None:
+    first = tmp_path / "first.nova"
+    second = tmp_path / "second.nova"
+    first.write_text("fn first() {}\n", encoding="utf-8")
+    second.write_text("fn second() {}\n", encoding="utf-8")
+    server = initialized_closed_workspace_server(tmp_path)
+
+    response = will_rename_files(
+        server,
+        (first.absolute().as_uri(), second.absolute().as_uri()),
+        (second.absolute().as_uri(), first.absolute().as_uri()),
+        request_id=32,
+    )
+
+    assert response == {"jsonrpc": "2.0", "id": 32, "result": None}
+    assert first.read_text(encoding="utf-8") == "fn first() {}\n"
+    assert second.read_text(encoding="utf-8") == "fn second() {}\n"
+
+
+def test_will_rename_rejects_open_source_to_closed_destination(
+    tmp_path: Path,
+) -> None:
+    occupied = tmp_path / "occupied.nova"
+    occupied.write_text("fn occupied() {}\n", encoding="utf-8")
+    server = initialized_closed_workspace_server(tmp_path)
+
+    source = tmp_path / "open-source.nova"
+    source_uri = source.absolute().as_uri()
+    occupied_uri = occupied.absolute().as_uri()
+    open_nova(server, source_uri, "fn source() {}\n")
+    assert server.workspace_symbols.get(occupied_uri) is not None
+
+    response = will_rename_files(
+        server,
+        (source_uri, occupied_uri),
+        request_id=33,
+    )
+
+    assert response is not None
+    assert response["error"]["code"] == -32803
+    assert "destination already indexed" in response["error"]["message"]
+    assert server.documents.get(source_uri) is not None
+    assert occupied.exists()
+
+
+def test_will_rename_rejects_detached_disk_drift_and_refreshes_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.nova"
+    destination = tmp_path / "renamed.nova"
+    source.write_bytes(b"fn before() {}\n")
+    server = initialized_closed_workspace_server(tmp_path)
+    source_uri = source.absolute().as_uri()
+    before = server.workspace_symbols.get(source_uri)
+    assert before is not None
+
+    original = server.workspace_symbols.commit_snapshots_if_current
+    drifted = False
+
+    def drift_then_commit(snapshots, callback):
+        nonlocal drifted
+        if not drifted:
+            drifted = True
+            source.write_bytes(b"fn after() {}\n")
+        return original(snapshots, callback)
+
+    monkeypatch.setattr(
+        server.workspace_symbols,
+        "commit_snapshots_if_current",
+        drift_then_commit,
+    )
+
+    response = will_rename_files(
+        server,
+        (source_uri, destination.absolute().as_uri()),
+        request_id=34,
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 34,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    refreshed = server.workspace_symbols.get(source_uri)
+    assert refreshed is not None
+    assert refreshed is not before
+    assert refreshed.symbols.syntax.document.text == "fn after() {}\n"
+    assert source.exists()
+    assert not destination.exists()
