@@ -936,3 +936,39 @@ def test_will_save_rejects_workspace_scope_change_during_formatting(
         "id": 71,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+def test_equivalent_document_uri_uses_original_workspace_scope_uri() -> None:
+    server = NovaProductLanguageServer()
+    configured = "FILE://SERVER/work/%7eapp/"
+    initialize(
+        server,
+        configuration=True,
+        workspace_folders=[{"uri": configured, "name": "app"}],
+    )
+    server.handle(notify("initialized", {}))
+    config_request = server.drain_server_requests()[0]
+    assert config_request["params"]["items"] == [
+        {"section": "mini-language-server.formatting"},
+        {
+            "section": "mini-language-server.formatting",
+            "scopeUri": configured,
+        },
+    ]
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": config_request["id"],
+            "result": [
+                {"tabSize": 4, "insertSpaces": True},
+                {"tabSize": 2, "insertSpaces": False},
+            ],
+        }
+    ) is None
+
+    uri = "file://server/work/~app/main.nova"
+    open_nova(server, uri, "fn main() {\nreturn 1\n}\n")
+
+    assert will_save(server, uri, 92)["result"][0]["newText"] == (
+        "fn main() {\n\treturn 1\n}\n"
+    )
