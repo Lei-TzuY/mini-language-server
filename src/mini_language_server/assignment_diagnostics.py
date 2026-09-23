@@ -162,14 +162,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         for diagnostic in diagnostics:
             if not any(item is diagnostic for item in current.diagnostics):
                 continue
-            if start_offset == end_offset:
-                overlaps = diagnostic.span.start <= start_offset <= diagnostic.span.end
-            else:
-                overlaps = (
-                    diagnostic.span.start < end_offset
-                    and start_offset < diagnostic.span.end
-                )
-            if not overlaps:
+            if not self._assignment_diagnostic_overlaps(
+                diagnostic,
+                start_offset=start_offset,
+                end_offset=end_offset,
+            ):
                 continue
 
             if diagnostic.code == _IMMUTABLE_ASSIGNMENT_DIAGNOSTIC:
@@ -183,48 +180,81 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 if keyword != "let":
                     continue
                 actions.append(
-                    {
-                        "title": "Change immutable local declaration to var",
-                        "kind": "quickfix",
-                        "diagnostics": [self._diagnostic(source, diagnostic)],
-                        "edit": {
-                            "changes": {
-                                uri: [
-                                    {
-                                        "range": self._range(source, keyword_span),
-                                        "newText": "var",
-                                    }
-                                ]
-                            }
-                        },
-                    }
+                    self._immutable_assignment_action(
+                        uri,
+                        source,
+                        diagnostic,
+                        keyword_span,
+                    )
                 )
                 continue
 
             if diagnostic.code != _ASSIGNMENT_TYPE_DIAGNOSTIC:
                 continue
-            match = _ASSIGNMENT_TYPE_MESSAGE.fullmatch(diagnostic.message)
-            if match is None:
-                continue
-            expected = match.group(1)
-            replacement = _DEFAULT_LITERAL_BY_TYPE.get(expected)
-            if replacement is None:
-                continue
-            actions.append(
-                {
-                    "title": f"Replace assignment value with {expected} literal",
-                    "kind": "quickfix",
-                    "diagnostics": [self._diagnostic(source, diagnostic)],
-                    "edit": {
-                        "changes": {
-                            uri: [
-                                {
-                                    "range": self._range(source, diagnostic.span),
-                                    "newText": replacement,
-                                }
-                            ]
-                        }
-                    },
-                }
-            )
+            action = self._assignment_type_action(uri, source, diagnostic)
+            if action is not None:
+                actions.append(action)
         return actions
+
+    def _immutable_assignment_action(
+        self,
+        uri: str,
+        source: Any,
+        diagnostic: Diagnostic,
+        keyword_span: Span,
+    ) -> dict[str, Any]:
+        return {
+            "title": "Change immutable local declaration to var",
+            "kind": "quickfix",
+            "diagnostics": [self._diagnostic(source, diagnostic)],
+            "edit": {
+                "changes": {
+                    uri: [
+                        {
+                            "range": self._range(source, keyword_span),
+                            "newText": "var",
+                        }
+                    ]
+                }
+            },
+        }
+
+    def _assignment_type_action(
+        self,
+        uri: str,
+        source: Any,
+        diagnostic: Diagnostic,
+    ) -> dict[str, Any] | None:
+        match = _ASSIGNMENT_TYPE_MESSAGE.fullmatch(diagnostic.message)
+        if match is None:
+            return None
+        expected = match.group(1)
+        replacement = _DEFAULT_LITERAL_BY_TYPE.get(expected)
+        if replacement is None:
+            return None
+        return {
+            "title": f"Replace assignment value with {expected} literal",
+            "kind": "quickfix",
+            "diagnostics": [self._diagnostic(source, diagnostic)],
+            "edit": {
+                "changes": {
+                    uri: [
+                        {
+                            "range": self._range(source, diagnostic.span),
+                            "newText": replacement,
+                        }
+                    ]
+                }
+            },
+        }
+
+    @staticmethod
+    def _assignment_diagnostic_overlaps(
+        diagnostic: Diagnostic,
+        *,
+        start_offset: int,
+        end_offset: int,
+    ) -> bool:
+        if start_offset == end_offset:
+            return diagnostic.span.start <= start_offset <= diagnostic.span.end
+        return diagnostic.span.start < end_offset and start_offset < diagnostic.span.end
