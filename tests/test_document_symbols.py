@@ -17,12 +17,24 @@ def notification(method: str, params: object | None = None) -> dict:
     return message
 
 
-def initialize(server: NovaProductLanguageServer, *, supported: bool = True) -> dict:
-    text_document = {"documentSymbol": {}} if supported else {}
+def initialize(
+    server: NovaProductLanguageServer,
+    *,
+    supported: bool = True,
+    hierarchical: bool = False,
+    position_encodings: list[str] | None = None,
+) -> dict:
+    capabilities: dict[str, Any] = {"textDocument": {}}
+    if supported:
+        capabilities["textDocument"]["documentSymbol"] = {
+            "hierarchicalDocumentSymbolSupport": hierarchical,
+        }
+    if position_encodings is not None:
+        capabilities["general"] = {"positionEncodings": position_encodings}
     response = server.handle(
         request(
             "initialize",
-            params={"capabilities": {"textDocument": text_document}},
+            params={"capabilities": capabilities},
         )
     )
     assert response is not None
@@ -72,7 +84,7 @@ def test_document_symbol_capability_is_negotiated() -> None:
     assert "documentSymbolProvider" not in unsupported_response["result"]["capabilities"]
 
 
-def test_document_symbols_render_current_nova_symbols_deterministically() -> None:
+def test_flat_document_symbols_are_standard_symbol_information() -> None:
     server = NovaProductLanguageServer()
     initialize(server)
     uri = "file:///workspace/main.nova"
@@ -88,14 +100,139 @@ def test_document_symbols_render_current_nova_symbols_deterministically() -> Non
         ("right", 13),
         ("total", 13),
     ]
-    assert symbols[0]["range"] == {
-        "start": {"line": 0, "character": 3},
-        "end": {"line": 0, "character": 6},
+    assert symbols[0] == {
+        "name": "add",
+        "kind": 12,
+        "location": {
+            "uri": uri,
+            "range": {
+                "start": {"line": 0, "character": 3},
+                "end": {"line": 0, "character": 6},
+            },
+        },
     }
-    assert symbols[0]["selectionRange"] == symbols[0]["range"]
-    assert symbols[3]["range"] == {
-        "start": {"line": 1, "character": 6},
-        "end": {"line": 1, "character": 11},
+    assert symbols[1]["containerName"] == "add"
+    assert symbols[2]["containerName"] == "add"
+    assert symbols[3] == {
+        "name": "total",
+        "kind": 13,
+        "location": {
+            "uri": uri,
+            "range": {
+                "start": {"line": 1, "character": 6},
+                "end": {"line": 1, "character": 11},
+            },
+        },
+        "containerName": "add",
+    }
+    assert all("selectionRange" not in item for item in symbols)
+
+
+def test_hierarchical_document_symbols_nest_function_members() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, hierarchical=True)
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "fn add(left: Int, right: Int) {\n  let total = left\n}\n")
+
+    response = document_symbols(server, uri)
+
+    assert response is not None
+    assert response["result"] == [
+        {
+            "name": "add",
+            "kind": 12,
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 2, "character": 1},
+            },
+            "selectionRange": {
+                "start": {"line": 0, "character": 3},
+                "end": {"line": 0, "character": 6},
+            },
+            "children": [
+                {
+                    "name": "left",
+                    "kind": 13,
+                    "range": {
+                        "start": {"line": 0, "character": 7},
+                        "end": {"line": 0, "character": 11},
+                    },
+                    "selectionRange": {
+                        "start": {"line": 0, "character": 7},
+                        "end": {"line": 0, "character": 11},
+                    },
+                },
+                {
+                    "name": "right",
+                    "kind": 13,
+                    "range": {
+                        "start": {"line": 0, "character": 18},
+                        "end": {"line": 0, "character": 23},
+                    },
+                    "selectionRange": {
+                        "start": {"line": 0, "character": 18},
+                        "end": {"line": 0, "character": 23},
+                    },
+                },
+                {
+                    "name": "total",
+                    "kind": 13,
+                    "range": {
+                        "start": {"line": 1, "character": 6},
+                        "end": {"line": 1, "character": 11},
+                    },
+                    "selectionRange": {
+                        "start": {"line": 1, "character": 6},
+                        "end": {"line": 1, "character": 11},
+                    },
+                },
+            ],
+        }
+    ]
+
+
+def test_hierarchical_document_symbols_keep_multiple_functions_separate() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, hierarchical=True)
+    uri = "file:///workspace/main.nova"
+    open_document(
+        server,
+        uri,
+        (
+            "fn first(value: Int) { let one = value }\n"
+            "fn second(flag: Bool) { let two = flag }\n"
+        ),
+    )
+
+    response = document_symbols(server, uri)
+
+    assert response is not None
+    roots = response["result"]
+    assert [item["name"] for item in roots] == ["first", "second"]
+    assert [child["name"] for child in roots[0]["children"]] == ["value", "one"]
+    assert [child["name"] for child in roots[1]["children"]] == ["flag", "two"]
+
+
+def test_hierarchical_document_symbols_use_negotiated_utf8_positions() -> None:
+    server = NovaProductLanguageServer()
+    response = initialize(
+        server,
+        hierarchical=True,
+        position_encodings=["utf-8", "utf-16"],
+    )
+    assert response["result"]["capabilities"]["positionEncoding"] == "utf-8"
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "😀 fn add(value: Int) { let local = value }\n")
+
+    symbols = document_symbols(server, uri)
+    assert symbols is not None
+    root = symbols["result"][0]
+
+    assert root["range"]["start"] == {"line": 0, "character": 5}
+    assert root["selectionRange"]["start"] == {"line": 0, "character": 8}
+    assert root["children"][0]["selectionRange"]["start"] == {
+        "line": 0,
+        "character": 12,
     }
 
 
@@ -114,7 +251,7 @@ def test_document_symbols_return_empty_without_current_semantics() -> None:
 
 def test_document_symbols_reject_same_version_semantic_replacement(monkeypatch: Any) -> None:
     server = NovaProductLanguageServer()
-    initialize(server)
+    initialize(server, hierarchical=True)
     uri = "file:///workspace/main.nova"
     open_document(server, uri, "fn current(value: Int) {}\n")
     original_checkpoint = server.requests.checkpoint
@@ -140,7 +277,7 @@ def test_document_symbols_reject_same_version_semantic_replacement(monkeypatch: 
 
 def test_document_symbols_honor_cancellation(monkeypatch: Any) -> None:
     server = NovaProductLanguageServer()
-    initialize(server)
+    initialize(server, hierarchical=True)
     uri = "file:///workspace/main.nova"
     open_document(server, uri, "fn current(value: Int) {}\n")
     original_checkpoint = server.requests.checkpoint
