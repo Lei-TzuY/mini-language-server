@@ -300,7 +300,10 @@ def run_session(
             continue
 
         if item is _SERVER_REQUEST_OUTBOX_READY:
-            if active_server.state is ServerState.RUNNING:
+            if (
+                not transport_failed
+                and active_server.state is ServerState.RUNNING
+            ):
                 _write_batch(
                     output_stream,
                     _drain_after_dispatch(active_server, None),
@@ -313,6 +316,7 @@ def run_session(
                 active_server.abort_transport(
                     active_request_id=active_request_id,
                 )
+                active_server._set_server_request_outbox_wakeup(None)
                 transport_failed = True
                 continue
             active_server.abort_transport()
