@@ -74,7 +74,9 @@ class WorkspaceFolderSet:
     """
 
     def __init__(self) -> None:
-        self._folders: dict[str, WorkspaceFolder] | None = None
+        self._folders: (
+            dict[tuple[str, str, str, str, str], WorkspaceFolder] | None
+        ) = None
         self._generation = 0
         self._lock = threading.RLock()
 
