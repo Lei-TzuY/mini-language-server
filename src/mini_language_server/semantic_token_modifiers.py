@@ -38,12 +38,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def __init__(self) -> None:
         super().__init__()
         self._semantic_token_modifiers: tuple[str, ...] = ()
+        self._semantic_token_refresh_support = False
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
         if method == "initialize" and self.state is ServerState.PRE_INITIALIZE:
+            params = message.get("params")
             self._semantic_token_modifiers = self._client_semantic_token_modifiers(
-                message.get("params")
+                params
+            )
+            self._semantic_token_refresh_support = (
+                self._client_supports_semantic_tokens(params)
+                and self._client_supports_semantic_token_refresh(params)
             )
             result = super().handle(message)
             if result is not None and "result" in result:
@@ -58,6 +64,68 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                             )
             return result
         return super().handle(message)
+
+    def _handle_document_notification(self, method: str, params: Any) -> None:
+        uri = self._document_uri(params)
+        before = self.workspace_symbols.snapshots()
+        super()._handle_document_notification(method, params)
+        after = self.workspace_symbols.snapshots()
+        if uri is None or self._same_semantic_token_workspace_identity(before, after):
+            return
+        other_uris = {
+            snapshot.uri for snapshot in (*before, *after)
+        } - {uri}
+        if other_uris:
+            self._queue_semantic_token_refresh()
+
+    def _workspace_scope_changed(self, before: Any, after: Any) -> None:
+        super()._workspace_scope_changed(before, after)
+        self._queue_semantic_token_refresh()
+
+    def _queue_semantic_token_refresh(self) -> None:
+        if not self._semantic_token_refresh_support:
+            return
+        method = "workspace/semanticTokens/refresh"
+        if self._has_pending_server_request(method):
+            return
+        self._queue_server_request(method)
+
+    @staticmethod
+    def _same_semantic_token_workspace_identity(
+        left: tuple[Any, ...],
+        right: tuple[Any, ...],
+    ) -> bool:
+        return len(left) == len(right) and all(
+            old is new for old, new in zip(left, right, strict=True)
+        )
+
+    @staticmethod
+    def _client_supports_semantic_tokens(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        text_document = capabilities.get("textDocument")
+        if not isinstance(text_document, dict):
+            return False
+        return isinstance(text_document.get("semanticTokens"), dict)
+
+    @staticmethod
+    def _client_supports_semantic_token_refresh(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        semantic_tokens = workspace.get("semanticTokens")
+        return (
+            isinstance(semantic_tokens, dict)
+            and semantic_tokens.get("refreshSupport") is True
+        )
 
     @staticmethod
     def _client_semantic_token_modifiers(params: Any) -> tuple[str, ...]:
@@ -176,6 +244,22 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if self._is_assignment_target(code, reference.span):
                 modifiers |= self._modifier_bits("modification")
             decoded.append((*identity, token_type, modifiers))
+            by_identity[identity] = len(decoded) - 1
+
+        parsed = self.nova_adapter.parse(text)
+        function_token_type = _TOKEN_TYPE_INDEX["function"]
+        for name, span in parsed.calls:
+            identity = self._token_identity(source, span, requested_span)
+            if identity is None or identity in by_identity:
+                continue
+            declarations = tuple(
+                declaration
+                for declaration in self.workspace_symbols.declarations(name)
+                if declaration.symbol.kind == "function"
+            )
+            if len(declarations) != 1:
+                continue
+            decoded.append((*identity, function_token_type, 0))
             by_identity[identity] = len(decoded) - 1
 
         decoded.sort(key=lambda token: (token[0], token[1], token[2], token[3]))
