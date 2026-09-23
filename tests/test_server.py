@@ -937,3 +937,96 @@ def test_cancel_unknown_server_request_is_noop() -> None:
     assert server._cancel_server_request("server:missing") is False
     assert server.drain_server_requests() == []
     assert server.drain_notifications() == []
+
+
+def test_shutdown_retires_sent_and_unsent_server_requests() -> None:
+    class RecordingServer(LanguageServer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.completed: list[str] = []
+            self.cancelled: list[tuple[str, str]] = []
+
+        def _server_request_completed(
+            self,
+            request_id: str,
+            method: str,
+            *,
+            result: object,
+            error: dict[str, object] | None,
+        ) -> None:
+            self.completed.append(request_id)
+
+        def _server_request_cancelled(self, request_id: str, method: str) -> None:
+            self.cancelled.append((request_id, method))
+
+    server = RecordingServer()
+    server.handle(request("initialize"))
+    sent = server._queue_server_request("workspace/diagnostic/refresh")
+    assert server.drain_server_requests()[0]["id"] == sent
+    unsent = server._queue_server_request("workspace/inlayHint/refresh")
+
+    assert server.handle(request("shutdown", request_id=2)) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": None,
+    }
+    assert server.state is ServerState.SHUTDOWN
+    assert server.drain_server_requests() == []
+    assert server._pending_server_requests == {}
+    assert server.cancelled == [
+        (sent, "workspace/diagnostic/refresh"),
+        (unsent, "workspace/inlayHint/refresh"),
+    ]
+    assert server.drain_notifications() == [
+        {
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": {"id": sent},
+        }
+    ]
+
+    assert server.handle({"jsonrpc": "2.0", "id": sent, "result": None}) is None
+    assert server.handle({"jsonrpc": "2.0", "id": unsent, "result": None}) is None
+    assert server.completed == []
+
+
+def test_exit_retires_server_requests_without_new_protocol_traffic() -> None:
+    class RecordingServer(LanguageServer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.completed: list[str] = []
+            self.cancelled: list[tuple[str, str]] = []
+
+        def _server_request_completed(
+            self,
+            request_id: str,
+            method: str,
+            *,
+            result: object,
+            error: dict[str, object] | None,
+        ) -> None:
+            self.completed.append(request_id)
+
+        def _server_request_cancelled(self, request_id: str, method: str) -> None:
+            self.cancelled.append((request_id, method))
+
+    server = RecordingServer()
+    server.handle(request("initialize"))
+    sent = server._queue_server_request("workspace/codeLens/refresh")
+    server.drain_server_requests()
+    unsent = server._queue_server_request("workspace/semanticTokens/refresh")
+
+    assert server.handle(notification("exit")) is None
+    assert server.state is ServerState.EXITED
+    assert server.exit_code == 1
+    assert server._pending_server_requests == {}
+    assert server.drain_server_requests() == []
+    assert server.drain_notifications() == []
+    assert server.cancelled == [
+        (sent, "workspace/codeLens/refresh"),
+        (unsent, "workspace/semanticTokens/refresh"),
+    ]
+
+    assert server.handle({"jsonrpc": "2.0", "id": sent, "result": None}) is None
+    assert server.handle({"jsonrpc": "2.0", "id": unsent, "result": None}) is None
+    assert server.completed == []

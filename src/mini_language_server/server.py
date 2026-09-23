@@ -70,7 +70,8 @@ class LanguageServer:
             and is_request
             and ("result" in message or "error" in message)
         ):
-            self._handle_server_response(message)
+            if self.state not in {ServerState.SHUTDOWN, ServerState.EXITED}:
+                self._handle_server_response(message)
             return None
 
         if message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
@@ -79,6 +80,7 @@ class LanguageServer:
         method = message["method"]
 
         if method == "exit":
+            self._retire_all_server_requests(cancel_remote=False)
             self.exit_code = 0 if self.state is ServerState.SHUTDOWN else 1
             self.state = ServerState.EXITED
             return None
@@ -152,6 +154,7 @@ class LanguageServer:
                 return None
             if self.state is ServerState.SHUTDOWN:
                 return self._error(request_id, -32600, "Shutdown already requested")
+            self._retire_all_server_requests(cancel_remote=True)
             self.state = ServerState.SHUTDOWN
             return self._result(request_id, None)
 
@@ -303,6 +306,23 @@ class LanguageServer:
         )
         for request_id in request_ids:
             self._cancel_server_request(request_id)
+        return request_ids
+
+    def _retire_all_server_requests(
+        self, *, cancel_remote: bool
+    ) -> tuple[str, ...]:
+        """Retire every pending server request at a lifecycle boundary."""
+        request_ids = tuple(self._pending_server_requests)
+        if cancel_remote:
+            for request_id in request_ids:
+                self._cancel_server_request(request_id)
+            return request_ids
+
+        records = tuple(self._pending_server_requests.items())
+        self._pending_server_requests.clear()
+        self._server_requests = []
+        for request_id, method in records:
+            self._server_request_cancelled(request_id, method)
         return request_ids
 
     def _server_request_cancelled(self, request_id: str, method: str) -> None:

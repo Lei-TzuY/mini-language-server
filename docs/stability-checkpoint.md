@@ -15,7 +15,7 @@ The checkpoint covers:
 7. diagnostic publication plus push/pull rendering with negotiated version/tag/related-location metadata, exact direct related-document pull dependencies, and commit-gated related-document partial streaming
 8. definition/reference/rename queries
 9. request cancellation
-10. tracked server-to-client JSON-RPC requests, cancellation/retirement of proven-stale generation-bound requests, dynamic capability registration, coalesced negotiated workspace refresh lifecycles, standard `$/progress` partial-result and negotiated work-done lifecycles including exact-commit workspace-symbol streaming, response retirement, and validated consumer response delivery
+10. tracked server-to-client JSON-RPC requests, cancellation/retirement of proven-stale generation-bound requests, shutdown/exit retirement that prevents post-lifecycle response delivery, dynamic capability registration, coalesced negotiated workspace refresh lifecycles, standard `$/progress` partial-result and negotiated work-done lifecycles including exact-commit workspace-symbol streaming, response retirement, and validated consumer response delivery
 11. workspace-folder scope generations for cross-file tooling
 12. stale-result suppression across concurrent document, semantic, workspace-scope, and workspace-dependent semantic-token delta publication
 

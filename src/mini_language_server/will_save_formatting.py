@@ -185,6 +185,10 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
 
     def _server_request_cancelled(self, request_id: str, method: str) -> None:
         super()._server_request_cancelled(request_id, method)
+        if method == "client/registerCapability":
+            if request_id == self._formatting_configuration_registration_request:
+                self._formatting_configuration_registration_request = None
+            return
         if method == "workspace/configuration":
             self._formatting_configuration_requests.pop(request_id, None)
 
