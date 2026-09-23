@@ -261,6 +261,7 @@ def run_session(
                     active_server._set_server_request_outbox_wakeup(None)
                     raise item.error
                 active_server._set_server_request_outbox_wakeup(None)
+                active_server._retire_all_server_requests(cancel_remote=False)
                 reader_thread.join()
                 return 1
             if pending_shutdown_response is not None:
