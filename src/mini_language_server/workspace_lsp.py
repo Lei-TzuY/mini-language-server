@@ -15,7 +15,11 @@ from .source import Span
 from .symbols import SymbolError
 from .syntax import SyntaxError
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
-from .workspace_folders import WorkspaceFolderError, WorkspaceFolderSet
+from .workspace_folders import (
+    WorkspaceFolderError,
+    WorkspaceFolderSet,
+    WorkspaceFolderSnapshot,
+)
 
 _SYMBOL_KINDS = {
     "class": 5,
@@ -195,11 +199,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if before.generation != after.generation:
             self._workspace_scope_changed(before, after)
 
-    def _workspace_documents(self) -> tuple[Document, ...]:
+    def _workspace_documents(
+        self, scope: WorkspaceFolderSnapshot | None = None
+    ) -> tuple[Document, ...]:
+        captured = self.workspace_folders.snapshot() if scope is None else scope
         return tuple(
             document
             for document in self.documents.snapshots()
-            if self.workspace_folders.contains(document.uri)
+            if captured.contains(document.uri)
         )
 
     def _workspace_folder_scope_changed(self, before: Any, after: Any) -> None:
