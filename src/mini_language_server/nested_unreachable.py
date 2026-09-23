@@ -7,6 +7,7 @@ import re
 from .condition_diagnostics import _FUNCTION, _UNREACHABLE_CODE_DIAGNOSTIC
 from .diagnostics import Diagnostic
 from .semantic import SemanticSnapshot
+from .return_types import _NeverReturnsResolver
 from .source import Span
 from .unreachable_actions import NovaProductLanguageServer as _NovaProductLanguageServer
 
@@ -21,6 +22,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         self, semantic: SemanticSnapshot
     ) -> tuple[Diagnostic, ...]:
         text = semantic.symbols.syntax.document.text
+        return self._unreachable_code_diagnostics_for_text(text)
+
+    def _unreachable_code_diagnostics_for_text(
+        self,
+        text: str,
+        *,
+        never_resolver: _NeverReturnsResolver | None = None,
+    ) -> tuple[Diagnostic, ...]:
+        """Analyze one exact Nova source with an optional external never resolver."""
         code = self.nova_adapter.code_view(text)
         regions: list[tuple[Span, str]] = []
         for function in _FUNCTION.finditer(code):
@@ -35,6 +45,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     base_offset=opening + 1,
                     loop_depth=0,
                     include_never_calls=True,
+                    never_resolver=never_resolver,
                 )
             )
         return tuple(
@@ -56,11 +67,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         base_offset: int,
         loop_depth: int,
         include_never_calls: bool = False,
+        never_resolver: _NeverReturnsResolver | None = None,
+        never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> tuple[tuple[Span, str], ...]:
         termination = self._first_guaranteed_termination(
             code,
             text,
             include_never_calls=include_never_calls,
+            never_resolver=never_resolver,
+            never_resolving=never_resolving,
         )
         if termination is None:
             termination_end = None
@@ -113,6 +128,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     base_offset=base_offset + opening + 1,
                     loop_depth=child_loop_depth,
                     include_never_calls=include_never_calls,
+                    never_resolver=never_resolver,
+                    never_resolving=never_resolving,
                 )
             )
             cursor = closing + 1
