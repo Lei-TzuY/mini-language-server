@@ -12,7 +12,7 @@ from .folding_ranges import NovaProductLanguageServer as _NovaProductLanguageSer
 from .server import ServerState
 from .workspace_folders import WorkspaceFolderError
 
-_WORKSPACE_DIAGNOSTIC_PARTIAL_CHUNK_SIZE = 16
+_DIAGNOSTIC_PARTIAL_CHUNK_SIZE = 16
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -137,6 +137,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if previous_result_id is not None and not isinstance(previous_result_id, str):
             self.requests.finish(context)
             return self._error(request_id, -32602, "Invalid params")
+        valid_partial, partial_result_token = self._partial_result_token(params)
+        if not valid_partial:
+            self.requests.finish(context)
+            return self._error(request_id, -32602, "Invalid params")
 
         try:
             uri = self._document_uri(params)
@@ -153,7 +157,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 self.requests.checkpoint(context)
                 try:
                     return self.documents.commit_if_current(
-                        document, lambda: self._result(request_id, report)
+                        document,
+                        lambda: self._document_diagnostic_result(
+                            request_id,
+                            report,
+                            {},
+                            partial_result_token,
+                        ),
                     )
                 except DocumentError:
                     return self._error(request_id, -32801, "Content modified")
@@ -174,16 +184,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 ) = self._pull_related_document_reports(snapshot)
             except DiagnosticError:
                 return self._error(request_id, -32801, "Content modified")
-            if related_reports:
-                report["relatedDocuments"] = related_reports
-
             self.requests.checkpoint(context)
             try:
                 return self.documents.commit_subset_if_current(
                     (document, *related_documents),
                     lambda: self.diagnostics.commit_all_if_current(
                         (snapshot, *related_snapshots),
-                        lambda: self._result(request_id, report),
+                        lambda: self._document_diagnostic_result(
+                            request_id,
+                            report,
+                            related_reports,
+                            partial_result_token,
+                        ),
                     ),
                 )
             except (DocumentError, DiagnosticError):
@@ -194,6 +206,31 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
+
+    def _document_diagnostic_result(
+        self,
+        request_id: Any,
+        report: dict[str, Any],
+        related_reports: dict[str, dict[str, Any]],
+        partial_result_token: str | int | None,
+    ) -> dict[str, Any]:
+        """Commit one document report and optionally stream exact related reports."""
+        if partial_result_token is None:
+            if related_reports:
+                report = {**report, "relatedDocuments": related_reports}
+            return self._result(request_id, report)
+
+        related_items = sorted(related_reports.items())
+        for start in range(0, len(related_items), _DIAGNOSTIC_PARTIAL_CHUNK_SIZE):
+            self._queue_progress(
+                partial_result_token,
+                {
+                    "relatedDocuments": dict(
+                        related_items[start : start + _DIAGNOSTIC_PARTIAL_CHUNK_SIZE]
+                    )
+                },
+            )
+        return self._result(request_id, report)
 
     def _pull_related_document_reports(
         self,
@@ -245,7 +282,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         previous = self._workspace_previous_result_ids(params.get("previousResultIds", []))
         if previous is None:
             return self._error(request_id, -32602, "Invalid params")
-        valid_partial, partial_result_token = self._workspace_partial_result_token(params)
+        valid_partial, partial_result_token = self._partial_result_token(params)
         if not valid_partial:
             return self._error(request_id, -32602, "Invalid params")
         valid_work_done, work_done_token = self._workspace_work_done_token(params)
@@ -360,12 +397,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if partial_result_token is None:
             return self._result(request_id, {"items": reports})
 
-        for start in range(0, len(reports), _WORKSPACE_DIAGNOSTIC_PARTIAL_CHUNK_SIZE):
+        for start in range(0, len(reports), _DIAGNOSTIC_PARTIAL_CHUNK_SIZE):
             self._queue_progress(
                 partial_result_token,
                 {
                     "items": reports[
-                        start : start + _WORKSPACE_DIAGNOSTIC_PARTIAL_CHUNK_SIZE
+                        start : start + _DIAGNOSTIC_PARTIAL_CHUNK_SIZE
                     ]
                 },
             )
@@ -383,7 +420,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         return True, token
 
     @staticmethod
-    def _workspace_partial_result_token(
+    def _partial_result_token(
         params: dict[str, Any],
     ) -> tuple[bool, str | int | None]:
         if "partialResultToken" not in params:
