@@ -40,4 +40,4 @@ Legacy clients that do not negotiate `documentChanges` continue to receive the e
 
 ## Deliberate nonclaims
 
-This milestone is not a general filesystem service and does not claim full closed-file diagnostic parity. Closed files still do not receive push diagnostics, `textDocument/diagnostic`, code actions, or the remaining function-call/expression-derived argument-type/return/local-type/data-flow diagnostics. OS-native watcher ownership, remote workspace providers, symlink identity, module/import path rewriting, and permission-aware filesystem transactions remain separate executable phases.
+This milestone is not a general filesystem service and does not claim full closed-file diagnostic parity. Closed files still do not receive push diagnostics, `textDocument/diagnostic`, code actions, or the remaining expression-derived argument-type/return/local-type/data-flow diagnostics. OS-native watcher ownership, remote workspace providers, symlink identity, module/import path rewriting, and permission-aware filesystem transactions remain separate executable phases.
