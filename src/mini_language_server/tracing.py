@@ -162,7 +162,7 @@ class TraceLanguageServerMixin:
     @classmethod
     def _summarize_value(cls, value: Any) -> Any:
         if isinstance(value, dict):
-            summary: dict[str, Any] = {"type": "object", "keys": sorted(value)}
+            summary: dict[str, Any] = {"type": "object", "keys": sorted(str(key) for key in value)}
             for key in ("jsonrpc", "method", "id"):
                 item = value.get(key)
                 if isinstance(item, str | int) and not isinstance(item, bool):
@@ -177,7 +177,7 @@ class TraceLanguageServerMixin:
             if isinstance(error, dict):
                 error_summary: dict[str, Any] = {
                     "type": "object",
-                    "keys": sorted(error),
+                    "keys": sorted(str(key) for key in error),
                 }
                 code = error.get("code")
                 if isinstance(code, int) and not isinstance(code, bool):
@@ -199,5 +199,5 @@ class TraceLanguageServerMixin:
         if isinstance(value, list):
             return {"type": "array", "length": len(value)}
         if isinstance(value, dict):
-            return {"type": "object", "keys": sorted(value)}
+            return {"type": "object", "keys": sorted(str(key) for key in value)}
         return {"type": type(value).__name__}
