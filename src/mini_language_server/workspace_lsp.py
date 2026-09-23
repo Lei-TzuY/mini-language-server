@@ -535,7 +535,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if (
             not self._watched_files_dynamic_registration
             or self._watched_files_registration_attempted
-            or not self.workspace_folders.scoped
+            or not self.workspace_folders.folders()
         ):
             return
         self._watched_files_registration_attempted = True
