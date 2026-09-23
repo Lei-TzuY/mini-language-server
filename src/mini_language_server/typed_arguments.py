@@ -57,9 +57,7 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
             ):
                 if expected_type is None:
                     continue
-                actual_type = self._literal_type(
-                    text[argument.start : argument.end]
-                )
+                actual_type = self._closed_argument_type(snapshot, argument)
                 if actual_type is None or actual_type == expected_type:
                     continue
                 diagnostics.append(
@@ -74,6 +72,15 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
                     )
                 )
         return tuple(diagnostics)
+
+    def _closed_argument_type(
+        self,
+        snapshot: Any,
+        argument: Span,
+    ) -> str | None:
+        """Return detached literal evidence without consulting live workspace state."""
+        text = snapshot.symbols.syntax.document.text
+        return self._literal_type(text[argument.start : argument.end])
 
     @classmethod
     def _closed_function_parameter_types(
