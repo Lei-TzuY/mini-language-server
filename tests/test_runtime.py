@@ -1215,3 +1215,108 @@ def test_runtime_delivers_sent_server_response_while_request_is_active() -> None
         "server-response",
         "worker-finished",
     ]
+
+class WorkerOriginatedServerRequestServer(LanguageServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.response_received = Event()
+        self.events: list[str] = []
+        self.dependency_request_id: str | None = None
+        self.dependency_result: object = None
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/request-dependency"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            self.events.append("worker-started")
+            self.dependency_request_id = self._queue_server_request(
+                "test/dependency",
+                {"value": "needed"},
+            )
+            self.events.append("server-request-queued")
+            assert self.response_received.wait(timeout=5)
+            self.events.append("worker-finished")
+            return self._result(
+                message["id"],
+                {"dependency": self.dependency_result},
+            )
+        return super().handle(message)
+
+    def _server_request_completed(
+        self,
+        request_id: str,
+        method: str,
+        *,
+        result: Any,
+        error: dict[str, Any] | None,
+    ) -> None:
+        super()._server_request_completed(
+            request_id,
+            method,
+            result=result,
+            error=error,
+        )
+        if request_id != self.dependency_request_id:
+            return
+        assert method == "test/dependency"
+        assert error is None
+        self.dependency_result = result
+        self.events.append("server-response")
+        self.response_received.set()
+
+
+def test_runtime_flushes_worker_originated_server_request_before_worker_completion() -> None:
+    server = WorkerOriginatedServerRequestServer()
+    first = framed(
+        initialize(),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/request-dependency",
+            "params": {},
+        },
+    )
+    dependency_response = framed(
+        {
+            "jsonrpc": "2.0",
+            "id": "server:1",
+            "result": {"value": 9},
+        }
+    )
+    lifecycle_tail = framed(shutdown(3), exit_notification())
+    output_stream = SignalingBytesIO(signal_after_writes=2)
+    input_stream = SequencedGatedBytesIO(
+        first + dependency_response + lifecycle_tail,
+        gates=(
+            (len(first), output_stream.signaled),
+        ),
+    )
+
+    assert run_session(input_stream, output_stream, server=server) == 0
+
+    messages = decoded(output_stream.getvalue())
+    assert [message.get("id") for message in messages] == [
+        1,
+        "server:1",
+        2,
+        3,
+    ]
+    assert messages[1] == {
+        "jsonrpc": "2.0",
+        "id": "server:1",
+        "method": "test/dependency",
+        "params": {"value": "needed"},
+    }
+    assert messages[2] == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {"dependency": {"value": 9}},
+    }
+    assert server.events == [
+        "worker-started",
+        "server-request-queued",
+        "server-response",
+        "worker-finished",
+    ]
