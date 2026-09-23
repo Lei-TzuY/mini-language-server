@@ -47,7 +47,9 @@ EOF before `exit` is treated as an abnormal transport termination and returns a 
 
 A `FramingError` uses the same fail-closed transport-abort boundary and returns non-zero without inventing a JSON-RPC response. Once the byte stream has violated the framing contract, the runtime does not guess where a later frame begins.
 
-The server's terminal notification/request quiescence remains authoritative. Protocol `exit` and abnormal transport abort are separate terminal boundaries, but both retire request/outbound ownership so queued traffic cannot be resurrected after the session can no longer deliver it.
+Stdout failure is the same terminal transport boundary. An `OSError` from either `write()` or the batch `flush()` retires pending server-to-client requests locally, closes notification ownership, detaches the server-request wakeup, and returns non-zero rather than propagating a half-owned transport state. If an ordinary client request worker is active, the exact transport-owned generation is cancelled and the runtime accepts only that worker's cooperative completion; inbound frames observed after the failed write are not dispatched. The input reader is not synchronously joined on this path because a dead output peer may leave stdin blocked indefinitely.
+
+The server's terminal notification/request quiescence remains authoritative. Protocol `exit` and abnormal transport abort in either direction are separate terminal boundaries, but all retire request/outbound ownership so queued traffic cannot be resurrected after the session can no longer deliver it.
 
 ## Scope
 
