@@ -10,6 +10,7 @@ from .nova import NovaFunctionSyntax
 from .server import ServerState
 from .source import Position, SourceError, Span
 from .workspace import WorkspaceIndexError
+from .workspace_folders import WorkspaceFolderError, WorkspaceFolderSet
 from .workspace_lsp import WorkspaceNovaLanguageServer
 
 
@@ -197,6 +198,15 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
         return opening, closing, tuple(arguments)
 
     def _handle_nova_code_action(self, request_id: Any, params: Any) -> dict[str, Any]:
+        if isinstance(params, dict):
+            uri = self._document_uri(params)
+            if uri is not None and self.documents.get(uri) is None:
+                return self._handle_closed_nova_code_action(
+                    request_id,
+                    params,
+                    uri,
+                )
+
         context = self._start_document_request(request_id, params)
         if context is None or not isinstance(params, dict):
             return self._error(request_id, -32602, "Invalid params")
@@ -267,6 +277,104 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
                 )
             except (DiagnosticError, WorkspaceIndexError):
                 return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _handle_closed_nova_code_action(
+        self,
+        request_id: Any,
+        params: dict[str, Any],
+        requested_uri: str,
+    ) -> dict[str, Any]:
+        """Return one exact, disk-revalidated repair for a detached Nova file."""
+        try:
+            context = self.requests.start(request_id)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            folder_scope = self.workspace_folders.snapshot()
+            workspace_snapshots = self.workspace_symbols.snapshots()
+            requested_identity = WorkspaceFolderSet.uri_identity(requested_uri)
+            closed_diagnostics = tuple(
+                snapshot
+                for snapshot in self._closed_workspace_diagnostic_snapshots(
+                    tuple(workspace_snapshots)
+                )
+                if folder_scope.contains(snapshot.uri)
+            )
+            target = next(
+                (
+                    snapshot
+                    for snapshot in closed_diagnostics
+                    if WorkspaceFolderSet.uri_identity(snapshot.uri)
+                    == requested_identity
+                ),
+                None,
+            )
+            if target is None:
+                return self._error(request_id, -32602, "Invalid params")
+
+            document = target.semantic.symbols.syntax.document
+            parsed = self._nova_code_action_scope(params, document.text)
+            if parsed is None:
+                return self._error(request_id, -32602, "Invalid params")
+            source, start_offset, end_offset, supports_quickfix = parsed
+            if not supports_quickfix:
+                self.requests.checkpoint(context)
+                return self._result(request_id, [])
+
+            actions = self._nova_unresolved_function_actions(
+                document.uri,
+                document,
+                source,
+                target.diagnostics,
+                start_offset,
+                end_offset,
+            )
+            actions = self._render_code_action_workspace_edits_for_version(
+                actions,
+                uri=document.uri,
+                version=None,
+            )
+            self.requests.checkpoint(context)
+
+            captured_semantics = tuple(workspace_snapshots)
+            if not self._closed_workspace_snapshots_current(captured_semantics):
+                self._refresh_closed_workspace_files()
+                return self._error(request_id, -32801, "Content modified")
+
+            stale_closed_inputs = False
+
+            def publish() -> dict[str, Any] | None:
+                nonlocal stale_closed_inputs
+                if not self._closed_workspace_snapshots_current(captured_semantics):
+                    stale_closed_inputs = True
+                    return None
+                self.requests.checkpoint(context)
+                return self._result(request_id, actions)
+
+            try:
+                response = self.workspace_folders.commit_if_current(
+                    folder_scope.generation,
+                    lambda: self.workspace_symbols.commit_snapshots_if_current(
+                        workspace_snapshots,
+                        publish,
+                    ),
+                )
+            except (WorkspaceFolderError, WorkspaceIndexError):
+                return self._error(request_id, -32801, "Content modified")
+
+            if stale_closed_inputs:
+                self._refresh_closed_workspace_files()
+                return self._error(request_id, -32801, "Content modified")
+            assert response is not None
+            return response
         except RequestCancelled:
             return self._error(request_id, -32800, "Request cancelled")
         except StaleRequest:
