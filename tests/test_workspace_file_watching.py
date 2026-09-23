@@ -327,3 +327,47 @@ def test_watched_file_transition_requests_diagnostic_refresh(
     assert [item["code"] for item in reports[uri]["items"]] == [
         "nova.unresolved-function"
     ]
+
+def test_duplicate_initialized_does_not_repeat_watcher_registration(
+    tmp_path: Path,
+) -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize_watching(server, tmp_path)
+    registration = activate_watcher(server)
+
+    server.handle(notify("initialized", {}))
+
+    assert server.drain_server_requests() == []
+    assert server._watched_files_registration_active is True
+    assert registration["params"]["registrations"][0]["id"] == (
+        "mini-language-server.workspace.nova-files"
+    )
+
+
+def test_shutdown_retracts_pending_watcher_registration(
+    tmp_path: Path,
+) -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize_watching(server, tmp_path)
+    registration_id = server._watched_files_registration_request
+    assert registration_id is not None
+
+    response = server.handle(request("shutdown", 90, {}))
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 90,
+        "result": None,
+    }
+    assert server.drain_server_requests() == []
+    assert server._watched_files_registration_request is None
+    assert server._watched_files_registration_active is False
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": registration_id,
+            "result": None,
+        }
+    ) is None
+    assert server._watched_files_registration_active is False
