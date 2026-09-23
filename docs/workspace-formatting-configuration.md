@@ -33,9 +33,9 @@ Manual document/range/on-type formatting continues to use the per-request LSP `F
 
 ## Generation and folder lifecycle
 
-Formatting configuration has its own generation identity. The first request is queued after the client sends `initialized`, so the server does not issue client requests during the initialize handshake.
+Formatting configuration has its own generation identity. The first request is queued after the client sends `initialized`, so the server does not issue client requests during the initialize handshake. When the client also advertises `workspace.didChangeConfiguration.dynamicRegistration = true`, the server first sends one tracked `client/registerCapability` request for `workspace/didChangeConfiguration` with `registerOptions.section = "mini-language-server.formatting"`. The registration ID is stable for the session, registration is attempted at most once, and clients without dynamic-registration support keep the legacy configuration-only flow.
 
-`workspace/didChangeConfiguration` never trusts the notification's arbitrary settings payload. It advances the configuration generation and requests the standard section again.
+`workspace/didChangeConfiguration` never trusts the notification's arbitrary settings payload. Whether the notification arrives through dynamic registration or legacy client behavior, it advances the configuration generation and requests the standard section again. Registration success or failure never mutates the formatting cache; only a validated `workspace/configuration` response can do that.
 
 Workspace-folder membership changes do the same. Adding or removing a folder changes the requested `scopeUri` set, advances the generation, and invalidates any pending response for the previous scope set. The old response is retired but never applied; once it arrives, one request for the newest generation is queued. Removing a folder changes URI lookup immediately, so documents from that folder fall back to the last valid global setting while the refreshed configuration is pending.
 
