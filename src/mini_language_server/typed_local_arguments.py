@@ -103,50 +103,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         try:
             self.requests.checkpoint(context)
-            text = semantics.symbols.syntax.document.text
-            owner = self._completion_scope_owner(text, tree, offset)
-            visible_spans: set[Span] = set()
-            if owner is not None:
-                visible_spans.update(
-                    parameter.span for parameter in tree.parameters if parameter.owner == owner
-                )
-                visible_spans.update(
-                    local.span
-                    for local in tree.locals
-                    if local.owner == owner and local.span.end <= offset
-                )
-
-            items: dict[tuple[str, str], str] = {}
-            for symbol in semantics.symbols.symbols:
-                if symbol.kind != "function" and symbol.span not in visible_spans:
-                    continue
-                symbol_type = self._symbol_type(semantics, symbol)
-                detail = symbol.kind
-                if symbol_type is not None:
-                    detail = f"{symbol.kind}: {symbol_type}"
-                items[(symbol.name, symbol.kind)] = detail
-            for snapshot in snapshots:
-                if not isinstance(snapshot.symbols.syntax.tree, NovaFunctionSyntax):
-                    continue
-                for symbol in snapshot.symbols.symbols:
-                    if symbol.kind == "function":
-                        items.setdefault((symbol.name, symbol.kind), symbol.kind)
-
-            for name, kind in tuple(items):
-                if kind != "function":
-                    continue
-                declarations = tuple(
-                    declaration
-                    for declaration in self.workspace_symbols.declarations(name)
-                    if declaration.symbol.kind == "function"
-                )
-                if len(declarations) == 1:
-                    items[(name, kind)] = self._function_signature(declarations[0])
-
-            result = [
-                {"label": name, "detail": items[(name, kind)]}
-                for name, kind in sorted(items, key=lambda item: (item[0], item[1]))
-            ]
+            result = self._typed_completion_items(
+                semantics,
+                offset,
+                snapshots=snapshots,
+            )
             self.requests.checkpoint(context)
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
@@ -160,6 +121,64 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
+
+    def _typed_completion_items(
+        self,
+        semantics: Any,
+        offset: int,
+        *,
+        snapshots: tuple[Any, ...],
+    ) -> list[dict[str, Any]]:
+        """Return lexical/type-aware Nova completion candidates from exact snapshots."""
+        tree = semantics.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return []
+
+        text = semantics.symbols.syntax.document.text
+        owner = self._completion_scope_owner(text, tree, offset)
+        visible_spans: set[Span] = set()
+        if owner is not None:
+            visible_spans.update(
+                parameter.span for parameter in tree.parameters if parameter.owner == owner
+            )
+            visible_spans.update(
+                local.span
+                for local in tree.locals
+                if local.owner == owner and local.span.end <= offset
+            )
+
+        items: dict[tuple[str, str], str] = {}
+        for symbol in semantics.symbols.symbols:
+            if symbol.kind != "function" and symbol.span not in visible_spans:
+                continue
+            symbol_type = self._symbol_type(semantics, symbol)
+            detail = symbol.kind
+            if symbol_type is not None:
+                detail = f"{symbol.kind}: {symbol_type}"
+            items[(symbol.name, symbol.kind)] = detail
+
+        for snapshot in snapshots:
+            if not isinstance(snapshot.symbols.syntax.tree, NovaFunctionSyntax):
+                continue
+            for symbol in snapshot.symbols.symbols:
+                if symbol.kind == "function":
+                    items.setdefault((symbol.name, symbol.kind), symbol.kind)
+
+        for name, kind in tuple(items):
+            if kind != "function":
+                continue
+            declarations = tuple(
+                declaration
+                for declaration in self.workspace_symbols.declarations(name)
+                if declaration.symbol.kind == "function"
+            )
+            if len(declarations) == 1:
+                items[(name, kind)] = self._function_signature(declarations[0])
+
+        return [
+            {"label": name, "detail": items[(name, kind)]}
+            for name, kind in sorted(items, key=lambda item: (item[0], item[1]))
+        ]
 
     def _completion_scope_owner(
         self, text: str, tree: NovaFunctionSyntax, offset: int
