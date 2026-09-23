@@ -1,4 +1,4 @@
-# Synchronous stdio runtime
+# Cancellation-aware stdio runtime
 
 The repository exposes one executable LSP host that connects the bounded binary framing layer to the final Nova product server.
 
