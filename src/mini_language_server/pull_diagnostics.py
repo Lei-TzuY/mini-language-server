@@ -189,23 +189,45 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         valid_partial, partial_result_token = self._workspace_partial_result_token(params)
         if not valid_partial:
             return self._error(request_id, -32602, "Invalid params")
+        valid_work_done, work_done_token = self._workspace_work_done_token(params)
+        if not valid_work_done:
+            return self._error(request_id, -32602, "Invalid params")
+        active_work_done_token = (
+            work_done_token if self._work_done_progress_support else None
+        )
         try:
             context = self.requests.start(request_id)
         except RequestError:
             return self._error(request_id, -32602, "Invalid params")
 
+        work_done_started = False
         try:
             self.requests.checkpoint(context)
             folder_scope = self.workspace_folders.snapshot()
             documents = self._workspace_documents(folder_scope)
+            if active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {
+                        "kind": "begin",
+                        "title": "Workspace diagnostics",
+                        "cancellable": True,
+                        "percentage": 0,
+                    },
+                )
+                work_done_started = True
+
             reports: list[dict[str, Any]] = []
             diagnostic_snapshots: list[DiagnosticSnapshot] = []
-            for document in documents:
+            total_documents = len(documents)
+            for index, document in enumerate(documents, start=1):
                 self.requests.checkpoint(context)
                 snapshot = self.diagnostics.get(document.uri)
                 if snapshot is not None:
                     if snapshot.semantic.symbols.syntax.document is not document:
-                        return self._error(request_id, -32801, "Content modified")
+                        raise StaleRequest(
+                            f"workspace diagnostic snapshot is stale: {document.uri}"
+                        )
                     diagnostic_snapshots.append(snapshot)
                     source = self._source_text(document.text)
                     items = [self._diagnostic(source, item) for item in snapshot.diagnostics]
@@ -214,10 +236,22 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 result_id = self._diagnostic_result_id(document, snapshot)
                 report = self._diagnostic_report(previous.get(document.uri), result_id, items)
                 reports.append({"uri": document.uri, "version": document.version, **report})
+                if active_work_done_token is not None and total_documents:
+                    self._queue_progress(
+                        active_work_done_token,
+                        {
+                            "kind": "report",
+                            "message": (
+                                f"Processed {index} of {total_documents} "
+                                "workspace documents"
+                            ),
+                            "percentage": (index * 100) // total_documents,
+                        },
+                    )
 
             self.requests.checkpoint(context)
             try:
-                return self.workspace_folders.commit_if_current(
+                result = self.workspace_folders.commit_if_current(
                     folder_scope.generation,
                     lambda: self.documents.commit_matching_if_current(
                         documents,
@@ -232,10 +266,29 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         ),
                     ),
                 )
-            except (DocumentError, DiagnosticError, WorkspaceFolderError):
-                return self._error(request_id, -32801, "Content modified")
+            except (DocumentError, DiagnosticError, WorkspaceFolderError) as exc:
+                raise StaleRequest("workspace diagnostic inputs changed") from exc
+
+            if active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {"kind": "end", "message": "Workspace diagnostics complete"},
+                )
+            return result
         except RequestCancelled:
+            if work_done_started and active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {"kind": "end", "message": "Workspace diagnostics cancelled"},
+                )
             return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            if work_done_started and active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {"kind": "end", "message": "Workspace diagnostics changed"},
+                )
+            return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
 
@@ -258,6 +311,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 },
             )
         return self._result(request_id, {"items": []})
+
+    @staticmethod
+    def _workspace_work_done_token(
+        params: dict[str, Any],
+    ) -> tuple[bool, str | int | None]:
+        if "workDoneToken" not in params:
+            return True, None
+        token = params["workDoneToken"]
+        if isinstance(token, bool) or not isinstance(token, str | int):
+            return False, None
+        return True, token
 
     @staticmethod
     def _workspace_partial_result_token(
