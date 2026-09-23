@@ -8,7 +8,7 @@ Closed files are never inserted into the live `DocumentStore`. Discovery builds 
 
 An open document always wins over a disk snapshot with the same RFC-safe URI identity. Opening an equivalent URI removes the detached contribution before the live buffer is indexed. Closing the buffer rereads the current disk file and restores a detached contribution when the file still exists and remains in scope.
 
-Closed snapshots intentionally do not publish diagnostics in this phase. Their declarations and parse-tree call sites can still participate in existing workspace symbol search, definition/hover/completion, reference scans, call hierarchy, collision checks, and cross-file call resolution for open documents.
+Closed snapshots never publish push diagnostics and are not inserted into the live DiagnosticStore. They do participate in negotiated `workspace/diagnostic` pulls through ephemeral immutable diagnostic snapshots: adapter-local duplicate/unresolved-name diagnostics are retained from the detached parse, while same-file function-call errors are replaced by unresolved/ambiguous resolution against the exact captured combined workspace. Closed reports use `version: null` and deterministic `null:<digest>` result IDs, so no detached internal version is presented as a filesystem concurrency claim. Their declarations and parse-tree call sites also participate in existing workspace symbol search, definition/hover/completion, reference scans, call hierarchy, collision checks, and cross-file call resolution for open documents.
 
 ## Filesystem boundary
 
@@ -28,7 +28,7 @@ URI deduplication reuses the workspace-folder RFC-safe identity rules. Scheme/ho
 
 A bounded filesystem scan runs after the LSP `initialized` notification when a workspace folder/root scope exists. The closed index is also reconciled after workspace-folder changes and negotiated `workspace/didCreateFiles`, `workspace/didDeleteFiles`, and `workspace/didRenameFiles`. Create/delete notifications are validated as complete URI batches and only trigger a scan when at least one in-scope local `.nova` URI can affect the detached index. `didClose` restores the single relinquished disk source directly.
 
-The server does not watch the filesystem in this phase. External edits made without a matching negotiated resource notification remain outside the server-known workspace snapshot until another documented lifecycle transition refreshes the index. Read-only tooling therefore describes the exact server-known indexed snapshot, not an unobserved later disk state.
+The server does not watch the filesystem in this phase. External edits made without a matching negotiated resource notification remain outside the server-known workspace snapshot until another documented lifecycle transition refreshes the index. Read-only tooling therefore describes the exact server-known indexed snapshot, not an unobserved later disk state. Workspace diagnostic pulls capture the complete workspace semantic set and reject publication with `Content modified` if folder or workspace identity changes before commit.
 
 Source-mutating rename is stricter. Before publishing a WorkspaceEdit that was derived from detached sources, the server rereads every closed input and compares its current UTF-8 text with the captured snapshot. Drift refreshes the closed index and returns LSP `Content modified` instead of applying stale source ranges.
 
@@ -40,4 +40,4 @@ Legacy clients that do not negotiate `documentChanges` continue to receive the e
 
 ## Deliberate nonclaims
 
-This milestone is not a general filesystem service. It does not implement filesystem watchers, closed-file diagnostics, remote workspace providers, symlink identity, module/import path rewriting, or permission/preflight guarantees for closed-file resource renames. Those are separate executable phases.
+This milestone is not a general filesystem service and does not claim full closed-file diagnostic parity. Closed files still do not receive push diagnostics, `textDocument/diagnostic`, code actions, or the complete stack of product-only argument/type/return/data-flow diagnostics. Filesystem watchers, remote workspace providers, symlink identity, module/import path rewriting, and permission/preflight guarantees for closed-file resource renames also remain separate executable phases.
