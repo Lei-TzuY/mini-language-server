@@ -121,6 +121,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 annotation_label=f"Rename '{name}' to '{new_name}'",
             )
             self.requests.checkpoint(context)
+            if not self._closed_workspace_snapshots_current(snapshots):
+                self._refresh_closed_workspace_files()
+                return self._error(request_id, -32801, "Content modified")
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
                     snapshots,
