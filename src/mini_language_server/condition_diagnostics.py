@@ -11,7 +11,7 @@ from .closed_local_types import NovaProductLanguageServer as _NovaProductLanguag
 from .constant_control_flow import proven_non_fallthrough_while_spans
 from .constant_values import bounded_boolean_constant_value
 from .diagnostics import Diagnostic
-from .return_types import ReturnTypeNovaFunctionAdapter
+from .return_types import ReturnTypeNovaFunctionAdapter, _NeverReturnsResolver
 from .semantic import SemanticSnapshot
 from .source import Span
 
@@ -216,6 +216,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         text: str,
         *,
         include_never_calls: bool = False,
+        never_resolver: _NeverReturnsResolver | None = None,
+        never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> tuple[int, str] | None:
         candidates: list[tuple[int, int, str]] = []
         for statement in _RETURN.finditer(code):
@@ -243,6 +245,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 statement.start(),
                 statement.end(),
                 include_never_calls=include_never_calls,
+                never_resolver=never_resolver,
+                never_resolving=never_resolving,
             ):
                 termination_kind = "guaranteed termination"
             else:
@@ -263,8 +267,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             )
 
         if include_never_calls:
-            for statement_start, statement_end in (
-                self._top_level_never_call_statements(code, text)
+            for statement_start, statement_end in self._top_level_never_call_statements(
+                code,
+                text,
+                resolver=never_resolver,
+                resolving=never_resolving,
             ):
                 candidates.append(
                     (statement_start, statement_end, "never-returning call")
@@ -339,6 +346,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         text: str,
         *,
         include_never_calls: bool = False,
+        never_resolver: _NeverReturnsResolver | None = None,
+        never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> bool:
         for statement in _RETURN.finditer(code):
             if self._brace_depth_before(code, statement.start()) == 0:
@@ -352,6 +361,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 statement.start(),
                 statement.end(),
                 include_never_calls=include_never_calls,
+                never_resolver=never_resolver,
+                never_resolving=never_resolving,
             ):
                 return True
         if any(
@@ -360,7 +371,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         ):
             return True
         return include_never_calls and bool(
-            self._top_level_never_call_statements(code, text)
+            self._top_level_never_call_statements(
+                code,
+                text,
+                resolver=never_resolver,
+                resolving=never_resolving,
+            )
         )
 
     def _if_statement_guarantees_termination(
@@ -371,6 +387,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         condition_prefix_end: int,
         *,
         include_never_calls: bool = False,
+        never_resolver: _NeverReturnsResolver | None = None,
+        never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> bool:
         condition = self._if_condition_then_bounds(
             code, statement_start, condition_prefix_end
@@ -385,6 +403,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             code[then_open + 1 : then_close],
             text[then_open + 1 : then_close],
             include_never_calls=include_never_calls,
+            never_resolver=never_resolver,
+            never_resolving=never_resolving,
         )
         if constant is True:
             return then_terminates
@@ -401,6 +421,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 code[else_start + 1 : else_close],
                 text[else_start + 1 : else_close],
                 include_never_calls=include_never_calls,
+                never_resolver=never_resolver,
+                never_resolving=never_resolving,
             )
         else:
             nested_if = _IF.match(code, else_start)
@@ -412,6 +434,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 nested_if.start(),
                 nested_if.end(),
                 include_never_calls=include_never_calls,
+                never_resolver=never_resolver,
+                never_resolving=never_resolving,
             )
 
         if constant is False:

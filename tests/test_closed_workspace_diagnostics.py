@@ -31,6 +31,7 @@ def initialized_server(
     did_delete: bool = False,
     related_information: bool = False,
     refresh_support: bool = False,
+    tag_values: list[int] | None = None,
 ) -> NovaProductLanguageServer:
     server = NovaProductLanguageServer()
     workspace: dict[str, Any] = {"workspaceFolders": True}
@@ -45,8 +46,13 @@ def initialized_server(
         workspace["fileOperations"] = file_operations
 
     text_document: dict[str, Any] = {"diagnostic": {}}
+    publish_diagnostics: dict[str, Any] = {}
     if related_information:
-        text_document["publishDiagnostics"] = {"relatedInformation": True}
+        publish_diagnostics["relatedInformation"] = True
+    if tag_values is not None:
+        publish_diagnostics["tagSupport"] = {"valueSet": tag_values}
+    if publish_diagnostics:
+        text_document["publishDiagnostics"] = publish_diagnostics
 
     response = server.handle(
         request(
@@ -1955,4 +1961,131 @@ def test_closed_inferred_never_effect_is_transitive_and_cycle_safe(
     ]
     assert missing == [
         "function 'cyclic' with return type 'String' has no value return"
+    ]
+
+
+def test_closed_unreachable_after_return_reuses_nested_control_flow(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "dead_return.nova"
+    source.write_text(
+        "fn value() -> Int { return 1; let dead: Int = 2; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path, tag_values=[1])
+    uri = source.absolute().as_uri()
+
+    report = reports_by_uri(workspace_diagnostics(server))[uri]
+    unreachable = [
+        item for item in report["items"] if item["code"] == "nova.unreachable-code"
+    ]
+
+    assert len(unreachable) == 1
+    assert unreachable[0]["message"] == "unreachable code after guaranteed return"
+    assert unreachable[0]["tags"] == [1]
+    assert server.documents.get(uri) is None
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_unreachable_tracks_nested_loop_control(tmp_path: Path) -> None:
+    source = tmp_path / "nested.nova"
+    source.write_text(
+        "fn loop(flag: Bool) { while (flag) { break; let dead: Int = 1; } }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+    unreachable = [
+        item for item in report["items"] if item["code"] == "nova.unreachable-code"
+    ]
+
+    assert len(unreachable) == 1
+    assert unreachable[0]["message"] == "unreachable code after 'break'"
+
+
+def test_closed_unreachable_merges_constant_dead_branch_regions(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "constant_dead.nova"
+    source.write_text(
+        "fn main() { if (false) { missing(); } let live: Int = 1; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path, tag_values=[1])
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+    unreachable = [
+        item for item in report["items"] if item["code"] == "nova.unreachable-code"
+    ]
+
+    assert len(unreachable) == 1
+    assert unreachable[0]["message"] == "unreachable code in constant-false if body"
+    assert unreachable[0]["tags"] == [1]
+
+
+def test_closed_unreachable_uses_cross_file_never_effects(tmp_path: Path) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        "fn halt() -> ! { while (true) { continue; } }\n",
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn main() { halt(); let dead: Int = 1; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    caller_uri = caller.absolute().as_uri()
+
+    first = reports_by_uri(workspace_diagnostics(server))[caller_uri]
+    assert [
+        item["message"]
+        for item in first["items"]
+        if item["code"] == "nova.unreachable-code"
+    ] == ["unreachable code after never-returning call"]
+
+    provider.write_text(
+        "fn halt() -> Unit { return (); }\n",
+        encoding="utf-8",
+    )
+    assert server._sync_closed_workspace_files() is True
+
+    second = reports_by_uri(
+        workspace_diagnostics(server, request_id=3)
+    )[caller_uri]
+    assert all(
+        item["code"] != "nova.unreachable-code"
+        for item in second["items"]
+    )
+
+
+def test_closed_unreachable_inferred_never_is_transitive_and_cycle_safe(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "effects.nova"
+    source.write_text(
+        "fn halt() { while (true) { continue; } }\n"
+        "fn wrapper() { halt(); }\n"
+        "fn caller() { wrapper(); let dead: Int = 1; }\n"
+        "fn left() { right(); }\n"
+        "fn right() { left(); }\n"
+        "fn cyclic() { left(); let live: Int = 1; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+    unreachable = [
+        item for item in report["items"] if item["code"] == "nova.unreachable-code"
+    ]
+
+    assert [item["message"] for item in unreachable] == [
+        "unreachable code after never-returning call"
     ]
