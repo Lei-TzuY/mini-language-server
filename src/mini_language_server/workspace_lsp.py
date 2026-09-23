@@ -1579,6 +1579,38 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         return isinstance(text_document.get("moniker"), dict)
 
     @staticmethod
+    def _client_supports_file_create(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        file_operations = workspace.get("fileOperations")
+        return (
+            isinstance(file_operations, dict)
+            and file_operations.get("didCreate") is True
+        )
+
+    @staticmethod
+    def _client_supports_file_delete(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        file_operations = workspace.get("fileOperations")
+        return (
+            isinstance(file_operations, dict)
+            and file_operations.get("didDelete") is True
+        )
+
+    @staticmethod
     def _client_supports_file_will_rename(params: Any) -> bool:
         if not isinstance(params, dict):
             return False
