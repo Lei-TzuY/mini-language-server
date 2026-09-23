@@ -343,6 +343,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
             def publish() -> dict[str, Any] | None:
                 nonlocal validation_error, stale_closed_inputs
+                if any(
+                    self._closed_workspace_uris.get(identity) != uri
+                    for identity, uri in captured_closed.items()
+                ):
+                    stale_closed_inputs = True
+                    return None
                 try:
                     self.documents.validate_renames(renames)
                     self._validate_closed_workspace_rename_preflight(
@@ -418,13 +424,6 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             raise DocumentError("rename destination identities must be unique")
 
         moving_sources = set(source_identities)
-        current_closed = {
-            identity: self._closed_workspace_uris.get(identity)
-            for identity in captured_closed
-        }
-        if current_closed != captured_closed:
-            raise DocumentError("detached workspace identity changed")
-
         open_by_identity = {
             WorkspaceFolderSet.uri_identity(document.uri): document.uri
             for document in captured_documents
