@@ -419,3 +419,24 @@ def test_matching_snapshot_guard_rejects_replaced_matching_snapshot() -> None:
             lambda document: document.uri.startswith("file:///workspace/"),
             lambda: True,
         )
+
+def test_incremental_positions_can_use_utf32_code_point_units() -> None:
+    store = DocumentStore(position_encoding="utf-32")
+    uri = "file:///emoji-utf32.nova"
+    store.open(uri=uri, language_id="nova", version=1, text="a😀b\n")
+
+    updated = store.apply_changes(
+        uri=uri,
+        version=2,
+        changes=[
+            {
+                "range": {
+                    "start": {"line": 0, "character": 1},
+                    "end": {"line": 0, "character": 2},
+                },
+                "text": "X",
+            }
+        ],
+    )
+
+    assert updated.text == "aXb\n"
