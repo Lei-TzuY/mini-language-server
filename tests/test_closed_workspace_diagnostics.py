@@ -103,7 +103,7 @@ def test_closed_file_base_diagnostics_are_workspace_pull_only(
 ) -> None:
     source = tmp_path / "duplicate.nova"
     source.write_text("fn same() {} fn same() {}\n", encoding="utf-8")
-    server = initialized_server(tmp_path, tag_values=[1])
+    server = initialized_server(tmp_path)
     uri = source.absolute().as_uri()
 
     report = reports_by_uri(workspace_diagnostics(server))[uri]
@@ -1972,7 +1972,7 @@ def test_closed_unreachable_after_return_reuses_nested_control_flow(
         "fn value() -> Int { return 1; let dead: Int = 2; }\n",
         encoding="utf-8",
     )
-    server = initialized_server(tmp_path)
+    server = initialized_server(tmp_path, tag_values=[1])
     uri = source.absolute().as_uri()
 
     report = reports_by_uri(workspace_diagnostics(server))[uri]
