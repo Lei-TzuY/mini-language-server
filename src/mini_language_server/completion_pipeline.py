@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
+from .nova import NovaFunctionSyntax
 from .semantic import SemanticError
 from .server import ServerState
 from .source import Span
@@ -32,6 +33,7 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
         self._completion_insert_replace = False
         self._completion_list_edit_range = False
         self._inline_completion = False
+        self._inline_value = False
 
     def handle(self, message: Any) -> dict[str, Any] | None:
         method = message.get("method") if isinstance(message, dict) else None
@@ -47,6 +49,7 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
                 "editRange" in self._client_completion_list_item_defaults(params)
             )
             self._inline_completion = self._client_supports_inline_completion(params)
+            self._inline_value = self._client_supports_inline_value(params)
 
         if (
             method == "textDocument/inlineCompletion"
@@ -56,6 +59,18 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             and self._inline_completion
         ):
             return self._handle_inline_completion(
+                message.get("id"),
+                message.get("params"),
+            )
+
+        if (
+            method == "textDocument/inlineValue"
+            and isinstance(message, dict)
+            and "id" in message
+            and self.state is ServerState.RUNNING
+            and self._inline_value
+        ):
+            return self._handle_inline_value(
                 message.get("id"),
                 message.get("params"),
             )
@@ -70,7 +85,162 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             capabilities = result["result"].get("capabilities")
             if isinstance(capabilities, dict):
                 capabilities["inlineCompletionProvider"] = {}
+        if (
+            method == "initialize"
+            and result is not None
+            and "result" in result
+            and self._inline_value
+        ):
+            capabilities = result["result"].get("capabilities")
+            if isinstance(capabilities, dict):
+                capabilities["inlineValueProvider"] = True
         return result
+
+    def _handle_inline_value(
+        self,
+        request_id: Any,
+        params: Any,
+    ) -> dict[str, Any]:
+        """Return debugger variable lookups for exact visible Nova locals."""
+        if not isinstance(params, dict):
+            return self._error(request_id, -32602, "Invalid params")
+        context_value = params.get("context")
+        viewport_value = params.get("range")
+        if not isinstance(context_value, dict) or not isinstance(viewport_value, dict):
+            return self._error(request_id, -32602, "Invalid params")
+
+        frame_id = context_value.get("frameId")
+        stopped_value = context_value.get("stoppedLocation")
+        if (
+            isinstance(frame_id, bool)
+            or not isinstance(frame_id, int)
+            or not isinstance(stopped_value, dict)
+        ):
+            return self._error(request_id, -32602, "Invalid params")
+
+        uri = self._document_uri(params)
+        if uri is None:
+            return self._error(request_id, -32602, "Invalid params")
+        document = self.documents.get(uri)
+        if document is None or document.language_id != self.nova_adapter.language_id:
+            return self._result(request_id, [])
+
+        viewport = self._parse_range(document.text, viewport_value)
+        stopped = self._parse_range(document.text, stopped_value)
+        if viewport is None or stopped is None:
+            return self._error(request_id, -32602, "Invalid params")
+
+        source = self._source_text(document.text)
+        viewport_span = source.span_from_range(*viewport)
+        stopped_span = source.span_from_range(*stopped)
+        semantics = self.semantics.get(uri)
+        if (
+            semantics is None
+            or semantics.symbols.syntax.document is not document
+            or not isinstance(semantics.symbols.syntax.tree, NovaFunctionSyntax)
+        ):
+            return self._result(request_id, [])
+
+        tree = semantics.symbols.syntax.tree
+        owner = self._completion_scope_owner(document.text, tree, stopped_span.start)
+        try:
+            request_context = self.requests.start(request_id, uri=uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(request_context)
+            if owner is None:
+                self.requests.checkpoint(request_context)
+                return self._current_semantic_result(semantics, request_id, [])
+
+            targets = self._inline_value_visible_targets(
+                semantics,
+                tree,
+                owner,
+                stopped_span.start,
+            )
+            rendered: dict[tuple[int, int, str], dict[str, Any]] = {}
+            for target in targets:
+                spans = [
+                    target.span,
+                    *(
+                        reference.span
+                        for reference in semantics.references
+                        if reference.target is target
+                    ),
+                ]
+                for span in spans:
+                    if not (
+                        viewport_span.start <= span.start
+                        and span.end <= viewport_span.end
+                    ):
+                        continue
+                    rendered[(span.start, span.end, target.name)] = {
+                        "range": self._range(source, span),
+                        "variableName": target.name,
+                        "caseSensitiveLookup": True,
+                    }
+
+            items = [
+                rendered[key]
+                for key in sorted(rendered, key=lambda item: (item[0], item[1], item[2]))
+            ]
+            self.requests.checkpoint(request_context)
+
+            def publish() -> dict[str, Any]:
+                self.requests.checkpoint(request_context)
+                return self._result(request_id, items)
+
+            try:
+                return self.semantics.commit_if_current(semantics, publish)
+            except SemanticError:
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(request_context)
+
+    @staticmethod
+    def _inline_value_visible_targets(
+        semantics: Any,
+        tree: NovaFunctionSyntax,
+        owner: Span,
+        stopped_offset: int,
+    ) -> tuple[Any, ...]:
+        """Mirror Nova function-scoped local shadowing at one debugger stop."""
+        parameters_by_name: dict[str, list[Any]] = {}
+        locals_by_name: dict[str, list[Any]] = {}
+        symbols_by_span = {symbol.span: symbol for symbol in semantics.symbols.symbols}
+
+        for parameter in tree.parameters:
+            if parameter.owner != owner:
+                continue
+            symbol = symbols_by_span.get(parameter.span)
+            if symbol is not None and symbol.kind == "parameter":
+                parameters_by_name.setdefault(parameter.name, []).append(symbol)
+
+        for local in tree.locals:
+            if local.owner != owner or local.span.end > stopped_offset:
+                continue
+            symbol = symbols_by_span.get(local.span)
+            if symbol is not None and symbol.kind == "variable":
+                locals_by_name.setdefault(local.name, []).append(symbol)
+
+        visible: list[Any] = []
+        for name in sorted(set(parameters_by_name) | set(locals_by_name)):
+            locals_ = locals_by_name.get(name, [])
+            if len(locals_) == 1:
+                visible.append(locals_[0])
+                continue
+            if len(locals_) > 1:
+                continue
+            parameters = parameters_by_name.get(name, [])
+            if len(parameters) == 1:
+                visible.append(parameters[0])
+        return tuple(visible)
 
     def _handle_inline_completion(
         self,
@@ -404,6 +574,18 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
         if detail == "function" or detail.startswith("fn "):
             return _COMPLETION_KIND_FUNCTION, 2
         return None
+
+    @staticmethod
+    def _client_supports_inline_value(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        text_document = capabilities.get("textDocument")
+        if not isinstance(text_document, dict):
+            return False
+        return isinstance(text_document.get("inlineValue"), dict)
 
     @staticmethod
     def _client_supports_inline_completion(params: Any) -> bool:
