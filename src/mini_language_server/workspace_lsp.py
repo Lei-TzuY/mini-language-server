@@ -9,12 +9,13 @@ from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
 from .documents import Document
 from .nova import NovaFunctionSyntax, NovaLanguageServer
-from .semantic import SemanticError
+from .semantic import SemanticError, SemanticSnapshot
 from .server import ServerState
 from .source import Span
 from .symbols import SymbolError
 from .syntax import SyntaxError
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
+from .workspace_files import WorkspaceFileError, WorkspaceFileSnapshot, WorkspaceFileStore
 from .workspace_folders import WorkspaceFolderError, WorkspaceFolderSet
 
 _SYMBOL_KINDS = {
@@ -32,7 +33,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         super().__init__()
         self.workspace_symbols = WorkspaceSymbolIndex()
         self.workspace_folders = WorkspaceFolderSet()
+        self.workspace_files = WorkspaceFileStore()
+        self._workspace_file_analyzer = NovaLanguageServer()
+        self._workspace_file_semantics: dict[
+            str, tuple[WorkspaceFileSnapshot, SemanticSnapshot]
+        ] = {}
         self._workspace_folder_change_support = False
+        self._watched_file_dynamic_support = False
+        self._watched_files_registered = False
+        self._watched_file_registration_request: str | None = None
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -40,6 +49,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             params = message.get("params")
             self._workspace_folder_change_support = (
                 self._client_supports_workspace_folders(params)
+            )
+            self._watched_file_dynamic_support = (
+                self._client_supports_watched_files(params)
             )
             try:
                 self.workspace_folders.configure(params)
@@ -55,6 +67,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         ):
             if self._workspace_folder_change_support:
                 self._handle_workspace_folder_change(message.get("params"))
+            return None
+
+        if (
+            method == "workspace/didChangeWatchedFiles"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+        ):
+            if self._watched_files_registered:
+                self._handle_watched_file_change(message.get("params"))
             return None
 
         if "id" in message and self.state is ServerState.RUNNING:
@@ -102,6 +123,13 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     return workspace_result
 
         result = super().handle(message)
+        if (
+            method == "initialized"
+            and self.state is ServerState.RUNNING
+            and self._watched_file_dynamic_support
+            and self.workspace_folders.scoped
+        ):
+            self._queue_watched_file_registration()
         if method == "initialize" and result is not None and "result" in result:
             params = message.get("params")
             capabilities = result["result"].get("capabilities")
