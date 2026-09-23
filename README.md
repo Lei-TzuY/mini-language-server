@@ -19,7 +19,7 @@ LSP / JSON-RPC lifecycle
 
 - bounded LSP `Content-Length` framing and JSON-RPC lifecycle handling
 - document open/change/close with monotonic versions and incremental edits
-- negotiated LSP position encoding across the complete session (`utf-8` and `utf-16`, defaulting compatibly to `utf-16`), with one coordinate contract for incremental edits, navigation/diagnostic/formatting ranges, workspace edits, and semantic-token starts/lengths
+- negotiated LSP position encoding across the complete session (`utf-8`, `utf-16`, and `utf-32`, defaulting compatibly to `utf-16`), with one coordinate contract for incremental edits, navigation/diagnostic/formatting ranges, workspace edits, and semantic-token starts/lengths
 - version-bound syntax, symbol, semantic, diagnostic, and workspace snapshots
 - compare-and-commit publication guards across the derived-cache chain, including exact open-document and diagnostic snapshot-set guards for workspace reads
 - definition, references, document highlights, linked editing ranges, prepareRename, and rename, including uniquely resolved cross-file Nova functions; rename negotiates versioned `WorkspaceEdit.documentChanges` when supported so every edited URI carries the exact captured document version, adds semantic `changeAnnotations` when the client supports annotated edits, while legacy clients keep `changes`, and the final Nova product rejects workspace function-name collisions before publishing edits
