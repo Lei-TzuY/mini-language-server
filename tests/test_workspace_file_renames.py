@@ -480,3 +480,33 @@ def test_will_rename_rejects_document_identity_drift_at_publish_boundary(
     current = server.documents.get(old_uri)
     assert current is not None and current.version == 2
     assert server.documents.get(new_uri) is None
+
+def test_will_rename_honors_cancellation_before_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = initialized_server(will_rename=True)
+    old_uri = "file:///workspace/a.nova"
+    new_uri = "file:///workspace/b.nova"
+    open_nova(server, old_uri, "fn a() {}\n")
+    previous = server.documents.get(old_uri)
+    original = server.documents.commit_matching_if_current
+
+    def cancel_then_commit(documents, include, commit):
+        assert server.requests.cancel(27) is True
+        return original(documents, include, commit)
+
+    monkeypatch.setattr(
+        server.documents,
+        "commit_matching_if_current",
+        cancel_then_commit,
+    )
+
+    response = will_rename_files(server, (old_uri, new_uri), request_id=27)
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 27,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
+    assert server.documents.get(old_uri) is previous
+    assert server.documents.get(new_uri) is None
