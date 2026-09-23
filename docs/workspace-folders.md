@@ -13,7 +13,9 @@ The server supports LSP workspace-folder scope as the semantic universe for cros
 
 `workspace/didChangeWorkspaceFolders` updates the scope only for clients that negotiated folder support. Already-open Nova documents are reclassified immediately: newly included documents enter the shared workspace index, removed documents leave it, and cross-file diagnostics are reconciled against the new exact workspace.
 
-URI containment is segment-aware. A folder such as `file:///work/app` contains `file:///work/app/main.nova` but not `file:///work/application/main.nova`. Scheme and authority must also match.
+URI containment is segment-aware and uses RFC 3986 generic URI equivalence where it is safe for workspace identity. Scheme and host comparison are case-insensitive, percent-encoding hex digits are normalized, and percent-encoded unreserved characters such as `%7E` are equivalent to their literal form. Reserved delimiters are not decoded: `%2F` never becomes a path separator. Path character case remains significant, so the server does not guess filesystem case rules from the URI. A folder such as `file:///work/app` contains `file:///work/app/main.nova` but not `file:///work/application/main.nova`.
+
+Equivalent folder spellings share one internal scope identity. Initial folder lists reject canonical duplicates, and dynamic removal can identify a configured folder through an equivalent URI spelling. The original client-supplied folder URI remains the public value returned by folder snapshots and `scope_uri_for()`, so configuration `scopeUri` requests are not silently rewritten.
 
 Out-of-scope documents remain open and retain their document/syntax/symbol/semantic snapshots and single-document Nova analysis. They do not contribute declarations, references, calls, CodeLens counts, workspace symbols, or other cross-file facts until their folder enters the scope.
 

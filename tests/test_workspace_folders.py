@@ -109,3 +109,108 @@ def test_scope_uri_for_is_none_in_legacy_unscoped_mode() -> None:
 
     assert folders.contains("file:///anywhere/main.nova")
     assert folders.scope_uri_for("file:///anywhere/main.nova") is None
+
+def test_workspace_scope_normalizes_scheme_host_and_unreserved_encoding() -> None:
+    folders = WorkspaceFolderSet()
+    folders.configure(
+        {
+            "workspaceFolders": [
+                {"uri": "FILE://SERVER/work/%7eapp", "name": "app"},
+            ]
+        }
+    )
+
+    assert folders.contains("file://server/work/~app/main.nova")
+    assert folders.contains("FiLe://SeRvEr/work/%7Eapp/nested/lib.nova")
+
+
+def test_workspace_scope_keeps_path_case_sensitive() -> None:
+    folders = WorkspaceFolderSet()
+    folders.configure(
+        {
+            "workspaceFolders": [
+                {"uri": "file:///Work/App", "name": "app"},
+            ]
+        }
+    )
+
+    assert folders.contains("file:///Work/App/main.nova")
+    assert not folders.contains("file:///work/app/main.nova")
+
+
+def test_workspace_scope_does_not_decode_reserved_slash() -> None:
+    folders = WorkspaceFolderSet()
+    folders.configure(
+        {
+            "workspaceFolders": [
+                {"uri": "file:///work/app", "name": "app"},
+            ]
+        }
+    )
+
+    assert not folders.contains("file:///work/app%2Fnested/main.nova")
+    assert not folders.contains("file:///work/app%2fnested/main.nova")
+
+
+def test_equivalent_workspace_folder_uris_are_duplicate_identity() -> None:
+    folders = WorkspaceFolderSet()
+
+    with pytest.raises(WorkspaceFolderError, match="must be unique"):
+        folders.configure(
+            {
+                "workspaceFolders": [
+                    {"uri": "FILE://SERVER/work/%7eapp", "name": "left"},
+                    {"uri": "file://server/work/~app/", "name": "right"},
+                ]
+            }
+        )
+
+
+def test_workspace_folder_change_removes_canonical_equivalent_uri() -> None:
+    folders = WorkspaceFolderSet()
+    folders.configure(
+        {
+            "workspaceFolders": [
+                {"uri": "FILE://SERVER/work/%7eapp/", "name": "app"},
+            ]
+        }
+    )
+
+    assert folders.apply_change(
+        {
+            "event": {
+                "added": [],
+                "removed": [
+                    {"uri": "file://server/work/~app", "name": "app"},
+                ],
+            }
+        }
+    )
+    assert not folders.contains("file://server/work/~app/main.nova")
+
+
+def test_scope_uri_for_preserves_configured_uri_spelling() -> None:
+    folders = WorkspaceFolderSet()
+    configured = "FILE://SERVER/work/%7eapp/"
+    folders.configure(
+        {
+            "workspaceFolders": [
+                {"uri": configured, "name": "app"},
+                {
+                    "uri": "file://server/work/~app/packages/core",
+                    "name": "core",
+                },
+            ]
+        }
+    )
+
+    assert (
+        folders.scope_uri_for("file://SERVER/work/~app/main.nova")
+        == configured
+    )
+    assert (
+        folders.scope_uri_for(
+            "FILE://server/work/%7Eapp/packages/core/lib.nova"
+        )
+        == "file://server/work/~app/packages/core"
+    )
