@@ -1232,3 +1232,168 @@ def test_closed_return_ambiguous_call_remains_conservative(tmp_path: Path) -> No
 
     assert all(item["code"] != "nova.return-type" for item in report["items"])
     assert any(item["code"] == "nova.ambiguous-function" for item in report["items"])
+
+def test_closed_explicit_local_literal_mismatch_is_reported(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        'fn caller() { let local: Int = "bad"; }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+        if item["code"] == "nova.local-type"
+    ] == [
+        (
+            "nova.local-type",
+            "local type mismatch: expected 'Int', got 'String'",
+        )
+    ]
+
+
+def test_closed_explicit_local_reference_mismatch_is_reported(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn caller(flag: Bool) { let local: String = flag; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert any(
+        item["code"] == "nova.local-type"
+        and item["message"]
+        == "local type mismatch: expected 'String', got 'Bool'"
+        for item in report["items"]
+    )
+
+
+def test_closed_explicit_local_expression_mismatch_is_reported(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn caller() { let local: String = 1 + 2; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert any(
+        item["code"] == "nova.local-type"
+        and item["message"]
+        == "local type mismatch: expected 'String', got 'Int'"
+        for item in report["items"]
+    )
+
+
+def test_closed_explicit_local_cross_file_call_uses_captured_result(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        'fn make() -> String { return "x"; }\n',
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn caller() { let local: Int = make(); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        caller.absolute().as_uri()
+    ]
+
+    assert any(
+        item["code"] == "nova.local-type"
+        and item["message"]
+        == "local type mismatch: expected 'Int', got 'String'"
+        for item in report["items"]
+    )
+
+
+def test_closed_explicit_local_call_rebinds_after_provider_result_change(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        'fn make() -> String { return "x"; }\n',
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn caller() { let local: Int = make(); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    caller_uri = caller.absolute().as_uri()
+
+    first = reports_by_uri(workspace_diagnostics(server))[caller_uri]
+    assert any(item["code"] == "nova.local-type" for item in first["items"])
+
+    provider.write_text(
+        "fn make() -> Int { return 1; }\n",
+        encoding="utf-8",
+    )
+    assert server._sync_closed_workspace_files() is True
+
+    second = reports_by_uri(
+        workspace_diagnostics(server, request_id=3)
+    )[caller_uri]
+    assert all(item["code"] != "nova.local-type" for item in second["items"])
+
+
+def test_closed_explicit_local_ambiguous_call_remains_conservative(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.nova"
+    second = tmp_path / "second.nova"
+    caller = tmp_path / "caller.nova"
+    first.write_text("fn make() -> Int { return 1; }\n", encoding="utf-8")
+    second.write_text(
+        'fn make() -> String { return "x"; }\n',
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn caller() { let local: Bool = make(); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        caller.absolute().as_uri()
+    ]
+
+    assert all(item["code"] != "nova.local-type" for item in report["items"])
+    assert any(item["code"] == "nova.ambiguous-function" for item in report["items"])
+
+
+def test_closed_explicit_local_matching_type_remains_clean(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn caller(flag: Bool) { let local: Bool = flag && true; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert all(item["code"] != "nova.local-type" for item in report["items"])
