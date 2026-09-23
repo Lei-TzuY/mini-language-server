@@ -811,15 +811,16 @@ class ActiveTransportAbortServer(LanguageServer):
         ):
             context = self.requests.start(message["id"])
             try:
+                self.events.append("request-started")
+                self.entered.set()
+                assert context._cancelled.wait(timeout=5)
+                self.events.append("request-cancelled")
                 self._queue_notification("test/stale-notification", {"value": 1})
                 self._queue_server_request(
                     "workspace/configuration",
                     {"items": [{"section": "test"}]},
                 )
-                self.events.append("request-started")
-                self.entered.set()
-                assert context._cancelled.wait(timeout=5)
-                self.events.append("request-cancelled")
+                self.events.append("late-outbound-attempted")
                 self.requests.checkpoint(context)
                 raise AssertionError("transport-aborted request passed checkpoint")
             except RequestCancelled:
@@ -869,7 +870,11 @@ def test_eof_aborts_active_request_and_discards_late_outbound_traffic() -> None:
             },
         }
     ]
-    assert server.events == ["request-started", "request-cancelled"]
+    assert server.events == [
+        "request-started",
+        "request-cancelled",
+        "late-outbound-attempted",
+    ]
     assert len(server.requests) == 0
     assert server.drain_notifications() == []
     assert server.drain_server_requests() == []
