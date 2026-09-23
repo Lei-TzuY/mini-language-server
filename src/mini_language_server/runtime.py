@@ -111,6 +111,7 @@ def _is_live_snapshot_mutation(message: dict[str, Any]) -> bool:
             "workspace/didCreateFiles",
             "workspace/didDeleteFiles",
             "workspace/didRenameFiles",
+            "workspace/didChangeWatchedFiles",
         }
     )
 
