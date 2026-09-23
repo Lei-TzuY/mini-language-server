@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from enum import Enum, auto
+from threading import RLock
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, RequestTracker, StaleRequest
@@ -55,6 +56,8 @@ class LanguageServer:
         self.semantics = SemanticDatabase(self.symbols)
         self.diagnostics = DiagnosticStore(self.semantics)
         self.requests = RequestTracker(self.documents)
+        self._notification_lock = RLock()
+        self._notifications_open = True
         self._notifications: list[dict[str, Any]] = []
         self._server_requests: list[dict[str, Any]] = []
         self._pending_server_requests: dict[str, str] = {}
@@ -82,6 +85,7 @@ class LanguageServer:
         if method == "exit":
             self.requests.retire_all()
             self._retire_all_server_requests(cancel_remote=False)
+            self._close_notification_outbox()
             self.exit_code = 0 if self.state is ServerState.SHUTDOWN else 1
             self.state = ServerState.EXITED
             return None
@@ -156,7 +160,12 @@ class LanguageServer:
             if self.state is ServerState.SHUTDOWN:
                 return self._error(request_id, -32600, "Shutdown already requested")
             self.requests.retire_all()
-            self._retire_all_server_requests(cancel_remote=True)
+            retired_server_requests = self._retire_all_server_requests(
+                cancel_remote=True
+            )
+            self._close_notification_outbox(
+                preserve_cancel_ids=frozenset(retired_server_requests)
+            )
             self.state = ServerState.SHUTDOWN
             return self._result(request_id, None)
 
@@ -231,11 +240,20 @@ class LanguageServer:
 
     def drain_notifications(self) -> list[dict[str, Any]]:
         """Return queued server notifications in emission order and clear the outbox."""
-        notifications = self._notifications
-        self._notifications = []
-        return notifications
+        with self._notification_lock:
+            notifications = self._notifications
+            self._notifications = []
+            return notifications
 
-    def _queue_notification(self, method: str, params: Any = None) -> None:
+    def _append_notification(self, notification: dict[str, Any]) -> bool:
+        """Append one notification only while the outbound channel remains open."""
+        with self._notification_lock:
+            if not self._notifications_open:
+                return False
+            self._notifications.append(notification)
+            return True
+
+    def _queue_notification(self, method: str, params: Any = None) -> bool:
         """Queue one server-to-client JSON-RPC notification."""
         notification: dict[str, Any] = {
             "jsonrpc": "2.0",
@@ -243,7 +261,23 @@ class LanguageServer:
         }
         if params is not None:
             notification["params"] = params
-        self._notifications.append(notification)
+        return self._append_notification(notification)
+
+    def _close_notification_outbox(
+        self, *, preserve_cancel_ids: frozenset[str] = frozenset()
+    ) -> tuple[dict[str, Any], ...]:
+        """Terminally close notifications and retain only lifecycle-required traffic."""
+        with self._notification_lock:
+            self._notifications_open = False
+            preserved = tuple(
+                notification
+                for notification in self._notifications
+                if notification.get("method") == "$/cancelRequest"
+                and isinstance(notification.get("params"), dict)
+                and notification["params"].get("id") in preserve_cancel_ids
+            )
+            self._notifications = list(preserved)
+            return preserved
 
     def _queue_progress(self, token: str | int, value: Any) -> None:
         """Queue one standard LSP progress notification."""

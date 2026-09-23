@@ -16,6 +16,7 @@ The checkpoint covers:
 8. definition/reference/rename queries
 9. request cancellation, including shutdown/exit retirement of all active client-to-server request generations
 10. tracked server-to-client JSON-RPC requests, cancellation/retirement of proven-stale generation-bound requests, shutdown/exit retirement that prevents post-lifecycle response delivery, dynamic capability registration, coalesced negotiated workspace refresh lifecycles, standard `$/progress` partial-result and negotiated work-done lifecycles including exact-commit workspace-symbol streaming, response retirement, and validated consumer response delivery
+11. terminal outbound-notification quiescence: shutdown preserves only lifecycle-required cancellation notifications for already-delivered server requests, exit preserves no notification traffic, and diagnostics/progress/trace publication shares one lock-backed terminal append gate
 11. workspace-folder scope generations for cross-file tooling
 12. stale-result suppression across concurrent document, semantic, workspace-scope, and workspace-dependent semantic-token delta publication
 
@@ -25,7 +26,7 @@ The core invariant is generational identity: a derived result is valid only whil
 
 | Layer | Owns | Must not silently own |
 | --- | --- | --- |
-| protocol/server | JSON-RPC lifecycle, bidirectional request routing, server-request tracking/response delivery/cancellation, redacted trace observability, session position-encoding negotiation, workspace-folder lifecycle, negotiated diagnostic metadata, LSP result rendering | language parsing/type rules |
+| protocol/server | JSON-RPC lifecycle, bidirectional request routing, server-request tracking/response delivery/cancellation, terminal notification-outbox quiescence, redacted trace observability, session position-encoding negotiation, workspace-folder lifecycle, negotiated diagnostic metadata, LSP result rendering | language parsing/type rules |
 | document store | current text snapshot, version/generation transitions | syntax or semantic interpretation |
 | syntax store | current parsed result for one exact document | symbol resolution |
 | symbol index | deterministic symbols for one exact syntax snapshot | reference semantics |
