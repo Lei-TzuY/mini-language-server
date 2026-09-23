@@ -147,6 +147,212 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         }
         return result
 
+    def _queue_watched_file_registration(self) -> None:
+        if (
+            self._watched_files_registered
+            or self._watched_file_registration_request is not None
+            or not self._watched_file_dynamic_support
+            or not self.workspace_folders.scoped
+        ):
+            return
+        request_id = self._queue_server_request(
+            "client/registerCapability",
+            {
+                "registrations": [
+                    {
+                        "id": "mini-language-server.nova-workspace-files",
+                        "method": "workspace/didChangeWatchedFiles",
+                        "registerOptions": {
+                            "watchers": [
+                                {
+                                    "globPattern": "**/*.nova",
+                                    "kind": 7,
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+        )
+        self._watched_file_registration_request = request_id
+
+    def _server_request_completed(
+        self,
+        request_id: str,
+        method: str,
+        *,
+        result: Any,
+        error: dict[str, Any] | None,
+    ) -> None:
+        super()._server_request_completed(
+            request_id,
+            method,
+            result=result,
+            error=error,
+        )
+        if (
+            method != "client/registerCapability"
+            or request_id != self._watched_file_registration_request
+        ):
+            return
+        self._watched_file_registration_request = None
+        if error is not None:
+            return
+
+        self._watched_files_registered = True
+        before = self.workspace_symbols.snapshots()
+        self._reconcile_watched_workspace_files()
+        self._publish_workspace_diagnostics()
+        after = self.workspace_symbols.snapshots()
+        if before.generation != after.generation:
+            self._workspace_scope_changed(before, after)
+
+    def _handle_watched_file_change(self, params: Any) -> None:
+        if not isinstance(params, dict):
+            return
+        changes = params.get("changes")
+        if not isinstance(changes, list):
+            return
+
+        before = self.workspace_symbols.snapshots()
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            uri = change.get("uri")
+            change_type = change.get("type")
+            if (
+                not isinstance(uri, str)
+                or not uri.endswith(".nova")
+                or change_type not in {1, 2, 3}
+                or not self.workspace_folders.contains(uri)
+            ):
+                continue
+            if self.documents.get(uri) is not None:
+                continue
+
+            if change_type == 3:
+                self.workspace_files.remove(uri)
+                self._remove_background_workspace_file(uri)
+                continue
+
+            snapshot = self.workspace_files.load(uri)
+            if snapshot is None:
+                self._remove_background_workspace_file(uri)
+                continue
+            self._publish_background_workspace_file(snapshot)
+
+        self._publish_workspace_diagnostics()
+        after = self.workspace_symbols.snapshots()
+        if before.generation != after.generation:
+            self._workspace_scope_changed(before, after)
+
+    def _reconcile_watched_workspace_files(self) -> None:
+        if not self._watched_files_registered or not self.workspace_folders.scoped:
+            return
+        snapshots = self.workspace_files.reconcile(
+            (folder.uri for folder in self.workspace_folders.folders()),
+            suffix=".nova",
+        )
+        active = {snapshot.uri for snapshot in snapshots}
+
+        for uri in tuple(self._workspace_file_semantics):
+            if uri not in active or not self.workspace_folders.contains(uri):
+                self._remove_background_workspace_file(uri)
+
+        for snapshot in snapshots:
+            if (
+                not self.workspace_folders.contains(snapshot.uri)
+                or self.documents.get(snapshot.uri) is not None
+            ):
+                continue
+            self._publish_background_workspace_file(snapshot)
+
+    def _publish_background_workspace_file(
+        self, snapshot: WorkspaceFileSnapshot
+    ) -> None:
+        if self.documents.get(snapshot.uri) is not None:
+            return
+        cached = self._workspace_file_semantics.get(snapshot.uri)
+        if cached is not None and cached[0] is snapshot:
+            semantic = cached[1]
+        else:
+            analyzer = self._workspace_file_analyzer
+            analyzer.nova_adapter = self.nova_adapter
+            document = analyzer.documents.get(snapshot.uri)
+            try:
+                if document is None:
+                    document = analyzer.documents.open(
+                        uri=snapshot.uri,
+                        language_id=self.nova_adapter.language_id,
+                        version=1,
+                        text=snapshot.text,
+                    )
+                elif document.text != snapshot.text:
+                    document = analyzer.documents.replace(
+                        uri=snapshot.uri,
+                        version=document.version + 1,
+                        text=snapshot.text,
+                    )
+                semantic = self.nova_adapter.publish(analyzer, document)
+            except (SyntaxError, SymbolError, SemanticError):
+                self._remove_background_workspace_file(snapshot.uri)
+                return
+            self._workspace_file_semantics[snapshot.uri] = (snapshot, semantic)
+
+        def publish() -> None:
+            if self.documents.get(snapshot.uri) is not None:
+                return
+            current = self.workspace_symbols.get(snapshot.uri)
+            if current is semantic:
+                return
+            try:
+                self.workspace_symbols.replace(semantic, expected=current)
+            except WorkspaceIndexError:
+                return
+
+        try:
+            self.workspace_files.commit_if_current(snapshot, publish)
+        except WorkspaceFileError:
+            return
+
+    def _remove_background_workspace_file(self, uri: str) -> None:
+        cached = self._workspace_file_semantics.pop(uri, None)
+        if cached is not None:
+            semantic = cached[1]
+            if self.workspace_symbols.get(uri) is semantic:
+                with suppress(WorkspaceIndexError):
+                    self.workspace_symbols.remove(uri, expected=semantic)
+
+        analyzer = self._workspace_file_analyzer
+        if analyzer.documents.get(uri) is not None:
+            with suppress(Exception):
+                analyzer.documents.close(uri)
+            analyzer.diagnostics.discard(uri)
+            analyzer.semantics.discard(uri)
+            analyzer.symbols.discard(uri)
+            analyzer.syntax.discard(uri)
+
+    def _reload_background_workspace_file(self, uri: str) -> None:
+        if (
+            not self._watched_files_registered
+            or not self.workspace_folders.contains(uri)
+            or self.documents.get(uri) is not None
+        ):
+            return
+        snapshot = self.workspace_files.load(uri)
+        if snapshot is None:
+            self._remove_background_workspace_file(uri)
+            return
+        self._publish_background_workspace_file(snapshot)
+
+    def _workspace_snapshot_version(
+        self, snapshot: SemanticSnapshot
+    ) -> int | None:
+        document = self.documents.get(snapshot.uri)
+        if document is snapshot.symbols.syntax.document:
+            return document.version
+        return None
+
     def _handle_document_notification(self, method: str, params: Any) -> None:
         uri = self._document_uri(params)
         previous = self.workspace_symbols.get(uri) if uri is not None else None
