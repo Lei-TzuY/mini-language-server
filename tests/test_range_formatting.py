@@ -278,7 +278,8 @@ def test_range_formatting_honors_cancellation(monkeypatch: Any) -> None:
         "id": 2,
         "error": {"code": -32800, "message": "Request cancelled"},
     }
-\n
+
+
 def test_ranges_formatting_formats_disjoint_ranges_in_one_snapshot() -> None:
     server = NovaProductLanguageServer()
     initialize(server, multiple=True)
