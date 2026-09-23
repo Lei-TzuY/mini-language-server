@@ -147,3 +147,39 @@ def test_final_product_cannot_bypass_exit_request_shape_guard() -> None:
     }
     assert server.state is ServerState.RUNNING
     assert server.exit_code is None
+
+
+def test_final_product_initialized_request_cannot_trigger_configuration_side_effects() -> None:
+    server = NovaProductLanguageServer()
+    response = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "workspace": {
+                        "configuration": True,
+                    }
+                }
+            },
+        )
+    )
+    assert response is not None
+    assert server.state is ServerState.RUNNING
+    assert server.drain_server_requests() == []
+
+    assert server.handle(request("initialized", 12)) == {
+        "jsonrpc": "2.0",
+        "id": 12,
+        "error": {
+            "code": -32600,
+            "message": "Initialized must be a notification",
+        },
+    }
+    assert server.drain_server_requests() == []
+    assert server.state is ServerState.RUNNING
+
+    assert server.handle(notification("initialized")) is None
+    queued = server.drain_server_requests()
+    assert len(queued) == 1
+    assert queued[0]["method"] == "workspace/configuration"
