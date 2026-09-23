@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Any, BinaryIO
 
 MAX_CONTENT_LENGTH = 8 * 1024 * 1024
+MAX_HEADER_BYTES = 64 * 1024
+MAX_HEADER_COUNT = 64
 
 
 class FramingError(ValueError):
@@ -29,15 +31,30 @@ class JsonRpcError:
 class MessageReader:
     """Read Content-Length framed JSON-RPC messages from a binary stream."""
 
-    def __init__(self, stream: BinaryIO, *, max_content_length: int = MAX_CONTENT_LENGTH) -> None:
+    def __init__(
+        self,
+        stream: BinaryIO,
+        *,
+        max_content_length: int = MAX_CONTENT_LENGTH,
+        max_header_bytes: int = MAX_HEADER_BYTES,
+        max_header_count: int = MAX_HEADER_COUNT,
+    ) -> None:
         if max_content_length <= 0:
             raise ValueError("max_content_length must be positive")
+        if max_header_bytes <= 0:
+            raise ValueError("max_header_bytes must be positive")
+        if max_header_count <= 0:
+            raise ValueError("max_header_count must be positive")
         self._stream = stream
         self._max_content_length = max_content_length
+        self._max_header_bytes = max_header_bytes
+        self._max_header_count = max_header_count
 
     def read(self) -> dict[str, Any] | None:
         headers: dict[str, str] = {}
         saw_anything = False
+        header_bytes = 0
+        header_count = 0
 
         while True:
             raw = self._stream.readline()
@@ -48,6 +65,15 @@ class MessageReader:
             saw_anything = True
             if raw in (b"\r\n", b"\n"):
                 break
+
+            header_bytes += len(raw)
+            if header_bytes > self._max_header_bytes:
+                raise FramingError("header section exceeds configured size limit")
+
+            header_count += 1
+            if header_count > self._max_header_count:
+                raise FramingError("header count exceeds configured limit")
+
             if len(raw) > 8192:
                 raise FramingError("header line too long")
             try:
