@@ -763,3 +763,46 @@ def test_legacy_configuration_client_keeps_configuration_only_request() -> None:
     requests = server.drain_server_requests()
     assert len(requests) == 1
     assert requests[0]["method"] == "workspace/configuration"
+
+def test_shutdown_retires_configuration_and_registration_request_state() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        configuration=True,
+        dynamic_configuration_registration=True,
+    )
+    server.handle(notify("initialized", {}))
+    registration, configuration = server.drain_server_requests()
+
+    response = server.handle(request("shutdown", 99, {}))
+
+    assert response == {"jsonrpc": "2.0", "id": 99, "result": None}
+    assert server.drain_notifications() == [
+        {
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": {"id": registration["id"]},
+        },
+        {
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": {"id": configuration["id"]},
+        },
+    ]
+    assert server._formatting_configuration_registration_request is None
+    assert server._formatting_configuration_registration_active is False
+    assert server._formatting_configuration_requests == {}
+
+    assert server.handle(
+        {"jsonrpc": "2.0", "id": registration["id"], "result": None}
+    ) is None
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": configuration["id"],
+            "result": [{"tabSize": 2, "insertSpaces": False}],
+        }
+    ) is None
+
+    assert server._formatting_configuration_registration_active is False
+    assert server._formatting_configurations == {None: (4, True)}
