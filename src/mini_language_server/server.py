@@ -273,6 +273,41 @@ class LanguageServer:
     def _has_pending_server_request(self, method: str) -> bool:
         return method in self._pending_server_requests.values()
 
+    def _cancel_server_request(self, request_id: str) -> bool:
+        """Retire one pending server request and cancel it remotely if already sent."""
+        method = self._pending_server_requests.pop(request_id, None)
+        if method is None:
+            return False
+
+        queued = False
+        remaining: list[dict[str, Any]] = []
+        for request in self._server_requests:
+            if request.get("id") == request_id:
+                queued = True
+                continue
+            remaining.append(request)
+        self._server_requests = remaining
+
+        if not queued:
+            self._queue_notification("$/cancelRequest", {"id": request_id})
+
+        self._server_request_cancelled(request_id, method)
+        return True
+
+    def _cancel_pending_server_requests(self, method: str) -> tuple[str, ...]:
+        """Cancel every currently pending server request for one method."""
+        request_ids = tuple(
+            request_id
+            for request_id, pending_method in self._pending_server_requests.items()
+            if pending_method == method
+        )
+        for request_id in request_ids:
+            self._cancel_server_request(request_id)
+        return request_ids
+
+    def _server_request_cancelled(self, request_id: str, method: str) -> None:
+        """Extension point for consumers that own per-request state."""
+
     def _handle_server_response(self, message: dict[str, Any]) -> None:
         """Consume a valid response to one tracked server-to-client request."""
         request_id = message.get("id")

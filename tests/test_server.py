@@ -867,3 +867,73 @@ def test_push_diagnostics_render_ranges_in_negotiated_utf32_units() -> None:
             },
         }
     ]
+
+
+def test_cancel_unsent_server_request_retracts_local_outbox_only() -> None:
+    server = LanguageServer()
+    request_id = server._queue_server_request("workspace/configuration")
+
+    assert server._cancel_server_request(request_id) is True
+    assert server.drain_server_requests() == []
+    assert server.drain_notifications() == []
+    assert not server._has_pending_server_request("workspace/configuration")
+
+
+def test_cancel_sent_server_request_emits_standard_cancel_notification() -> None:
+    server = LanguageServer()
+    request_id = server._queue_server_request("workspace/configuration")
+    assert len(server.drain_server_requests()) == 1
+
+    assert server._cancel_server_request(request_id) is True
+    assert server.drain_notifications() == [
+        {
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": {"id": request_id},
+        }
+    ]
+    assert not server._has_pending_server_request("workspace/configuration")
+
+
+def test_late_response_to_cancelled_server_request_is_ignored() -> None:
+    class RecordingServer(LanguageServer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.completed: list[str] = []
+            self.cancelled: list[tuple[str, str]] = []
+
+        def _server_request_completed(
+            self,
+            request_id: str,
+            method: str,
+            *,
+            result: object,
+            error: dict[str, object] | None,
+        ) -> None:
+            self.completed.append(request_id)
+
+        def _server_request_cancelled(self, request_id: str, method: str) -> None:
+            self.cancelled.append((request_id, method))
+
+    server = RecordingServer()
+    request_id = server._queue_server_request("workspace/configuration")
+    server.drain_server_requests()
+
+    assert server._cancel_server_request(request_id) is True
+    assert server.cancelled == [(request_id, "workspace/configuration")]
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": [{"tabSize": 2, "insertSpaces": True}],
+        }
+    ) is None
+    assert server.completed == []
+
+
+def test_cancel_unknown_server_request_is_noop() -> None:
+    server = LanguageServer()
+
+    assert server._cancel_server_request("server:missing") is False
+    assert server.drain_server_requests() == []
+    assert server.drain_notifications() == []

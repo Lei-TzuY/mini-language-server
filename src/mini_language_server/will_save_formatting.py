@@ -150,6 +150,7 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
 
     def _invalidate_formatting_configuration(self) -> None:
         self._formatting_configuration_generation += 1
+        self._cancel_pending_server_requests("workspace/configuration")
         self._queue_formatting_configuration()
 
     def _formatting_configuration_scopes(self) -> tuple[str | None, ...]:
@@ -181,6 +182,11 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
             self._formatting_configuration_generation,
             scopes,
         )
+
+    def _server_request_cancelled(self, request_id: str, method: str) -> None:
+        super()._server_request_cancelled(request_id, method)
+        if method == "workspace/configuration":
+            self._formatting_configuration_requests.pop(request_id, None)
 
     def _server_request_completed(
         self,

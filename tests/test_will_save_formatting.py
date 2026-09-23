@@ -214,7 +214,7 @@ def test_workspace_configuration_controls_will_save_indentation() -> None:
     assert result[0]["newText"] == "fn main() {\n\treturn 1\n}\n"
 
 
-def test_configuration_change_invalidates_pending_response_and_refetches() -> None:
+def test_configuration_change_supersedes_pending_request_immediately() -> None:
     server = NovaProductLanguageServer()
     initialize(server, configuration=True)
     server.handle(notify("initialized", {}))
@@ -226,8 +226,20 @@ def test_configuration_change_invalidates_pending_response_and_refetches() -> No
             {"settings": {"ignored": "notification payload"}},
         )
     )
-    assert server.drain_server_requests() == []
 
+    assert server.drain_notifications() == [
+        {
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": {"id": first["id"]},
+        }
+    ]
+    second = server.drain_server_requests()
+    assert len(second) == 1
+    assert second[0]["method"] == "workspace/configuration"
+    assert second[0]["id"] != first["id"]
+
+    # The retired response is ignored and cannot queue another request.
     assert server.handle(
         {
             "jsonrpc": "2.0",
@@ -235,10 +247,7 @@ def test_configuration_change_invalidates_pending_response_and_refetches() -> No
             "result": [{"tabSize": 2, "insertSpaces": False}],
         }
     ) is None
-    second = server.drain_server_requests()
-    assert len(second) == 1
-    assert second[0]["method"] == "workspace/configuration"
-    assert second[0]["id"] != first["id"]
+    assert server.drain_server_requests() == []
 
     assert server.handle(
         {
@@ -252,6 +261,26 @@ def test_configuration_change_invalidates_pending_response_and_refetches() -> No
     open_nova(server, uri, "fn main() {\nreturn 1\n}\n")
     result = will_save(server, uri)["result"]
     assert result[0]["newText"] == "fn main() {\n   return 1\n}\n"
+
+
+def test_configuration_change_retracts_unsent_stale_request_locally() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, configuration=True)
+    server.handle(notify("initialized", {}))
+
+    # The first configuration request is still in the local outbox.
+    server.handle(
+        notify(
+            "workspace/didChangeConfiguration",
+            {"settings": {}},
+        )
+    )
+
+    assert server.drain_notifications() == []
+    requests = server.drain_server_requests()
+    assert len(requests) == 1
+    assert requests[0]["method"] == "workspace/configuration"
+    assert requests[0]["id"] == "server:2"
 
 
 def test_configuration_error_preserves_last_valid_settings_and_rearms_on_change() -> None:
@@ -466,7 +495,7 @@ def test_nested_workspace_folder_uses_most_specific_formatting_scope() -> None:
     )
 
 
-def test_workspace_folder_change_invalidates_pending_configuration_scope_set() -> None:
+def test_workspace_folder_change_supersedes_pending_configuration_scope_set() -> None:
     server = NovaProductLanguageServer()
     initialize(
         server,
@@ -487,22 +516,18 @@ def test_workspace_folder_change_invalidates_pending_configuration_scope_set() -
             },
         )
     )
-    assert server.drain_server_requests() == []
 
-    assert server.handle(
+    assert server.drain_notifications() == [
         {
             "jsonrpc": "2.0",
-            "id": first["id"],
-            "result": [
-                {"tabSize": 3, "insertSpaces": True},
-                {"tabSize": 2, "insertSpaces": True},
-            ],
+            "method": "$/cancelRequest",
+            "params": {"id": first["id"]},
         }
-    ) is None
-
+    ]
     second = server.drain_server_requests()
     assert len(second) == 1
     assert second[0]["method"] == "workspace/configuration"
+    assert second[0]["id"] != first["id"]
     assert second[0]["params"]["items"] == [
         {"section": "mini-language-server.formatting"},
         {
@@ -515,7 +540,19 @@ def test_workspace_folder_change_invalidates_pending_configuration_scope_set() -
         },
     ]
 
-    # The stale first response was retired, not applied.
+    # The retired first response is ignored and never applies stale settings.
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": first["id"],
+            "result": [
+                {"tabSize": 3, "insertSpaces": True},
+                {"tabSize": 2, "insertSpaces": True},
+            ],
+        }
+    ) is None
+    assert server.drain_server_requests() == []
+
     a_uri = "file:///workspace/a/main.nova"
     open_nova(server, a_uri, "fn main() {\nreturn 1\n}\n")
     assert will_save(server, a_uri, 24)["result"][0]["newText"] == (
