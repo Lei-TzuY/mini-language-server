@@ -236,7 +236,7 @@ def test_duplicate_quick_fix_honors_cancellation_checkpoint() -> None:
 def test_duplicate_quick_fix_copies_negotiated_related_information() -> None:
     server = initialized_server(related_information=True)
     uri = "file:///workspace/functions.nova"
-    text = "fn ping() {}\nfn ping() {}\n"
+    text = "fn ping() {} fn ping() {}\n"
     open_nova(server, uri, text)
     start = nth_offset(text, "ping", 2)
 
@@ -260,7 +260,7 @@ def test_duplicate_quick_fix_copies_negotiated_related_information() -> None:
 def test_duplicate_quick_fix_omits_unnegotiated_related_information() -> None:
     server = initialized_server()
     uri = "file:///workspace/functions.nova"
-    text = "fn ping() {}\nfn ping() {}\n"
+    text = "fn ping() {} fn ping() {}\n"
     open_nova(server, uri, text)
     start = nth_offset(text, "ping", 2)
 
