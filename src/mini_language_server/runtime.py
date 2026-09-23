@@ -212,10 +212,11 @@ def run_session(
     reader_thread.start()
 
     while active_server.state is not ServerState.EXITED:
-        if active_request_thread is None and deferred:
-            item = deferred.popleft()
-        else:
-            item = events.get()
+        item = (
+            deferred.popleft()
+            if active_request_thread is None and deferred
+            else events.get()
+        )
 
         if isinstance(item, _CompletedRequest):
             assert active_request_thread is not None
