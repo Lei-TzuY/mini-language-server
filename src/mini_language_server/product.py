@@ -36,6 +36,45 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
                     }
         return result
 
+    def _closed_workspace_product_diagnostics(
+        self,
+        snapshot: Any,
+        functions: dict[str, list[tuple[Any, Any]]],
+    ) -> tuple[Diagnostic, ...]:
+        """Reproduce argument-count policy for one detached exact snapshot."""
+        diagnostics = list(
+            super()._closed_workspace_product_diagnostics(snapshot, functions)
+        )
+        tree = snapshot.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return tuple(diagnostics)
+
+        text = snapshot.symbols.syntax.document.text
+        for name, span in tree.calls:
+            candidates = functions.get(name, [])
+            if len(candidates) != 1:
+                continue
+            candidate_snapshot, candidate_symbol = candidates[0]
+            expected = self._function_parameter_count(
+                candidate_snapshot,
+                candidate_symbol.span,
+            )
+            actual = self._call_argument_count(text, span.end)
+            if actual is None or actual == expected:
+                continue
+            diagnostics.append(
+                Diagnostic(
+                    span,
+                    (
+                        f"function '{name}' expects {expected} "
+                        f"argument(s) but got {actual}"
+                    ),
+                    code="nova.argument-count",
+                    source="nova",
+                )
+            )
+        return tuple(diagnostics)
+
     def _publish_workspace_diagnostics(self) -> None:
         """Publish exact-workspace Nova call resolution and argument-count diagnostics."""
         snapshots = self.workspace_symbols.snapshots()
@@ -109,12 +148,18 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
             return
 
     @staticmethod
-    def _declaration_parameter_count(declaration: Any) -> int:
-        tree = declaration.snapshot.symbols.syntax.tree
+    def _function_parameter_count(snapshot: Any, owner: Span) -> int:
+        tree = snapshot.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
             return 0
-        owner = declaration.symbol.span
         return sum(1 for parameter in tree.parameters if parameter.owner == owner)
+
+    @staticmethod
+    def _declaration_parameter_count(declaration: Any) -> int:
+        return NovaProductLanguageServer._function_parameter_count(
+            declaration.snapshot,
+            declaration.symbol.span,
+        )
 
     @classmethod
     def _call_argument_count(cls, text: str, name_end: int) -> int | None:

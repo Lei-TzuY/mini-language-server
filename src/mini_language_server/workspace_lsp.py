@@ -957,6 +957,13 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         )
                     )
 
+            diagnostics.extend(
+                self._closed_workspace_product_diagnostics(
+                    snapshot,
+                    functions,
+                )
+            )
+
             rendered.append(
                 DiagnosticSnapshot(
                     semantic=snapshot,
@@ -976,6 +983,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 )
             )
         return tuple(rendered)
+
+    def _closed_workspace_product_diagnostics(
+        self,
+        snapshot: SemanticSnapshot,
+        functions: dict[str, list[tuple[SemanticSnapshot, Any]]],
+    ) -> tuple[Diagnostic, ...]:
+        """Extension point for detached diagnostics owned by later product layers."""
+        return ()
 
     def _closed_workspace_snapshots_current(
         self, snapshots: tuple[SemanticSnapshot, ...]
