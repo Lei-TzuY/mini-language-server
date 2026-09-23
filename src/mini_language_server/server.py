@@ -7,7 +7,12 @@ from enum import Enum, auto
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, RequestTracker, StaleRequest
-from .diagnostics import Diagnostic, DiagnosticError, DiagnosticStore
+from .diagnostics import (
+    DIAGNOSTIC_TAG_VALUES,
+    Diagnostic,
+    DiagnosticError,
+    DiagnosticStore,
+)
 from .documents import DocumentError, DocumentStore
 from .protocol import JsonRpcError
 from .semantic import SemanticDatabase, SemanticError, SemanticSnapshot
@@ -40,6 +45,8 @@ class LanguageServer:
         self.position_encoding = DEFAULT_POSITION_ENCODING
         self._workspace_edit_document_changes = False
         self._workspace_edit_change_annotations = False
+        self._publish_diagnostic_version_support = False
+        self._diagnostic_tag_values: frozenset[int] = frozenset()
         self.documents = DocumentStore(position_encoding=self.position_encoding)
         self.syntax = SyntaxStore(self.documents)
         self.symbols = SymbolIndex(self.syntax)
@@ -92,6 +99,10 @@ class LanguageServer:
             self._workspace_edit_change_annotations = (
                 self._client_supports_workspace_change_annotations(params)
             )
+            self._publish_diagnostic_version_support = (
+                self._client_supports_publish_diagnostic_version(params)
+            )
+            self._diagnostic_tag_values = self._client_diagnostic_tag_values(params)
             self.documents.set_position_encoding(self.position_encoding)
             self.state = ServerState.RUNNING
             capabilities: dict[str, Any] = {
@@ -672,6 +683,44 @@ class LanguageServer:
         return isinstance(support, dict)
 
     @staticmethod
+    def _publish_diagnostics_capabilities(params: Any) -> dict[str, Any] | None:
+        if not isinstance(params, dict):
+            return None
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return None
+        text_document = capabilities.get("textDocument")
+        if not isinstance(text_document, dict):
+            return None
+        publish = text_document.get("publishDiagnostics")
+        return publish if isinstance(publish, dict) else None
+
+    @classmethod
+    def _client_supports_publish_diagnostic_version(cls, params: Any) -> bool:
+        publish = cls._publish_diagnostics_capabilities(params)
+        return publish is not None and publish.get("versionSupport") is True
+
+    @classmethod
+    def _client_diagnostic_tag_values(cls, params: Any) -> frozenset[int]:
+        publish = cls._publish_diagnostics_capabilities(params)
+        if publish is None:
+            return frozenset()
+        tag_support = publish.get("tagSupport")
+        if not isinstance(tag_support, dict):
+            return frozenset()
+        values = tag_support.get("valueSet")
+        if not isinstance(values, list):
+            return frozenset()
+        supported = set(DIAGNOSTIC_TAG_VALUES.values())
+        return frozenset(
+            value
+            for value in values
+            if isinstance(value, int)
+            and not isinstance(value, bool)
+            and value in supported
+        )
+
+    @staticmethod
     def _client_supports_completion(params: Any) -> bool:
         if not isinstance(params, dict):
             return False
@@ -765,10 +814,11 @@ class LanguageServer:
             return None, offset, source
         return semantics, offset, source
 
-    @staticmethod
-    def _diagnostic(source: SourceText, diagnostic: Diagnostic) -> dict[str, Any]:
+    def _diagnostic(
+        self, source: SourceText, diagnostic: Diagnostic
+    ) -> dict[str, Any]:
         rendered: dict[str, Any] = {
-            "range": LanguageServer._range(source, diagnostic.span),
+            "range": self._range(source, diagnostic.span),
             "severity": {
                 "error": 1,
                 "warning": 2,
@@ -781,13 +831,20 @@ class LanguageServer:
             rendered["code"] = diagnostic.code
         if diagnostic.source is not None:
             rendered["source"] = diagnostic.source
+        tags = [
+            DIAGNOSTIC_TAG_VALUES[tag]
+            for tag in diagnostic.tags
+            if DIAGNOSTIC_TAG_VALUES[tag] in self._diagnostic_tag_values
+        ]
+        if tags:
+            rendered["tags"] = tags
         return rendered
 
     def _queue_publish_diagnostics(
         self, uri: str, version: int | None, diagnostics: list[dict[str, Any]]
     ) -> None:
         params: dict[str, Any] = {"uri": uri, "diagnostics": diagnostics}
-        if version is not None:
+        if version is not None and self._publish_diagnostic_version_support:
             params["version"] = version
         self._notifications.append(
             {
