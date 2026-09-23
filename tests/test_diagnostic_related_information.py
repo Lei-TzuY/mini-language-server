@@ -357,3 +357,130 @@ def test_related_information_rejects_semantic_uri_mismatch() -> None:
             "other",
             semantic=semantic,
         )
+
+def test_ambiguous_workspace_call_relates_all_exact_candidate_definitions() -> None:
+    server = initialized_server(related_information=True)
+    first_uri = "file:///workspace/a.nova"
+    second_uri = "file:///workspace/b.nova"
+    caller_uri = "file:///workspace/main.nova"
+    open_nova(server, first_uri, "fn target() {}\n")
+    open_nova(server, second_uri, "😀\nfn target() {}\n")
+    server.drain_notifications()
+
+    open_nova(server, caller_uri, "fn main() { target() }\n")
+    notifications = [
+        item
+        for item in server.drain_notifications()
+        if item["method"] == "textDocument/publishDiagnostics"
+        and item["params"]["uri"] == caller_uri
+    ]
+    assert notifications
+    ambiguous = [
+        item
+        for item in notifications[-1]["params"]["diagnostics"]
+        if item.get("code") == "nova.ambiguous-function"
+    ]
+    assert len(ambiguous) == 1
+    assert ambiguous[0]["relatedInformation"] == [
+        {
+            "location": {
+                "uri": first_uri,
+                "range": {
+                    "start": {"line": 0, "character": 3},
+                    "end": {"line": 0, "character": 9},
+                },
+            },
+            "message": "candidate function declaration 'target' is here",
+        },
+        {
+            "location": {
+                "uri": second_uri,
+                "range": {
+                    "start": {"line": 1, "character": 3},
+                    "end": {"line": 1, "character": 9},
+                },
+            },
+            "message": "candidate function declaration 'target' is here",
+        },
+    ]
+
+    report = pull(server, caller_uri)["result"]
+    pulled = [
+        item
+        for item in report["items"]
+        if item.get("code") == "nova.ambiguous-function"
+    ]
+    assert pulled == ambiguous
+
+    internal = server.diagnostics.get(caller_uri)
+    assert internal is not None
+    relation_semantics = tuple(
+        related.semantic
+        for diagnostic in internal.diagnostics
+        if diagnostic.code == "nova.ambiguous-function"
+        for related in diagnostic.related_information
+    )
+    assert relation_semantics == (
+        server.semantics.get(first_uri),
+        server.semantics.get(second_uri),
+    )
+
+
+def test_workspace_ambiguity_relations_rebind_after_provider_change() -> None:
+    server = initialized_server(related_information=True)
+    first_uri = "file:///workspace/a.nova"
+    second_uri = "file:///workspace/b.nova"
+    caller_uri = "file:///workspace/main.nova"
+    open_nova(server, first_uri, "fn target() {}\n")
+    open_nova(server, second_uri, "fn target() {}\n")
+    open_nova(server, caller_uri, "fn main() { target() }\n")
+
+    before = server.diagnostics.get(caller_uri)
+    assert before is not None
+    assert any(
+        item.code == "nova.ambiguous-function"
+        and len(item.related_information) == 2
+        for item in before.diagnostics
+    )
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": second_uri, "version": 2},
+                "contentChanges": [{"text": "fn other() {}\n"}],
+            },
+        )
+    )
+
+    after = server.diagnostics.get(caller_uri)
+    assert after is not None
+    assert all(
+        item.code != "nova.ambiguous-function"
+        for item in after.diagnostics
+    )
+
+
+def test_same_version_target_semantic_replacement_stales_cross_file_relation() -> None:
+    server = initialized_server(related_information=True)
+    first_uri = "file:///workspace/a.nova"
+    second_uri = "file:///workspace/b.nova"
+    caller_uri = "file:///workspace/main.nova"
+    open_nova(server, first_uri, "fn target() {}\n")
+    open_nova(server, second_uri, "fn target() {}\n")
+    open_nova(server, caller_uri, "fn main() { target() }\n")
+
+    caller_snapshot = server.diagnostics.get(caller_uri)
+    second_document = server.documents.get(second_uri)
+    second_workspace = server.workspace_symbols.get(second_uri)
+    assert caller_snapshot is not None
+    assert second_document is not None
+    assert second_workspace is not None
+
+    replacement = server.nova_adapter.publish(server, second_document)
+    assert replacement is not second_workspace
+    assert replacement.version == second_workspace.version
+
+    assert server.diagnostics.get(caller_uri) is None
+    with pytest.raises(DiagnosticError, match="stale diagnostic snapshot"):
+        server.diagnostics.commit_if_current(caller_snapshot, lambda: None)
