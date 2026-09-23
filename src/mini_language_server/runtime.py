@@ -139,18 +139,19 @@ def run_session(
 
     Framing stays on one background reader. At most one ordinary client request executes
     on a request worker. While that request is active, document lifecycle mutations,
-    workspace-folder scope changes, formatting-configuration invalidation, and one
-    causally safe terminal shutdown request may advance on the foreground dispatcher;
+    workspace-folder scope changes, formatting-configuration invalidation, responses
+    to already-delivered server-to-client requests, and one causally safe terminal
+    shutdown request may advance on the foreground dispatcher;
     all other ordinary inbound client requests and lifecycle traffic remain deferred in
     FIFO order. Shutdown may overtake only deferred ordinary client requests: an
     earlier deferred server response/lifecycle frame, or a live snapshot mutation
     already applied to the active generation, preserves the older transport outcome.
     A live shutdown retires the worker generation immediately but delays its own
     response until that worker has cooperatively produced a cancellation completion.
-    Live snapshot/configuration
-    mutations may overtake queued requests while the active request runs, so exact
-    document, workspace, and save-formatting guards can observe transport-time changes
-    without introducing parallel client-request execution.
+    Live snapshot/configuration mutations and delivered server-request responses may
+    overtake queued ordinary requests while the active request runs, so exact document,
+    workspace, save-formatting, and bidirectional request dependencies can observe
+    transport-time changes without introducing parallel client-request execution.
     """
     active_server = server if server is not None else NovaProductLanguageServer()
     reader = MessageReader(input_stream)
@@ -305,6 +306,23 @@ def run_session(
         replay_controls()
 
         if active_request_thread is not None:
+            if (
+                active_server.state is ServerState.RUNNING
+                and active_server._can_dispatch_server_response_live(item)
+                and all(
+                    isinstance(deferred_item, dict)
+                    and _is_worker_request(deferred_item, active_server.state)
+                    for deferred_item in deferred
+                )
+            ):
+                response = dispatch_foreground(item)
+                assert response is None
+                replay_controls()
+                _write_batch(
+                    output_stream,
+                    _drain_after_dispatch(active_server, None),
+                )
+                continue
             if (
                 active_server.state is ServerState.RUNNING
                 and _is_shutdown_request(item)
