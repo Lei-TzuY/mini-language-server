@@ -25,7 +25,7 @@ def test_scan_closed_workspace_files_is_bounded_and_utf8_only(
     tmp_path: Path,
 ) -> None:
     good = tmp_path / "a.nova"
-    good.write_text("fn a() {}\n", encoding="utf-8")
+    good.write_bytes(b"fn a() {}\n")
     (tmp_path / "ignored.txt").write_text("fn ignored() {}\n", encoding="utf-8")
     (tmp_path / "large.nova").write_bytes(b"x" * 64)
     (tmp_path / "invalid.nova").write_bytes(b"\xff")
