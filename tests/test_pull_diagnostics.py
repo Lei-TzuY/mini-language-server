@@ -600,3 +600,88 @@ def test_workspace_diagnostics_reject_workspace_folder_generation_change(
         "id": 20,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+def test_workspace_diagnostics_reject_new_in_scope_document_after_capture(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize_with_workspace_folder(server)
+    first_uri = "file:///workspace/a/first.nova"
+    second_uri = "file:///workspace/a/second.nova"
+    open_document(server, first_uri, "fn first() {}\n")
+    real_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def open_before_publication(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        real_checkpoint(context)
+        if calls == 3:
+            open_document(server, second_uri, "fn second() {}\n")
+
+    monkeypatch.setattr(server.requests, "checkpoint", open_before_publication)
+
+    assert workspace_diagnostics(server) == {
+        "jsonrpc": "2.0",
+        "id": 20,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+
+def test_workspace_diagnostics_ignore_new_out_of_scope_document_after_capture(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize_with_workspace_folder(server)
+    in_scope = "file:///workspace/a/main.nova"
+    outside = "file:///workspace/b/other.nova"
+    open_document(server, in_scope, "fn main() {}\n")
+    real_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def open_before_publication(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        real_checkpoint(context)
+        if calls == 3:
+            open_document(server, outside, "fn outside() {}\n")
+
+    monkeypatch.setattr(server.requests, "checkpoint", open_before_publication)
+
+    response = workspace_diagnostics(server)
+    assert response["result"]["items"] == [
+        {
+            "uri": in_scope,
+            "version": 1,
+            "kind": "full",
+            "resultId": response["result"]["items"][0]["resultId"],
+            "items": [],
+        }
+    ]
+
+
+def test_unscoped_workspace_diagnostics_reject_new_document_after_capture(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    first_uri = "file:///workspace/first.nova"
+    second_uri = "file:///workspace/second.nova"
+    open_document(server, first_uri, "fn first() {}\n")
+    real_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def open_before_publication(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        real_checkpoint(context)
+        if calls == 3:
+            open_document(server, second_uri, "fn second() {}\n")
+
+    monkeypatch.setattr(server.requests, "checkpoint", open_before_publication)
+
+    assert workspace_diagnostics(server) == {
+        "jsonrpc": "2.0",
+        "id": 20,
+        "error": {"code": -32801, "message": "Content modified"},
+    }

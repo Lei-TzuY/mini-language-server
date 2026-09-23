@@ -191,8 +191,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         try:
             self.requests.checkpoint(context)
-            folder_generation = self.workspace_folders.generation
-            documents = self._workspace_documents()
+            folder_scope = self.workspace_folders.snapshot()
+            documents = self._workspace_documents(folder_scope)
             reports: list[dict[str, Any]] = []
             diagnostic_snapshots: list[DiagnosticSnapshot] = []
             for document in documents:
@@ -213,9 +213,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             self.requests.checkpoint(context)
             try:
                 return self.workspace_folders.commit_if_current(
-                    folder_generation,
-                    lambda: self.documents.commit_subset_if_current(
+                    folder_scope.generation,
+                    lambda: self.documents.commit_matching_if_current(
                         documents,
+                        lambda document: folder_scope.contains(document.uri),
                         lambda: self.diagnostics.commit_all_if_current(
                             diagnostic_snapshots,
                             lambda: self._result(request_id, {"items": reports}),

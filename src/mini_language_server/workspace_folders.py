@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import urllib.parse
+from dataclasses import dataclass
 
 
 class WorkspaceFolderError(ValueError):
@@ -42,6 +43,23 @@ class WorkspaceFolder:
         return hash((self.uri, self.name))
 
 
+@dataclass(frozen=True, slots=True)
+class WorkspaceFolderSnapshot:
+    """Immutable workspace-folder scope capture for exact derived queries."""
+
+    scoped: bool
+    folders: tuple[WorkspaceFolder, ...]
+    generation: int
+
+    def contains(self, uri: str) -> bool:
+        if not self.scoped:
+            return True
+        return any(
+            WorkspaceFolderSet._contains(folder.uri, uri)
+            for folder in self.folders
+        )
+
+
 class WorkspaceFolderSet:
     """Track one session workspace-folder scope.
 
@@ -70,6 +88,17 @@ class WorkspaceFolderSet:
             if self._folders is None:
                 return ()
             return tuple(self._folders[uri] for uri in sorted(self._folders))
+
+    def snapshot(self) -> WorkspaceFolderSnapshot:
+        """Capture one immutable scope/generation view for derived workspace work."""
+        with self._lock:
+            scoped = self._folders is not None
+            folders = (
+                ()
+                if self._folders is None
+                else tuple(self._folders[uri] for uri in sorted(self._folders))
+            )
+            return WorkspaceFolderSnapshot(scoped, folders, self._generation)
 
     def configure(self, params: object) -> None:
         """Initialize scope from workspaceFolders with rootUri fallback."""
@@ -129,11 +158,7 @@ class WorkspaceFolderSet:
             return False
 
     def contains(self, uri: str) -> bool:
-        with self._lock:
-            if self._folders is None:
-                return True
-            folders = tuple(self._folders.values())
-        return any(self._contains(folder.uri, uri) for folder in folders)
+        return self.snapshot().contains(uri)
 
     def scope_uri_for(self, uri: str) -> str | None:
         """Return the most specific configured workspace folder containing the URI."""

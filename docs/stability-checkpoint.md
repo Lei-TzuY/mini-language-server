@@ -19,7 +19,7 @@ The checkpoint covers:
 11. workspace-folder scope generations for cross-file tooling
 12. stale-result suppression across concurrent document, semantic, and workspace-scope replacement
 
-The core invariant is generational identity: a derived result is valid only while the exact parent snapshot that produced it remains current. Structural equality or a matching numeric document version is not enough. Workspace-wide derived results that capture the complete semantic workspace must also reject publication when a URI is added, removed, or leaves/re-enters workspace-folder scope after capture, even if every previously captured snapshot object remains current.
+The core invariant is generational identity: a derived result is valid only while the exact parent snapshot that produced it remains current. Structural equality or a matching numeric document version is not enough. Workspace-wide derived results that capture a complete semantic or scoped open-document workspace must also reject publication when a relevant URI is added, removed, or leaves/re-enters workspace-folder scope after capture, even if every previously captured snapshot object remains current. Scoped queries may ignore mutations to documents that were outside the captured scope.
 
 ## Responsibility boundaries
 
