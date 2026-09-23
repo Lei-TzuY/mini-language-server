@@ -20,6 +20,80 @@ _BOOLEAN_LITERALS = frozenset({"true", "false"})
 class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageServer):
     """Final product server with bounded exact-workspace call type checking."""
 
+    def _closed_workspace_product_diagnostics(
+        self,
+        snapshot: Any,
+        functions: dict[str, list[tuple[Any, Any]]],
+    ) -> tuple[Diagnostic, ...]:
+        """Add literal argument-type diagnostics from one captured workspace set."""
+        diagnostics = list(
+            super()._closed_workspace_product_diagnostics(snapshot, functions)
+        )
+        tree = snapshot.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return tuple(diagnostics)
+
+        text = snapshot.symbols.syntax.document.text
+        for name, span in tree.calls:
+            candidates = functions.get(name, [])
+            if len(candidates) != 1:
+                continue
+
+            candidate_snapshot, candidate_symbol = candidates[0]
+            expected_types = self._closed_function_parameter_types(
+                candidate_snapshot,
+                candidate_symbol.span,
+            )
+            parsed = self._call_argument_spans(text, span.end)
+            if parsed is None:
+                continue
+            arguments = parsed[2]
+            if len(arguments) != len(expected_types):
+                continue
+
+            for index, (expected_type, argument) in enumerate(
+                zip(expected_types, arguments, strict=True),
+                start=1,
+            ):
+                if expected_type is None:
+                    continue
+                actual_type = self._literal_type(
+                    text[argument.start : argument.end]
+                )
+                if actual_type is None or actual_type == expected_type:
+                    continue
+                diagnostics.append(
+                    Diagnostic(
+                        argument,
+                        (
+                            f"argument {index} to '{name}' has type "
+                            f"'{actual_type}'; expected '{expected_type}'"
+                        ),
+                        code="nova.argument-type",
+                        source="nova",
+                    )
+                )
+        return tuple(diagnostics)
+
+    @classmethod
+    def _closed_function_parameter_types(
+        cls,
+        snapshot: Any,
+        owner: Span,
+    ) -> tuple[str | None, ...]:
+        """Parse explicit parameter types from one captured declaration snapshot."""
+        text = snapshot.symbols.syntax.document.text
+        start = text.rfind("fn", 0, owner.start)
+        opening = text.find("{", owner.end)
+        if start < 0 or opening < 0 or text[start + 2 : owner.start].strip():
+            return ()
+        signature = text[start:opening].strip()
+        result: list[str | None] = []
+        for parameter in cls._signature_parameters(signature):
+            _, separator, type_name = parameter.partition(":")
+            result.append(type_name.strip() if separator else None)
+        return tuple(result)
+
     def _publish_workspace_diagnostics(self) -> bool:
         """Publish exact-workspace diagnostics and report whether the exact commit won."""
         snapshots = self.workspace_symbols.snapshots()
