@@ -258,6 +258,7 @@ def run_session(
                     item.error is not None
                     and not isinstance(item.error, RequestCancelled)
                 ):
+                    active_server._set_server_request_outbox_wakeup(None)
                     raise item.error
                 active_server._set_server_request_outbox_wakeup(None)
                 reader_thread.join()
@@ -267,6 +268,7 @@ def run_session(
                     item.error is not None
                     and not isinstance(item.error, RequestCancelled)
                 ):
+                    active_server._set_server_request_outbox_wakeup(None)
                     raise item.error
                 cancelled_response: dict[str, object] = {
                     "jsonrpc": "2.0",
@@ -289,6 +291,7 @@ def run_session(
                 continue
             replay_controls()
             if item.error is not None:
+                active_server._set_server_request_outbox_wakeup(None)
                 raise item.error
             _write_batch(
                 output_stream,
