@@ -197,8 +197,8 @@ def test_push_diagnostics_omit_version_without_client_support() -> None:
         "diagnostics": [
             {
                 "range": {
-                    "start": {"line": 0, "character": 4},
-                    "end": {"line": 0, "character": 7},
+                    "start": {"line": 0, "character": 5},
+                    "end": {"line": 0, "character": 8},
                 },
                 "severity": 1,
                 "message": "current",
