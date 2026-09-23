@@ -17,10 +17,20 @@ def notification(method: str, params: object | None = None) -> dict:
     return message
 
 
-def initialize(server: NovaProductLanguageServer, *, supported: bool = True) -> dict:
-    text_document = {"rangeFormatting": {}} if supported else {}
+def initialize(
+    server: NovaProductLanguageServer,
+    *,
+    supported: bool = True,
+    multiple: bool = False,
+    position_encoding: str | None = None,
+) -> dict:
+    range_formatting = {"rangesSupport": True} if multiple else {}
+    text_document = {"rangeFormatting": range_formatting} if supported else {}
+    capabilities: dict[str, Any] = {"textDocument": text_document}
+    if position_encoding is not None:
+        capabilities["general"] = {"positionEncodings": [position_encoding]}
     response = server.handle(
-        request("initialize", params={"capabilities": {"textDocument": text_document}})
+        request("initialize", params={"capabilities": capabilities})
     )
     assert response is not None
     return response
@@ -70,6 +80,34 @@ def range_formatting(
     )
 
 
+def ranges_formatting(
+    server: NovaProductLanguageServer,
+    uri: str,
+    ranges: list[tuple[tuple[int, int], tuple[int, int]]],
+    *,
+    request_id: int = 2,
+    tab_size: int = 2,
+    insert_spaces: bool = True,
+):
+    return server.handle(
+        request(
+            "textDocument/rangesFormatting",
+            request_id=request_id,
+            params={
+                "textDocument": {"uri": uri},
+                "ranges": [
+                    {
+                        "start": {"line": start[0], "character": start[1]},
+                        "end": {"line": end[0], "character": end[1]},
+                    }
+                    for start, end in ranges
+                ],
+                "options": {"tabSize": tab_size, "insertSpaces": insert_spaces},
+            },
+        )
+    )
+
+
 def test_range_formatting_capability_is_negotiated() -> None:
     supported = NovaProductLanguageServer()
     assert (
@@ -78,6 +116,11 @@ def test_range_formatting_capability_is_negotiated() -> None:
         ]
         is True
     )
+
+    multi = NovaProductLanguageServer()
+    assert initialize(multi, multiple=True)["result"]["capabilities"][
+        "documentRangeFormattingProvider"
+    ] == {"rangesSupport": True}
 
     unsupported = NovaProductLanguageServer()
     response = initialize(unsupported, supported=False)
@@ -231,6 +274,226 @@ def test_range_formatting_honors_cancellation(monkeypatch: Any) -> None:
 
     monkeypatch.setattr(server.requests, "checkpoint", cancel_before_checkpoint)
     assert range_formatting(server, uri, start=(1, 0), end=(1, 13)) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
+
+
+def test_ranges_formatting_formats_disjoint_ranges_in_one_snapshot() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, multiple=True)
+    uri = "file:///workspace/main.nova"
+    text = (
+        "fn main() {\n"
+        "let first = 1\n"
+        "if (true) {\n"
+        "let nested = 2\n"
+        "}\n"
+        "let untouched = 3\n"
+        "}\n"
+    )
+    open_document(server, uri, text)
+
+    response = ranges_formatting(
+        server,
+        uri,
+        [
+            ((1, 0), (1, 13)),
+            ((3, 0), (3, 14)),
+        ],
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": [
+            {
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 1, "character": 0},
+                },
+                "newText": "  ",
+            },
+            {
+                "range": {
+                    "start": {"line": 3, "character": 0},
+                    "end": {"line": 3, "character": 0},
+                },
+                "newText": "    ",
+            },
+        ],
+    }
+
+
+def test_ranges_formatting_overlaps_do_not_duplicate_edits() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, multiple=True)
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "fn main() {\nlet value = 1\n}\n")
+
+    response = ranges_formatting(
+        server,
+        uri,
+        [
+            ((1, 0), (1, 13)),
+            ((0, 0), (2, 1)),
+            ((1, 0), (1, 13)),
+        ],
+    )
+
+    assert response is not None
+    assert response["result"] == [
+        {
+            "range": {
+                "start": {"line": 1, "character": 0},
+                "end": {"line": 1, "character": 0},
+            },
+            "newText": "  ",
+        }
+    ]
+
+
+def test_ranges_formatting_empty_ranges_is_a_valid_noop() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, multiple=True)
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "fn main() {\nlet value = 1\n}\n")
+
+    assert ranges_formatting(server, uri, []) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": [],
+    }
+
+
+def test_ranges_formatting_rejects_entire_request_when_one_range_is_invalid() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, multiple=True)
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "fn main() {\nlet value = 1\n}\n")
+
+    response = server.handle(
+        request(
+            "textDocument/rangesFormatting",
+            2,
+            {
+                "textDocument": {"uri": uri},
+                "ranges": [
+                    {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 1, "character": 13},
+                    },
+                    {
+                        "start": {"line": 99, "character": 0},
+                        "end": {"line": 99, "character": 1},
+                    },
+                ],
+                "options": {"tabSize": 2, "insertSpaces": True},
+            },
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32602, "message": "Invalid params"},
+    }
+
+
+def test_ranges_formatting_uses_negotiated_utf8_positions() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, multiple=True, position_encoding="utf-8")
+    uri = "file:///workspace/main.nova"
+    text = 'fn main() {\nhelper("😀")\n}\n'
+    open_document(server, uri, text)
+
+    response = ranges_formatting(
+        server,
+        uri,
+        [((1, 0), (1, 14))],
+    )
+
+    assert response is not None
+    assert response["result"] == [
+        {
+            "range": {
+                "start": {"line": 1, "character": 0},
+                "end": {"line": 1, "character": 0},
+            },
+            "newText": "  ",
+        }
+    ]
+
+
+def test_ranges_formatting_rejects_same_version_semantic_replacement(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, multiple=True)
+    uri = "file:///workspace/main.nova"
+    open_document(
+        server,
+        uri,
+        "fn current() {\nlet first = 1\nlet second = 2\n}\n",
+    )
+    original_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def replace_during_request(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        original_checkpoint(context)
+        if calls == 3:
+            document = server.documents.get(uri)
+            assert document is not None
+            server.nova_adapter.publish(server, document)
+
+    monkeypatch.setattr(server.requests, "checkpoint", replace_during_request)
+    assert ranges_formatting(
+        server,
+        uri,
+        [
+            ((1, 0), (1, 13)),
+            ((2, 0), (2, 14)),
+        ],
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+
+def test_ranges_formatting_honors_cancellation_between_ranges(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, multiple=True)
+    uri = "file:///workspace/main.nova"
+    open_document(
+        server,
+        uri,
+        "fn current() {\nlet first = 1\nlet second = 2\n}\n",
+    )
+    original_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def cancel_during_request(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            server.requests.cancel(context.request_id)
+        original_checkpoint(context)
+
+    monkeypatch.setattr(server.requests, "checkpoint", cancel_during_request)
+    assert ranges_formatting(
+        server,
+        uri,
+        [
+            ((1, 0), (1, 13)),
+            ((2, 0), (2, 14)),
+        ],
+    ) == {
         "jsonrpc": "2.0",
         "id": 2,
         "error": {"code": -32800, "message": "Request cancelled"},
