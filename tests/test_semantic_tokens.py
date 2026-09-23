@@ -593,3 +593,54 @@ def test_semantic_token_range_parses_utf8_positions() -> None:
         "id": 2,
         "result": {"data": [0, 4, 5, variable, 0]},
     }
+
+def test_semantic_tokens_use_negotiated_utf32_units() -> None:
+    server = LanguageServer()
+    initialize = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-32"]},
+                    "textDocument": {
+                        "semanticTokens": {"requests": {"full": True}}
+                    },
+                }
+            },
+        )
+    )
+    assert initialize is not None
+    assert initialize["result"]["capabilities"]["positionEncoding"] == "utf-32"
+
+    uri = "file:///workspace/utf32.nova"
+    server.handle(
+        notification(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "nova",
+                    "version": 1,
+                    "text": "😀alpha",
+                }
+            },
+        )
+    )
+    document = server.documents.get(uri)
+    assert document is not None
+    syntax = server.syntax.publish(document, tree=("module",))
+    symbols = server.symbols.publish(
+        syntax,
+        [Symbol("alpha", "variable", Span(1, 6))],
+    )
+    server.semantics.publish(symbols, [])
+
+    variable = TOKEN_TYPES.index("variable")
+    assert server.handle(
+        request("textDocument/semanticTokens/full", 2, token_params(uri))
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {"data": [0, 1, 5, variable, 0]},
+    }
