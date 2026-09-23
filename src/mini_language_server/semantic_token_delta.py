@@ -114,7 +114,7 @@ class SemanticTokenDeltaMixin:
         return self._result(request_id, {"resultId": result_id, "edits": edits})
 
     def _attach_semantic_token_result(
-        self, uri: str, identity: tuple[Any, Any] | None, response: dict[str, Any]
+        self, uri: str, identity: tuple[Any, Any, Any] | None, response: dict[str, Any]
     ) -> dict[str, Any]:
         result = response.get("result")
         if not isinstance(result, dict) or not isinstance(result.get("data"), list):
@@ -130,10 +130,20 @@ class SemanticTokenDeltaMixin:
         result["resultId"] = result_id
         return response
 
-    def _semantic_token_identity(self, uri: str | None) -> tuple[Any, Any] | None:
+    def _semantic_token_identity(
+        self, uri: str | None
+    ) -> tuple[Any, Any, Any] | None:
         if uri is None:
             return None
-        return self.documents.get(uri), self.semantics.get(uri)
+        return (
+            self.documents.get(uri),
+            self.semantics.get(uri),
+            self._semantic_token_dependency_identity(uri),
+        )
+
+    def _semantic_token_dependency_identity(self, uri: str) -> Any:
+        """Return extra exact dependencies that can change token output."""
+        return None
 
     def _next_semantic_token_result_id_locked(self) -> str:
         self._semantic_token_result_counter += 1
