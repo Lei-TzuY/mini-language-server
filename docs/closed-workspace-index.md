@@ -26,9 +26,9 @@ URI deduplication reuses the workspace-folder RFC-safe identity rules. Scheme/ho
 
 ## Refresh lifecycle
 
-A bounded filesystem scan runs after the LSP `initialized` notification when a workspace folder/root scope exists. The closed index is also reconciled after workspace-folder changes and `workspace/didRenameFiles`. `didClose` restores the single relinquished disk source directly.
+A bounded filesystem scan runs after the LSP `initialized` notification when a workspace folder/root scope exists. The closed index is also reconciled after workspace-folder changes and negotiated `workspace/didCreateFiles`, `workspace/didDeleteFiles`, and `workspace/didRenameFiles`. Create/delete notifications are validated as complete URI batches and only trigger a scan when at least one in-scope local `.nova` URI can affect the detached index. `didClose` restores the single relinquished disk source directly.
 
-The server does not watch the filesystem in this phase. External edits made after a scan remain outside the server-known workspace snapshot until one of those lifecycle transitions refreshes the index. Read-only tooling therefore describes the exact server-known indexed snapshot, not an unobserved later disk state.
+The server does not watch the filesystem in this phase. External edits made without a matching negotiated resource notification remain outside the server-known workspace snapshot until another documented lifecycle transition refreshes the index. Read-only tooling therefore describes the exact server-known indexed snapshot, not an unobserved later disk state.
 
 Source-mutating rename is stricter. Before publishing a WorkspaceEdit that was derived from detached sources, the server rereads every closed input and compares its current UTF-8 text with the captured snapshot. Drift refreshes the closed index and returns LSP `Content modified` instead of applying stale source ranges.
 
@@ -40,4 +40,4 @@ Legacy clients that do not negotiate `documentChanges` continue to receive the e
 
 ## Deliberate nonclaims
 
-This milestone is not a general filesystem service. It does not implement filesystem watchers, `workspace/didCreateFiles`, `workspace/didDeleteFiles`, closed-file diagnostics, remote workspace providers, symlink identity, module/import path rewriting, or permission/preflight guarantees for closed-file resource renames. Those are separate executable phases.
+This milestone is not a general filesystem service. It does not implement filesystem watchers, closed-file diagnostics, remote workspace providers, symlink identity, module/import path rewriting, or permission/preflight guarantees for closed-file resource renames. Those are separate executable phases.

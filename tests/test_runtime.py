@@ -14,7 +14,7 @@ from mini_language_server import (
     encode_message,
 )
 from mini_language_server.cancellation import RequestCancelled, StaleRequest
-from mini_language_server.runtime import run_session
+from mini_language_server.runtime import _is_live_snapshot_mutation, run_session
 from mini_language_server.workspace import WorkspaceIndexError
 from mini_language_server.workspace_folders import WorkspaceFolderError
 from mini_language_server.workspace_lsp import WorkspaceNovaLanguageServer
@@ -1667,3 +1667,21 @@ def test_stdout_failure_retires_worker_created_server_request() -> None:
     assert server.drain_server_requests() == []
     assert server.drain_notifications() == []
     assert server._server_request_outbox_wakeup is None
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "workspace/didCreateFiles",
+        "workspace/didDeleteFiles",
+    ],
+)
+def test_workspace_create_delete_notifications_are_live_snapshot_mutations(
+    method: str,
+) -> None:
+    assert _is_live_snapshot_mutation(
+        {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": {"files": [{"uri": "file:///workspace/helper.nova"}]},
+        }
+    )

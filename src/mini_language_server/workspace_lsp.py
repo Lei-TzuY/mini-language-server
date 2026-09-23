@@ -18,6 +18,7 @@ from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
 from .workspace_files import (
     ClosedWorkspaceFile,
     WorkspaceUriIdentity,
+    local_path_from_file_uri,
     read_closed_workspace_file,
     scan_closed_workspace_files,
 )
@@ -44,6 +45,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self.workspace_symbols = WorkspaceSymbolIndex()
         self.workspace_folders = WorkspaceFolderSet()
         self._workspace_folder_change_support = False
+        self._file_create_support = False
+        self._file_delete_support = False
         self._file_rename_support = False
         self._file_will_rename_support = False
         self._moniker_support = False
@@ -57,6 +60,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             self._workspace_folder_change_support = (
                 self._client_supports_workspace_folders(params)
             )
+            self._file_create_support = self._client_supports_file_create(params)
+            self._file_delete_support = self._client_supports_file_delete(params)
             self._file_rename_support = self._client_supports_file_rename(params)
             self._file_will_rename_support = (
                 self._client_supports_file_will_rename(params)
@@ -76,6 +81,24 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         ):
             if self._workspace_folder_change_support:
                 self._handle_workspace_folder_change(message.get("params"))
+            return None
+
+        if (
+            method == "workspace/didCreateFiles"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+        ):
+            if self._file_create_support:
+                self._handle_workspace_file_index_change(message.get("params"))
+            return None
+
+        if (
+            method == "workspace/didDeleteFiles"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+        ):
+            if self._file_delete_support:
+                self._handle_workspace_file_index_change(message.get("params"))
             return None
 
         if (
@@ -165,6 +188,36 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                             "supported": True,
                             "changeNotifications": True,
                         }
+                if self._file_create_support:
+                    workspace_capabilities = capabilities.setdefault("workspace", {})
+                    if isinstance(workspace_capabilities, dict):
+                        file_operations = workspace_capabilities.setdefault(
+                            "fileOperations", {}
+                        )
+                        if isinstance(file_operations, dict):
+                            file_operations["didCreate"] = {
+                                "filters": [
+                                    {
+                                        "scheme": "file",
+                                        "pattern": {"glob": "**/*.nova"},
+                                    }
+                                ]
+                            }
+                if self._file_delete_support:
+                    workspace_capabilities = capabilities.setdefault("workspace", {})
+                    if isinstance(workspace_capabilities, dict):
+                        file_operations = workspace_capabilities.setdefault(
+                            "fileOperations", {}
+                        )
+                        if isinstance(file_operations, dict):
+                            file_operations["didDelete"] = {
+                                "filters": [
+                                    {
+                                        "scheme": "file",
+                                        "pattern": {"glob": "**/*.nova"},
+                                    }
+                                ]
+                            }
                 if self._file_rename_support:
                     workspace_capabilities = capabilities.setdefault("workspace", {})
                     if isinstance(workspace_capabilities, dict):
@@ -289,6 +342,40 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return self._error(request_id, -32800, "Request cancelled")
         finally:
             self.requests.finish(context)
+
+    def _handle_workspace_file_index_change(self, params: Any) -> None:
+        """Reconcile detached Nova files after negotiated create/delete notifications."""
+        try:
+            uris = self._workspace_file_operation_uris(params)
+        except DocumentError:
+            return
+        if not any(self._workspace_file_affects_closed_index(uri) for uri in uris):
+            return
+        self._refresh_closed_workspace_files()
+
+    @staticmethod
+    def _workspace_file_operation_uris(params: Any) -> tuple[str, ...]:
+        if not isinstance(params, dict):
+            raise DocumentError("file operation params must be an object")
+        files = params.get("files")
+        if not isinstance(files, list):
+            raise DocumentError("file operation params must contain files")
+
+        uris: list[str] = []
+        for item in files:
+            if not isinstance(item, dict):
+                raise DocumentError("file operation entries must be objects")
+            uri = item.get("uri")
+            if not isinstance(uri, str) or not uri:
+                raise DocumentError("file operation entries require uri")
+            uris.append(uri)
+        return tuple(uris)
+
+    def _workspace_file_affects_closed_index(self, uri: str) -> bool:
+        if not self.workspace_folders.scoped or not self.workspace_folders.contains(uri):
+            return False
+        path = local_path_from_file_uri(uri)
+        return path is not None and path.suffix == ".nova"
 
     def _workspace_file_rename_pairs(
         self, params: Any
@@ -1459,6 +1546,38 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(text_document, dict):
             return False
         return isinstance(text_document.get("moniker"), dict)
+
+    @staticmethod
+    def _client_supports_file_create(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        file_operations = workspace.get("fileOperations")
+        return (
+            isinstance(file_operations, dict)
+            and file_operations.get("didCreate") is True
+        )
+
+    @staticmethod
+    def _client_supports_file_delete(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        file_operations = workspace.get("fileOperations")
+        return (
+            isinstance(file_operations, dict)
+            and file_operations.get("didDelete") is True
+        )
 
     @staticmethod
     def _client_supports_file_will_rename(params: Any) -> bool:

@@ -22,6 +22,8 @@ def initialize_workspace(
     root: Path,
     *,
     document_changes: bool = False,
+    did_create: bool = False,
+    did_delete: bool = False,
     did_rename: bool = False,
 ) -> None:
     workspace: dict = {
@@ -30,8 +32,15 @@ def initialize_workspace(
     }
     if document_changes:
         workspace["workspaceEdit"] = {"documentChanges": True}
+    file_operations: dict[str, bool] = {}
+    if did_create:
+        file_operations["didCreate"] = True
+    if did_delete:
+        file_operations["didDelete"] = True
     if did_rename:
-        workspace["fileOperations"] = {"didRename": True}
+        file_operations["didRename"] = True
+    if file_operations:
+        workspace["fileOperations"] = file_operations
 
     response = server.handle(
         request(
@@ -358,3 +367,180 @@ def test_product_rename_rejects_stale_closed_file_then_refreshes_index(
         for item in retry["result"]["documentChanges"]
     }
     assert versions == {caller_uri: 3, library_uri: None}
+
+def test_negotiated_create_delete_file_operations_advertise_nova_filters(
+    tmp_path: Path,
+) -> None:
+    server = WorkspaceNovaLanguageServer()
+    response = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "workspace": {
+                        "workspaceFolders": True,
+                        "fileOperations": {
+                            "didCreate": True,
+                            "didDelete": True,
+                        },
+                    }
+                },
+                "workspaceFolders": [
+                    {"uri": tmp_path.as_uri(), "name": "workspace"}
+                ],
+            },
+        )
+    )
+
+    assert response is not None
+    file_operations = response["result"]["capabilities"]["workspace"][
+        "fileOperations"
+    ]
+    expected = {
+        "filters": [
+            {
+                "scheme": "file",
+                "pattern": {"glob": "**/*.nova"},
+            }
+        ]
+    }
+    assert file_operations["didCreate"] == expected
+    assert file_operations["didDelete"] == expected
+    assert "didRename" not in file_operations
+
+
+def test_closed_file_create_notification_indexes_new_source(tmp_path: Path) -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize_workspace(server, tmp_path, did_create=True)
+
+    caller_uri = (tmp_path / "main.nova").absolute().as_uri()
+    caller_text = "fn main() { target() }\n"
+    open_nova(server, caller_uri, caller_text)
+    assert definition(server, caller_uri, caller_text, request_id=20)["result"] is None
+
+    created = tmp_path / "created.nova"
+    created.write_text("fn target() {}\n", encoding="utf-8")
+    created_uri = created.absolute().as_uri()
+    server.handle(
+        notify(
+            "workspace/didCreateFiles",
+            {"files": [{"uri": created_uri}]},
+        )
+    )
+
+    assert server.documents.get(created_uri) is None
+    assert server.workspace_symbols.get(created_uri) is not None
+    assert definition(server, caller_uri, caller_text, request_id=21)["result"][
+        "uri"
+    ] == created_uri
+
+
+def test_closed_file_delete_notification_removes_source(tmp_path: Path) -> None:
+    provider = tmp_path / "provider.nova"
+    provider.write_text("fn target() {}\n", encoding="utf-8")
+    server = WorkspaceNovaLanguageServer()
+    initialize_workspace(server, tmp_path, did_delete=True)
+
+    caller_uri = (tmp_path / "main.nova").absolute().as_uri()
+    caller_text = "fn main() { target() }\n"
+    open_nova(server, caller_uri, caller_text)
+    provider_uri = provider.absolute().as_uri()
+    assert definition(server, caller_uri, caller_text, request_id=22)["result"][
+        "uri"
+    ] == provider_uri
+
+    provider.unlink()
+    server.handle(
+        notify(
+            "workspace/didDeleteFiles",
+            {"files": [{"uri": provider_uri}]},
+        )
+    )
+
+    assert server.workspace_symbols.get(provider_uri) is None
+    assert definition(server, caller_uri, caller_text, request_id=23)["result"] is None
+
+
+def test_delete_notification_preserves_open_buffer_ownership(tmp_path: Path) -> None:
+    provider = tmp_path / "provider.nova"
+    provider.write_text("fn target() {}\n", encoding="utf-8")
+    server = WorkspaceNovaLanguageServer()
+    initialize_workspace(server, tmp_path, did_delete=True)
+
+    provider_uri = provider.absolute().as_uri()
+    open_nova(server, provider_uri, "fn target(flag: Bool) { flag }\n", version=7)
+    open_semantic = server.semantics.get(provider_uri)
+    assert open_semantic is not None
+    assert server.workspace_symbols.get(provider_uri) is open_semantic
+
+    provider.unlink()
+    server.handle(
+        notify(
+            "workspace/didDeleteFiles",
+            {"files": [{"uri": provider_uri}]},
+        )
+    )
+
+    assert server.documents.get(provider_uri) is not None
+    assert server.workspace_symbols.get(provider_uri) is open_semantic
+
+
+def test_unnegotiated_create_notification_does_not_rescan(tmp_path: Path) -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize_workspace(server, tmp_path)
+    before = server.workspace_symbols.snapshots()
+
+    created = tmp_path / "created.nova"
+    created.write_text("fn target() {}\n", encoding="utf-8")
+    created_uri = created.absolute().as_uri()
+    server.handle(
+        notify(
+            "workspace/didCreateFiles",
+            {"files": [{"uri": created_uri}]},
+        )
+    )
+
+    after = server.workspace_symbols.snapshots()
+    assert server.workspace_symbols.get(created_uri) is None
+    assert after.generation == before.generation
+    assert tuple(after) == tuple(before)
+
+
+def test_malformed_create_notification_does_not_rescan(tmp_path: Path) -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize_workspace(server, tmp_path, did_create=True)
+    before = server.workspace_symbols.snapshots()
+
+    created = tmp_path / "created.nova"
+    created.write_text("fn target() {}\n", encoding="utf-8")
+    server.handle(
+        notify(
+            "workspace/didCreateFiles",
+            {"files": [{"notUri": created.absolute().as_uri()}]},
+        )
+    )
+
+    after = server.workspace_symbols.snapshots()
+    assert server.workspace_symbols.get(created.absolute().as_uri()) is None
+    assert after.generation == before.generation
+    assert tuple(after) == tuple(before)
+
+
+def test_non_nova_create_notification_does_not_rescan(tmp_path: Path) -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize_workspace(server, tmp_path, did_create=True)
+    before = server.workspace_symbols.snapshots()
+
+    unrelated = tmp_path / "notes.txt"
+    unrelated.write_text("not nova\n", encoding="utf-8")
+    server.handle(
+        notify(
+            "workspace/didCreateFiles",
+            {"files": [{"uri": unrelated.absolute().as_uri()}]},
+        )
+    )
+
+    after = server.workspace_symbols.snapshots()
+    assert after.generation == before.generation
+    assert tuple(after) == tuple(before)
