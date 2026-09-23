@@ -313,3 +313,18 @@ def test_runtime_cancel_staged_before_request_start_does_not_poison_reused_id() 
     context = server.requests.start(2)
     assert context.cancelled is False
     assert server.requests.finish(context) is True
+
+class OSErrorStream(BytesIO):
+    def readline(self, size: int = -1) -> bytes:
+        raise OSError("stdin failed")
+
+
+def test_stdio_read_error_fails_closed_in_background_reader() -> None:
+    output_stream = BytesIO()
+
+    assert run_session(
+        OSErrorStream(),
+        output_stream,
+        server=LanguageServer(),
+    ) == 1
+    assert output_stream.getvalue() == b""
