@@ -31,6 +31,7 @@ def initialized_server(
     did_delete: bool = False,
     related_information: bool = False,
     refresh_support: bool = False,
+    tag_values: list[int] | None = None,
 ) -> NovaProductLanguageServer:
     server = NovaProductLanguageServer()
     workspace: dict[str, Any] = {"workspaceFolders": True}
@@ -45,8 +46,13 @@ def initialized_server(
         workspace["fileOperations"] = file_operations
 
     text_document: dict[str, Any] = {"diagnostic": {}}
+    publish_diagnostics: dict[str, Any] = {}
     if related_information:
-        text_document["publishDiagnostics"] = {"relatedInformation": True}
+        publish_diagnostics["relatedInformation"] = True
+    if tag_values is not None:
+        publish_diagnostics["tagSupport"] = {"valueSet": tag_values}
+    if publish_diagnostics:
+        text_document["publishDiagnostics"] = publish_diagnostics
 
     response = server.handle(
         request(
@@ -97,7 +103,7 @@ def test_closed_file_base_diagnostics_are_workspace_pull_only(
 ) -> None:
     source = tmp_path / "duplicate.nova"
     source.write_text("fn same() {} fn same() {}\n", encoding="utf-8")
-    server = initialized_server(tmp_path)
+    server = initialized_server(tmp_path, tag_values=[1])
     uri = source.absolute().as_uri()
 
     report = reports_by_uri(workspace_diagnostics(server))[uri]
@@ -2008,7 +2014,7 @@ def test_closed_unreachable_merges_constant_dead_branch_regions(
         "fn main() { if (false) { missing(); } let live: Int = 1; }\n",
         encoding="utf-8",
     )
-    server = initialized_server(tmp_path)
+    server = initialized_server(tmp_path, tag_values=[1])
 
     report = reports_by_uri(workspace_diagnostics(server))[
         source.absolute().as_uri()
