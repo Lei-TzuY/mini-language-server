@@ -24,12 +24,16 @@ def notify(method: str, params: dict[str, Any]) -> dict[str, Any]:
 def initialized_server(
     *,
     workspace_folders: list[dict[str, str]] | None = None,
+    will_rename: bool = False,
 ) -> NovaProductLanguageServer:
     server = NovaProductLanguageServer()
     params: dict[str, Any] = {
         "capabilities": {
             "workspace": {
-                "fileOperations": {"didRename": True},
+                "fileOperations": {
+                    "didRename": True,
+                    "willRename": will_rename,
+                },
                 "workspaceFolders": workspace_folders is not None,
             }
         }
@@ -47,6 +51,17 @@ def initialized_server(
             }
         ]
     }
+    if will_rename:
+        assert workspace["fileOperations"]["willRename"] == {
+            "filters": [
+                {
+                    "scheme": "file",
+                    "pattern": {"glob": "**/*.nova"},
+                }
+            ]
+        }
+    else:
+        assert "willRename" not in workspace["fileOperations"]
     return server
 
 
@@ -87,6 +102,25 @@ def definition(
             {
                 "textDocument": {"uri": uri},
                 "position": {"line": 0, "character": offset},
+            },
+        )
+    )
+
+
+def will_rename_files(
+    server: NovaProductLanguageServer,
+    *renames: tuple[str, str],
+    request_id: int = 20,
+):
+    return server.handle(
+        request(
+            "workspace/willRenameFiles",
+            request_id,
+            {
+                "files": [
+                    {"oldUri": old_uri, "newUri": new_uri}
+                    for old_uri, new_uri in renames
+                ]
             },
         )
     )
@@ -289,3 +323,160 @@ def test_file_rename_does_not_swallow_semantic_publication_invariant_failure(
 
     with pytest.raises(SemanticError, match="publication invariant failure"):
         rename_files(server, (old_uri, new_uri))
+
+def test_will_rename_preflights_valid_batch_without_mutating_state() -> None:
+    server = initialized_server(will_rename=True)
+    old_uri = "file:///workspace/helper.nova"
+    new_uri = "file:///workspace/renamed.nova"
+    open_nova(server, old_uri, "fn helper() {}\n", version=4)
+    previous_document = server.documents.get(old_uri)
+    previous_workspace = server.workspace_symbols.snapshots()
+    server.drain_notifications()
+
+    response = will_rename_files(server, (old_uri, new_uri), request_id=21)
+
+    assert response == {"jsonrpc": "2.0", "id": 21, "result": None}
+    assert server.documents.get(old_uri) is previous_document
+    assert server.documents.get(new_uri) is None
+    current_workspace = server.workspace_symbols.snapshots()
+    assert current_workspace.generation == previous_workspace.generation
+    assert tuple(current_workspace) == tuple(previous_workspace)
+    assert server.drain_notifications() == []
+
+
+def test_will_rename_rejects_open_destination_collision_without_mutation() -> None:
+    server = initialized_server(will_rename=True)
+    old_uri = "file:///workspace/helper.nova"
+    occupied_uri = "file:///workspace/occupied.nova"
+    open_nova(server, old_uri, "fn helper() {}\n")
+    open_nova(server, occupied_uri, "fn occupied() {}\n")
+    previous = server.documents.get(old_uri)
+    previous_workspace = server.workspace_symbols.snapshots()
+    server.drain_notifications()
+
+    response = will_rename_files(server, (old_uri, occupied_uri), request_id=22)
+
+    assert response is not None
+    assert response["error"]["code"] == -32803
+    assert "destination already open" in response["error"]["message"]
+    assert server.documents.get(old_uri) is previous
+    assert server.documents.get(occupied_uri) is not None
+    current_workspace = server.workspace_symbols.snapshots()
+    assert current_workspace.generation == previous_workspace.generation
+    assert tuple(current_workspace) == tuple(previous_workspace)
+    assert server.drain_notifications() == []
+
+
+def test_will_rename_rejects_duplicate_destination_batch() -> None:
+    server = initialized_server(will_rename=True)
+    first_uri = "file:///workspace/a.nova"
+    second_uri = "file:///workspace/b.nova"
+    target_uri = "file:///workspace/c.nova"
+    open_nova(server, first_uri, "fn a() {}\n")
+    open_nova(server, second_uri, "fn b() {}\n")
+
+    response = will_rename_files(
+        server,
+        (first_uri, target_uri),
+        (second_uri, target_uri),
+        request_id=23,
+    )
+
+    assert response is not None
+    assert response["error"]["code"] == -32803
+    assert "destinations must be unique" in response["error"]["message"]
+    assert server.documents.get(first_uri) is not None
+    assert server.documents.get(second_uri) is not None
+    assert server.documents.get(target_uri) is None
+
+
+def test_will_rename_malformed_params_are_invalid_without_mutation() -> None:
+    server = initialized_server(will_rename=True)
+    old_uri = "file:///workspace/a.nova"
+    open_nova(server, old_uri, "fn a() {}\n")
+    previous = server.documents.get(old_uri)
+
+    response = server.handle(
+        request(
+            "workspace/willRenameFiles",
+            24,
+            {"files": [{"oldUri": old_uri}]},
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 24,
+        "error": {"code": -32602, "message": "Invalid params"},
+    }
+    assert server.documents.get(old_uri) is previous
+
+
+def test_will_rename_is_independent_from_did_rename_negotiation() -> None:
+    server = NovaProductLanguageServer()
+    response = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "workspace": {
+                        "fileOperations": {
+                            "willRename": True,
+                            "didRename": False,
+                        }
+                    }
+                }
+            },
+        )
+    )
+    assert response is not None
+    operations = response["result"]["capabilities"]["workspace"]["fileOperations"]
+    assert "willRename" in operations
+    assert "didRename" not in operations
+
+    old_uri = "file:///workspace/a.nova"
+    new_uri = "file:///workspace/b.nova"
+    open_nova(server, old_uri, "fn a() {}\n")
+
+    preflight = will_rename_files(server, (old_uri, new_uri), request_id=25)
+    assert preflight == {"jsonrpc": "2.0", "id": 25, "result": None}
+
+    rename_files(server, (old_uri, new_uri))
+    assert server.documents.get(old_uri) is not None
+    assert server.documents.get(new_uri) is None
+
+
+def test_will_rename_rejects_document_identity_drift_at_publish_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = initialized_server(will_rename=True)
+    old_uri = "file:///workspace/a.nova"
+    new_uri = "file:///workspace/b.nova"
+    open_nova(server, old_uri, "fn a() {}\n", version=1)
+    original = server.documents.commit_matching_if_current
+
+    def replace_then_commit(documents, include, commit):
+        server.documents.replace(
+            uri=old_uri,
+            version=2,
+            text="fn a() { let value = 1; }\n",
+        )
+        return original(documents, include, commit)
+
+    monkeypatch.setattr(
+        server.documents,
+        "commit_matching_if_current",
+        replace_then_commit,
+    )
+
+    response = will_rename_files(server, (old_uri, new_uri), request_id=26)
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 26,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    current = server.documents.get(old_uri)
+    assert current is not None and current.version == 2
+    assert server.documents.get(new_uri) is None
