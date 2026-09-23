@@ -656,3 +656,33 @@ def test_closed_local_alias_cycle_remains_conservative(tmp_path: Path) -> None:
     ]
 
     assert all(item["code"] != "nova.argument-type" for item in report["items"])
+
+
+def test_closed_cross_file_target_uses_caller_parameter_reference_type(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        "fn target(value: String) {}\n",
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn caller(input: Int) { target(input); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        caller.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'target' has type 'Int'; expected 'String'",
+        )
+    ]
