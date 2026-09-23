@@ -4,8 +4,10 @@ from io import BytesIO
 from threading import Event
 from typing import Any
 
+import pytest
+
 from mini_language_server import LanguageServer, MessageReader, ServerState, encode_message
-from mini_language_server.cancellation import RequestCancelled
+from mini_language_server.cancellation import RequestCancelled, StaleRequest
 from mini_language_server.runtime import run_session
 
 
@@ -328,3 +330,154 @@ def test_stdio_read_error_fails_closed_in_background_reader() -> None:
         server=LanguageServer(),
     ) == 1
     assert output_stream.getvalue() == b""
+
+class LiveMutationServer(LanguageServer):
+    def __init__(self, uri: str) -> None:
+        super().__init__()
+        self.uri = uri
+        self.entered = Event()
+        self.changed = Event()
+        self.events: list[str] = []
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/snapshot"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            context = self.requests.start(message["id"], uri=self.uri)
+            try:
+                self.events.append("snapshot-start")
+                self.entered.set()
+                assert self.changed.wait(timeout=5)
+                self.requests.checkpoint(context)
+                raise AssertionError("stale request passed checkpoint")
+            except StaleRequest:
+                self.events.append("snapshot-stale")
+                return self._error(message["id"], -32801, "Content modified")
+            finally:
+                self.requests.finish(context)
+
+        if (
+            message.get("method") == "test/after"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            self.events.append("after")
+            return self._result(message["id"], {"ok": True})
+
+        response = super().handle(message)
+        if message.get("method") == "textDocument/didChange":
+            self.events.append("didChange")
+            self.changed.set()
+        return response
+
+
+def open_notification(uri: str, *, version: int, text: str) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": uri,
+                "languageId": "nova",
+                "version": version,
+                "text": text,
+            }
+        },
+    }
+
+
+def change_notification(uri: str, *, version: int, text: str) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": uri, "version": version},
+            "contentChanges": [{"text": text}],
+        },
+    }
+
+
+def test_runtime_dispatches_document_change_while_request_is_active() -> None:
+    uri = "file:///workspace/main.nova"
+    server = LiveMutationServer(uri)
+    first = framed(
+        initialize(),
+        open_notification(uri, version=1, text="fn main() {}\n"),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/snapshot",
+            "params": {},
+        },
+    )
+    tail = framed(
+        change_notification(uri, version=2, text="fn main() { let x = 1; }\n"),
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "test/after",
+            "params": {},
+        },
+        shutdown(4),
+        exit_notification(),
+    )
+    input_stream = GatedBytesIO(
+        first + tail,
+        gate_offset=len(first),
+        gate=server.entered,
+    )
+    output_stream = BytesIO()
+
+    assert run_session(input_stream, output_stream, server=server) == 0
+
+    messages = decoded(output_stream.getvalue())
+    assert [message.get("id") for message in messages if "id" in message] == [
+        1,
+        2,
+        3,
+        4,
+    ]
+    stale = next(message for message in messages if message.get("id") == 2)
+    assert stale == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert server.documents.get(uri) is not None
+    assert server.documents.get(uri).version == 2
+    assert server.events == [
+        "snapshot-start",
+        "didChange",
+        "snapshot-stale",
+        "after",
+    ]
+
+
+class WorkerFailureServer(LanguageServer):
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/explode"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            raise RuntimeError("worker exploded")
+        return super().handle(message)
+
+
+def test_runtime_propagates_worker_programming_errors() -> None:
+    input_stream = BytesIO(
+        framed(
+            initialize(),
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "test/explode",
+                "params": {},
+            },
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="worker exploded"):
+        run_session(input_stream, BytesIO(), server=WorkerFailureServer())
