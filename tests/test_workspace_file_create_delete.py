@@ -223,7 +223,7 @@ def test_malformed_create_batch_is_rejected_before_any_index_mutation(
     provider = tmp_path / "provider.nova"
     provider.write_bytes(b"fn target() {}\n")
     server = WorkspaceNovaLanguageServer()
-    initialize(server, tmp_path, did_create=True)
+    initialize(server, tmp_path, did_create=True, did_delete=True)
 
     # Remove the initial detached contribution so this notification is the only
     # possible source of a new workspace mutation.
