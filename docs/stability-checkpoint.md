@@ -15,7 +15,7 @@ The checkpoint covers:
 7. diagnostic publication and notification emission with negotiated push version/tag/related-location metadata
 8. definition/reference/rename queries
 9. request cancellation
-10. tracked server-to-client JSON-RPC requests, standard `$/progress` notifications, response retirement, and validated consumer response delivery
+10. tracked server-to-client JSON-RPC requests, standard `$/progress` partial-result and negotiated work-done lifecycles, response retirement, and validated consumer response delivery
 11. workspace-folder scope generations for cross-file tooling
 12. stale-result suppression across concurrent document, semantic, and workspace-scope replacement
 
