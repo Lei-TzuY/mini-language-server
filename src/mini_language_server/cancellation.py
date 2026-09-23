@@ -44,6 +44,7 @@ class RequestTracker:
     def __init__(self, documents: DocumentStore) -> None:
         self._documents = documents
         self._active: dict[str | int, RequestContext] = {}
+        self._staged_cancelled: set[str | int] = set()
         self._lock = RLock()
 
     def __len__(self) -> int:
@@ -51,10 +52,7 @@ class RequestTracker:
             return len(self._active)
 
     def start(self, request_id: Any, *, uri: str | None = None) -> RequestContext:
-        if not isinstance(request_id, str | int) or isinstance(request_id, bool):
-            raise RequestError("request id must be a string or integer")
-        if isinstance(request_id, str) and not request_id:
-            raise RequestError("request id must not be empty")
+        self._validate_request_id(request_id)
 
         document = None
         if uri is not None:
@@ -68,8 +66,35 @@ class RequestTracker:
         with self._lock:
             if request_id in self._active:
                 raise RequestError(f"request already active: {request_id!r}")
+            if request_id in self._staged_cancelled:
+                context._cancelled.set()
+                self._staged_cancelled.remove(request_id)
             self._active[request_id] = context
         return context
+
+    def stage_cancel(self, request_id: Any) -> None:
+        """Cancel now or mark one known transport-pending request generation.
+
+        This is intentionally separate from cancel: protocol cancellation of an
+        unknown id remains harmless and cannot poison a later id reuse. The stdio
+        runtime calls this only after it has already read the matching request frame.
+        """
+
+        self._validate_request_id(request_id)
+        with self._lock:
+            context = self._active.get(request_id)
+            if context is not None:
+                context._cancelled.set()
+                return
+            self._staged_cancelled.add(request_id)
+
+    def clear_staged_cancel(self, request_id: Any) -> None:
+        """Discard an unconsumed transport-stage cancellation after dispatch."""
+
+        if not isinstance(request_id, str | int) or isinstance(request_id, bool):
+            return
+        with self._lock:
+            self._staged_cancelled.discard(request_id)
 
     def cancel(self, request_id: Any) -> bool:
         """Cancel an active request; unknown/finished ids are harmless."""
@@ -87,6 +112,7 @@ class RequestTracker:
             for context in contexts:
                 context._cancelled.set()
             self._active.clear()
+            self._staged_cancelled.clear()
             return contexts
 
     def finish(self, context: RequestContext) -> bool:
@@ -110,6 +136,13 @@ class RequestTracker:
             raise StaleRequest(
                 f"request document snapshot is stale: {document.uri}@{document.version}"
             )
+
+    @staticmethod
+    def _validate_request_id(request_id: Any) -> None:
+        if not isinstance(request_id, str | int) or isinstance(request_id, bool):
+            raise RequestError("request id must be a string or integer")
+        if isinstance(request_id, str) and not request_id:
+            raise RequestError("request id must not be empty")
 
     def is_current(self, context: RequestContext) -> bool:
         try:
