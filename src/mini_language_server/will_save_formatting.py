@@ -135,6 +135,7 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
         ):
             return
         self._formatting_configuration_registration_attempted = True
+
         def own_registration(request_id: str) -> None:
             self._formatting_configuration_registration_request = request_id
 
