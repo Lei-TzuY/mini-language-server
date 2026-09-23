@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .diagnostics import Diagnostic
+from .diagnostics import Diagnostic, DiagnosticRelatedInformation
 from .inlay_hints import NovaProductLanguageServer as _NovaProductLanguageServer
 from .nova import NovaFunctionSyntax
 from .semantic_token_delta import SemanticTokenDeltaMixin
@@ -28,8 +28,8 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
                 continue
-            current = self.diagnostics.get(snapshot.uri)
-            if current is None or current.semantic is not snapshot:
+            current = self.diagnostics.get_primary_current(snapshot)
+            if current is None:
                 continue
             text = snapshot.symbols.syntax.document.text
             diagnostics = [
@@ -67,6 +67,15 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
                             f"ambiguous function call '{name}'",
                             code="nova.ambiguous-function",
                             source="nova",
+                            related_information=tuple(
+                                DiagnosticRelatedInformation(
+                                    declaration.uri,
+                                    declaration.symbol.span,
+                                    f"candidate function declaration '{name}' is here",
+                                    semantic=declaration.snapshot,
+                                )
+                                for declaration in declarations
+                            ),
                         )
                     )
                     continue

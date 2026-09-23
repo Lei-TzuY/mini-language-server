@@ -855,7 +855,17 @@ class LanguageServer:
         ):
             rendered["relatedInformation"] = [
                 {
-                    "location": self._location(related.uri, source, related.span),
+                    "location": self._location(
+                        related.uri,
+                        (
+                            source
+                            if related.semantic is None
+                            else self._source_text(
+                                related.semantic.symbols.syntax.document.text
+                            )
+                        ),
+                        related.span,
+                    ),
                     "message": related.message,
                 }
                 for related in diagnostic.related_information
