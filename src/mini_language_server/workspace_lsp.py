@@ -362,7 +362,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return []
 
         declaration = declarations[0]
-        if declaration.snapshot not in snapshots:
+        if not any(snapshot is declaration.snapshot for snapshot in snapshots):
             return []
         project_uri = folder_scope.scope_uri_for(declaration.uri)
         if project_uri is None:
