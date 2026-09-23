@@ -325,7 +325,7 @@ def test_product_rename_rejects_stale_closed_file_then_refreshes_index(
     tmp_path: Path,
 ) -> None:
     library = tmp_path / "library.nova"
-    library.write_text("fn target() {}\n", encoding="utf-8")
+    library.write_bytes(b"fn target() {}\n")
     server = NovaProductLanguageServer()
     initialize_workspace(server, tmp_path, document_changes=True)
 
@@ -333,7 +333,7 @@ def test_product_rename_rejects_stale_closed_file_then_refreshes_index(
     caller_text = "fn caller() { target() }\n"
     open_nova(server, caller_uri, caller_text, version=3)
 
-    library.write_text("// changed\nfn target() {}\n", encoding="utf-8")
+    library.write_bytes(b"// changed\nfn target() {}\n")
     params = {
         "textDocument": {"uri": caller_uri},
         "position": call_position(caller_text, "target"),
