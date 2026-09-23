@@ -6,7 +6,7 @@ from bisect import bisect_right
 from dataclasses import dataclass
 
 DEFAULT_POSITION_ENCODING = "utf-16"
-SUPPORTED_POSITION_ENCODINGS = ("utf-8", "utf-16")
+SUPPORTED_POSITION_ENCODINGS = ("utf-8", "utf-16", "utf-32")
 
 
 class SourceError(ValueError):
@@ -134,12 +134,16 @@ class SourceText:
     def _character_units(self, char: str) -> int:
         if self.position_encoding == "utf-16":
             return 2 if ord(char) > 0xFFFF else 1
-        return len(char.encode("utf-8"))
+        if self.position_encoding == "utf-8":
+            return len(char.encode("utf-8"))
+        return 1
 
     def _encoded_units(self, text: str) -> int:
         if self.position_encoding == "utf-16":
             return len(text.encode("utf-16-le")) // 2
-        return len(text.encode("utf-8"))
+        if self.position_encoding == "utf-8":
+            return len(text.encode("utf-8"))
+        return len(text)
 
     def _line_content_end(self, line: int) -> int:
         start = self._line_starts[line]
