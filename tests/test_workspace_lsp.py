@@ -592,3 +592,57 @@ def test_workspace_symbol_stale_commit_emits_no_partial_symbol_data(
         or notification.get("params", {}).get("token") != "symbols"
         for notification in notifications
     )
+
+def test_workspace_index_uses_canonical_folder_uri_identity() -> None:
+    server = WorkspaceNovaLanguageServer()
+    configured = "FILE://SERVER/work/%7eapp/"
+    initialize_with_folders(
+        server,
+        [{"uri": configured, "name": "app"}],
+    )
+
+    inside = "file://server/work/~app/main.nova"
+    outside = "file://server/work/app/main.nova"
+    open_nova(server, inside, "fn inside() {}\n")
+    open_nova(server, outside, "fn outside() {}\n")
+
+    result = server.handle(request("workspace/symbol", 90, {"query": ""}))
+    assert result is not None
+    assert [
+        (item["name"], item["location"]["uri"])
+        for item in result["result"]
+    ] == [("inside", inside)]
+
+
+def test_dynamic_folder_remove_accepts_canonical_equivalent_uri() -> None:
+    server = WorkspaceNovaLanguageServer()
+    configured = "FILE://SERVER/work/%7eapp/"
+    initialize_with_folders(
+        server,
+        [{"uri": configured, "name": "app"}],
+    )
+    inside = "file://server/work/~app/main.nova"
+    open_nova(server, inside, "fn inside() {}\n")
+    assert server.workspace_symbols.get(inside) is server.semantics.get(inside)
+
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [],
+                    "removed": [
+                        {
+                            "uri": "file://server/work/~app",
+                            "name": "app",
+                        }
+                    ],
+                }
+            },
+        )
+    )
+
+    assert server.workspace_symbols.get(inside) is None
+    result = server.handle(request("workspace/symbol", 91, {"query": ""}))
+    assert result is not None
+    assert result["result"] == []
