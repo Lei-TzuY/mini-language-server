@@ -35,9 +35,11 @@ Tracing observes real outbound cancellation notifications through the generic no
 
 ## Lifecycle retirement
 
-A successful client `shutdown` request is also a hard ownership boundary for server-initiated requests. Before the server enters the shutdown state, every pending server request is retired through the same cancellation hook used by supersession. Requests that already left the local outbox receive standard `$/cancelRequest`; requests still queued locally are retracted without fake protocol traffic. Consumer-owned per-request metadata is discarded at the same boundary.
+A successful client `shutdown` request is also a hard ownership boundary for server-initiated requests. The request outbox, pending-response map, cancellation, response retirement, and terminal close share one re-entrant lock. Shutdown closes the request channel under that lock before detaching pending ownership, so a late worker cannot enqueue a fresh request after retirement.
 
-After shutdown, response-shaped JSON-RPC messages are ignored even though response dispatch normally precedes method routing. A late result or error therefore cannot re-enter a consumer completion hook or mutate configuration/registration state after the server has acknowledged shutdown.
+Requests that already left the local outbox receive standard `$/cancelRequest`; requests still queued locally are retracted without fake protocol traffic. Consumer-owned per-request metadata is discarded while the same request lock still owns the transition. A concurrent client response either completes its consumer callback before shutdown acquires the lock, or loses ownership to terminal retirement and is ignored. The server therefore cannot acknowledge shutdown and then run an older response callback that mutates configuration or registration state.
+
+After the channel closes, `_queue_server_request(...)` returns `None` without allocating a request id, adding pending ownership, or emitting trace traffic. Consumers that persist per-request metadata record it only after a request id was accepted. Refresh consumers that do not need the id naturally become no-ops at the terminal boundary.
 
 An `exit` notification performs final local retirement without emitting new cancellation traffic because no further protocol exchange is expected. This also covers abnormal exit without a preceding shutdown.
 
