@@ -82,15 +82,17 @@ class LanguageServer:
 
         method = message["method"]
 
+        if self.state is ServerState.EXITED:
+            return None
+
         if method == "exit":
+            if is_request:
+                return self._error(request_id, -32600, "Exit must be a notification")
             self.requests.retire_all()
             self._retire_all_server_requests(cancel_remote=False)
             self._close_notification_outbox()
             self.exit_code = 0 if self.state is ServerState.SHUTDOWN else 1
             self.state = ServerState.EXITED
-            return None
-
-        if self.state is ServerState.EXITED:
             return None
 
         if self.state is ServerState.PRE_INITIALIZE:
@@ -173,6 +175,12 @@ class LanguageServer:
             return self._error(request_id, -32600, "Server has shut down") if is_request else None
 
         if method == "initialized":
+            if is_request:
+                return self._error(
+                    request_id,
+                    -32600,
+                    "Initialized must be a notification",
+                )
             return None
 
         if not is_request and method == "$/cancelRequest":
