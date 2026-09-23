@@ -20,6 +20,14 @@ When support is absent or false, the protocol payload omits `relatedInformation`
 
 Pull diagnostic result IDs hash related URI/span/message values, so adding or removing related locations changes semantic result identity even for a client that cannot render them.
 
+## Pull diagnostic related documents
+
+For `textDocument/diagnostic`, exact cross-file semantic parents also define the direct LSP `relatedDocuments` dependency set. The primary document keeps its normal `previousResultId` full/unchanged behavior. Each direct related document is returned as a deterministic full diagnostic report because the request carries no previous result ID for those dependency reports.
+
+Related-document reports are rendered from each dependency's own exact document/diagnostic snapshot and use the same negotiated position encoding as ordinary pull diagnostics. The final response is committed only while the primary document, every direct related document, the primary diagnostic snapshot, and every available related diagnostic snapshot remain exact-current. A dependency edit during render or before commit therefore fails the whole request with `Content modified` instead of mixing generations.
+
+Only direct cross-file parents are exposed. A related document's own dependencies are not recursively nested into the primary response; clients can pull those documents independently if needed.
+
 ## Nova duplicate declarations
 
 Nova duplicate function, parameter, and local diagnostics attach all other declarations in the same duplicate group as related information. Exact-workspace `nova.ambiguous-function` diagnostics also attach every candidate function declaration, including candidates in other open workspace files.
