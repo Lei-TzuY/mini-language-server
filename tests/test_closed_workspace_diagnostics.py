@@ -2089,3 +2089,148 @@ def test_closed_unreachable_inferred_never_is_transitive_and_cycle_safe(
     assert [item["message"] for item in unreachable] == [
         "unreachable code after never-returning call"
     ]
+
+
+def test_closed_uninitialized_read_tracks_direct_assignment(tmp_path: Path) -> None:
+    invalid = tmp_path / "invalid.nova"
+    valid = tmp_path / "valid.nova"
+    invalid.write_text(
+        "fn main() { var value: Int; let copy = value; }\n",
+        encoding="utf-8",
+    )
+    valid.write_text(
+        "fn main() { var value: Int; value = 1; let copy = value; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    reports = reports_by_uri(workspace_diagnostics(server))
+    invalid_items = reports[invalid.absolute().as_uri()]["items"]
+    valid_items = reports[valid.absolute().as_uri()]["items"]
+
+    assert [item["code"] for item in invalid_items if item["code"] == "nova.uninitialized-read"] == [
+        "nova.uninitialized-read"
+    ]
+    assert all(item["code"] != "nova.uninitialized-read" for item in valid_items)
+
+
+def test_closed_definite_initialization_reuses_nested_if_else_join(
+    tmp_path: Path,
+) -> None:
+    complete = tmp_path / "complete.nova"
+    incomplete = tmp_path / "incomplete.nova"
+    complete.write_text(
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { value = 1; } else { value = 2; } "
+        "let copy = value; }\n",
+        encoding="utf-8",
+    )
+    incomplete.write_text(
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { value = 1; } let copy = value; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    reports = reports_by_uri(workspace_diagnostics(server))
+    assert all(
+        item["code"] != "nova.uninitialized-read"
+        for item in reports[complete.absolute().as_uri()]["items"]
+    )
+    reads = [
+        item
+        for item in reports[incomplete.absolute().as_uri()]["items"]
+        if item["code"] == "nova.uninitialized-read"
+    ]
+    assert len(reads) == 1
+    assert reads[0]["message"] == "local 'value' is read before its first assignment"
+
+
+def test_closed_definite_initialization_reuses_loop_exit_join(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "loop.nova"
+    source.write_text(
+        "fn main(flag: Bool) { var value: Int; while (true) { "
+        "if flag { continue; } else { value = 1; } "
+        "let copy = value; break; } }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+    assert all(
+        item["code"] != "nova.uninitialized-read"
+        for item in report["items"]
+    )
+
+
+def test_closed_definite_initialization_uses_cross_file_never_effect(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        "fn halt() -> ! { while (true) { continue; } }\n",
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { halt(); } else { value = 1; } "
+        "let copy = value; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    caller_uri = caller.absolute().as_uri()
+
+    first = reports_by_uri(workspace_diagnostics(server))[caller_uri]
+    assert all(
+        item["code"] != "nova.uninitialized-read"
+        for item in first["items"]
+    )
+
+    provider.write_text(
+        "fn halt() -> Unit { return (); }\n",
+        encoding="utf-8",
+    )
+    assert server._sync_closed_workspace_files() is True
+
+    second = reports_by_uri(
+        workspace_diagnostics(server, request_id=3)
+    )[caller_uri]
+    reads = [
+        item
+        for item in second["items"]
+        if item["code"] == "nova.uninitialized-read"
+    ]
+    assert len(reads) == 1
+
+
+def test_closed_definite_initialization_inferred_never_is_cycle_safe(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "effects.nova"
+    source.write_text(
+        "fn halt() { while (true) { continue; } } "
+        "fn wrapper() { halt(); } "
+        "fn left() { right(); } fn right() { left(); } "
+        "fn good(flag: Bool) { var value: Int; "
+        "if flag { wrapper(); } else { value = 1; } let copy = value; } "
+        "fn conservative(flag: Bool) { var value: Int; "
+        "if flag { left(); } else { value = 1; } let copy = value; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+    reads = [
+        item
+        for item in report["items"]
+        if item["code"] == "nova.uninitialized-read"
+    ]
+    assert len(reads) == 1
+    assert reads[0]["message"] == "local 'value' is read before its first assignment"
