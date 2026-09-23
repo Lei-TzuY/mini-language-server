@@ -128,9 +128,10 @@ def run_session(
     Framing stays on one background reader. At most one ordinary client request executes
     on a request worker. While that request is active, only didOpen/didChange/didClose
     notifications may advance on the foreground dispatcher; all other ordinary inbound
-    traffic remains deferred in FIFO order. This lets exact snapshot guards observe real
-    transport-time document mutation without introducing parallel request execution or
-    parallel lifecycle/workspace mutation.
+    client requests and lifecycle traffic remain deferred in FIFO order. Live document
+    mutations may overtake queued requests while the active request runs, so exact
+    snapshot guards can observe transport-time version changes without introducing
+    parallel request execution or parallel lifecycle/workspace mutation.
     """
     active_server = server if server is not None else NovaProductLanguageServer()
     reader = MessageReader(input_stream)
@@ -247,7 +248,7 @@ def run_session(
         replay_controls()
 
         if active_request_thread is not None:
-            if not deferred and _is_live_document_mutation(item):
+            if _is_live_document_mutation(item):
                 response = dispatch_foreground(item)
                 replay_controls()
                 _write_batch(
