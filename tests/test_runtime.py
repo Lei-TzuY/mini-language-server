@@ -21,7 +21,11 @@ def decoded(payload: bytes) -> list[dict[str, Any]]:
         messages.append(message)
 
 
-def initialize(request_id: int = 1, *, capabilities: dict[str, Any] | None = None) -> dict[str, Any]:
+def initialize(
+    request_id: int = 1,
+    *,
+    capabilities: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
         "id": request_id,
