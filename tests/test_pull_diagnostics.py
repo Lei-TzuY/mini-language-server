@@ -23,6 +23,7 @@ def initialize(
     *,
     supported: bool = True,
     refresh_support: bool = False,
+    work_done_progress: bool = False,
 ) -> dict:
     text_document = {"diagnostic": {}} if supported else {}
     workspace = (
@@ -30,15 +31,16 @@ def initialize(
         if refresh_support
         else {}
     )
+    capabilities: dict[str, Any] = {
+        "textDocument": text_document,
+        "workspace": workspace,
+    }
+    if work_done_progress:
+        capabilities["window"] = {"workDoneProgress": True}
     response = server.handle(
         request(
             "initialize",
-            params={
-                "capabilities": {
-                    "textDocument": text_document,
-                    "workspace": workspace,
-                }
-            },
+            params={"capabilities": capabilities},
         )
     )
     assert response is not None
@@ -87,10 +89,13 @@ def workspace_diagnostics(
     request_id: int = 20,
     previous_result_ids: list[dict[str, str]] | None = None,
     partial_result_token: str | int | None = None,
+    work_done_token: str | int | None = None,
 ) -> dict:
     params: dict[str, Any] = {"previousResultIds": previous_result_ids or []}
     if partial_result_token is not None:
         params["partialResultToken"] = partial_result_token
+    if work_done_token is not None:
+        params["workDoneToken"] = work_done_token
     response = server.handle(
         request(
             "workspace/diagnostic",
