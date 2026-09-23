@@ -387,7 +387,6 @@ def test_open_buffer_takes_over_closed_quick_fix_version_ownership(
     server = initialized_server(
         tmp_path,
         document_changes=True,
-        tag_values=[1],
     )
     uri = source.absolute().as_uri()
 
@@ -890,7 +889,11 @@ def test_closed_unreachable_removal_uses_null_version(tmp_path: Path) -> None:
     source = tmp_path / "dead.nova"
     text = "fn value() -> Int { return 1; let dead: Int = 2; }\n"
     source.write_text(text, encoding="utf-8")
-    server = initialized_server(tmp_path, document_changes=True)
+    server = initialized_server(
+        tmp_path,
+        document_changes=True,
+        tag_values=[1],
+    )
     uri = source.absolute().as_uri()
     dead_start = text.index("let dead")
     dead_end = dead_start + len("let dead: Int = 2;")
