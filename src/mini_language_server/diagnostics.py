@@ -19,6 +19,29 @@ DIAGNOSTIC_TAG_VALUES = {"unnecessary": 1, "deprecated": 2}
 
 
 @dataclass(frozen=True, slots=True)
+class DiagnosticRelatedInformation:
+    """A same-snapshot source location related to one diagnostic."""
+
+    uri: str
+    span: Span
+    message: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.uri, str) or not self.uri:
+            raise DiagnosticError(
+                "diagnostic related-information URI must be a non-empty string"
+            )
+        if not isinstance(self.span, Span):
+            raise DiagnosticError(
+                "diagnostic related-information span must be a Span"
+            )
+        if not isinstance(self.message, str) or not self.message:
+            raise DiagnosticError(
+                "diagnostic related-information message must be a non-empty string"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class Diagnostic:
     """A language-independent diagnostic anchored to one source span."""
 
@@ -28,6 +51,7 @@ class Diagnostic:
     code: str | None = None
     source: str | None = None
     tags: tuple[str, ...] = ()
+    related_information: tuple[DiagnosticRelatedInformation, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.span, Span):
@@ -48,6 +72,18 @@ class Diagnostic:
             raise DiagnosticError("diagnostic tags must be unique")
         if any(tag not in DIAGNOSTIC_TAG_VALUES for tag in self.tags):
             raise DiagnosticError("unsupported diagnostic tag")
+        if not isinstance(self.related_information, tuple):
+            raise DiagnosticError("diagnostic related information must be a tuple")
+        if any(
+            not isinstance(item, DiagnosticRelatedInformation)
+            for item in self.related_information
+        ):
+            raise DiagnosticError(
+                "diagnostic related information must contain "
+                "DiagnosticRelatedInformation values"
+            )
+        if len(set(self.related_information)) != len(self.related_information):
+            raise DiagnosticError("diagnostic related information must be unique")
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +203,17 @@ class DiagnosticStore:
                     f"diagnostic span is outside {semantic.uri}: "
                     f"{diagnostic.span.end} > {text_length}"
                 )
+            for related in diagnostic.related_information:
+                if related.uri != semantic.uri:
+                    raise DiagnosticError(
+                        "diagnostic related information must reference "
+                        "the same semantic URI"
+                    )
+                if related.span.end > text_length:
+                    raise DiagnosticError(
+                        f"diagnostic related-information span is outside "
+                        f"{semantic.uri}: {related.span.end} > {text_length}"
+                    )
 
         ordered = tuple(
             sorted(
@@ -179,6 +226,15 @@ class DiagnosticStore:
                     diagnostic.code or "",
                     diagnostic.source or "",
                     diagnostic.tags,
+                    tuple(
+                        (
+                            related.uri,
+                            related.span.start,
+                            related.span.end,
+                            related.message,
+                        )
+                        for related in diagnostic.related_information
+                    ),
                 ),
             )
         )
