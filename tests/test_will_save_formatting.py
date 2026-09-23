@@ -18,10 +18,13 @@ def initialize(
     *,
     supported: bool = True,
     configuration: bool = False,
+    dynamic_configuration_registration: bool = False,
     workspace_folders: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     synchronization = {"willSaveWaitUntil": True} if supported else {}
     workspace: dict[str, Any] = {"configuration": configuration}
+    if dynamic_configuration_registration:
+        workspace["didChangeConfiguration"] = {"dynamicRegistration": True}
     if workspace_folders is not None:
         workspace["workspaceFolders"] = True
     params: dict[str, Any] = {
@@ -583,3 +586,143 @@ def test_removed_workspace_folder_falls_back_to_global_configuration() -> None:
     assert will_save(server, b_uri, 27)["result"][0]["newText"] == (
         "fn main() {\n   return 1\n}\n"
     )
+
+
+def test_initialized_dynamically_registers_configuration_changes() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        configuration=True,
+        dynamic_configuration_registration=True,
+    )
+
+    assert server.handle(notify("initialized", {})) is None
+    requests = server.drain_server_requests()
+
+    assert requests == [
+        {
+            "jsonrpc": "2.0",
+            "id": "server:1",
+            "method": "client/registerCapability",
+            "params": {
+                "registrations": [
+                    {
+                        "id": (
+                            "mini-language-server.formatting."
+                            "didChangeConfiguration"
+                        ),
+                        "method": "workspace/didChangeConfiguration",
+                        "registerOptions": {
+                            "section": "mini-language-server.formatting",
+                        },
+                    }
+                ]
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "server:2",
+            "method": "workspace/configuration",
+            "params": {
+                "items": [
+                    {"section": "mini-language-server.formatting"},
+                ]
+            },
+        },
+    ]
+
+    assert server.handle(
+        {"jsonrpc": "2.0", "id": "server:1", "result": None}
+    ) is None
+    assert server._formatting_configuration_registration_active is True
+
+
+def test_dynamic_registration_error_does_not_pollute_formatting_cache() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        configuration=True,
+        dynamic_configuration_registration=True,
+    )
+    server.handle(notify("initialized", {}))
+    registration, configuration = server.drain_server_requests()
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": configuration["id"],
+            "result": [{"tabSize": 2, "insertSpaces": False}],
+        }
+    ) is None
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": registration["id"],
+            "error": {"code": -32601, "message": "registration unsupported"},
+        }
+    ) is None
+    assert server._formatting_configuration_registration_active is False
+
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() {\nreturn 1\n}\n")
+    assert will_save(server, uri)["result"][0]["newText"] == (
+        "fn main() {\n\treturn 1\n}\n"
+    )
+
+
+def test_duplicate_initialized_does_not_repeat_dynamic_registration() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        configuration=True,
+        dynamic_configuration_registration=True,
+    )
+    server.handle(notify("initialized", {}))
+    first = server.drain_server_requests()
+    registration = next(
+        item for item in first if item["method"] == "client/registerCapability"
+    )
+    configuration = next(
+        item for item in first if item["method"] == "workspace/configuration"
+    )
+    server.handle(
+        {"jsonrpc": "2.0", "id": registration["id"], "result": None}
+    )
+    server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": configuration["id"],
+            "result": [{"tabSize": 4, "insertSpaces": True}],
+        }
+    )
+
+    server.handle(notify("initialized", {}))
+    second = server.drain_server_requests()
+
+    assert [item["method"] for item in second] == ["workspace/configuration"]
+
+
+def test_dynamic_registration_requires_workspace_configuration_support() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        configuration=False,
+        dynamic_configuration_registration=True,
+    )
+    server.handle(notify("initialized", {}))
+
+    assert server.drain_server_requests() == []
+
+
+def test_legacy_configuration_client_keeps_configuration_only_request() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        configuration=True,
+        dynamic_configuration_registration=False,
+    )
+    server.handle(notify("initialized", {}))
+
+    requests = server.drain_server_requests()
+    assert len(requests) == 1
+    assert requests[0]["method"] == "workspace/configuration"
