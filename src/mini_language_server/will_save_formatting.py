@@ -51,7 +51,11 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
                 self._client_supports_dynamic_configuration_registration(params)
             )
 
-        if method == "initialized" and self.state is ServerState.RUNNING:
+        if (
+            method == "initialized"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+        ):
             result = super().handle(message)
             if self._workspace_configuration_support:
                 self._queue_formatting_configuration_registration()
