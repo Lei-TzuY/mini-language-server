@@ -35,7 +35,7 @@ Tracing observes real outbound cancellation notifications through the generic no
 
 ## Lifecycle retirement
 
-A successful client `shutdown` request is also a hard ownership boundary for server-initiated requests. Before the server enters the shutdown state, every pending server request is retired through the same cancellation hook used by supersession. Requests that already left the local outbox receive standard `$/cancelRequest`; requests still queued locally are retracted without fake protocol traffic. Consumer-owned per-request metadata is discarded at the same boundary.
+A successful client `shutdown` request is also a hard ownership boundary for server-initiated requests. The stdio runtime may dispatch the first valid shutdown request while one ordinary client request worker is still active; the server's existing retirement logic therefore cancels that request generation immediately instead of waiting for the worker to finish. Before the server enters the shutdown state, every pending server request is retired through the same cancellation hook used by supersession. Requests that already left the local outbox receive standard `$/cancelRequest`; requests still queued locally are retracted without fake protocol traffic. Consumer-owned per-request metadata is discarded at the same boundary.
 
 After shutdown, response-shaped JSON-RPC messages are ignored even though response dispatch normally precedes method routing. A late result or error therefore cannot re-enter a consumer completion hook or mutate configuration/registration state after the server has acknowledged shutdown.
 
