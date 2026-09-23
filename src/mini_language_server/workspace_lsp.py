@@ -211,10 +211,6 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             document = self.documents.get(old_uri)
             if document is None or document.language_id != self.nova_adapter.language_id:
                 continue
-            try:
-                self.nova_adapter.parse(document.text)
-            except SyntaxError:
-                return
             renames.append((old_uri, new_uri))
 
         if not renames:
@@ -246,7 +242,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for _, document in moved:
             try:
                 semantic = self.nova_adapter.publish(self, document)
-            except (SyntaxError, SymbolError, SemanticError):
+            except SyntaxError:
                 continue
             if not self.workspace_folders.contains(document.uri):
                 continue
