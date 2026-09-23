@@ -334,6 +334,11 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
                     stale_closed_inputs = True
                     return None
                 self.requests.checkpoint(context)
+                self._capture_closed_code_action_resolve_ownership(
+                    request_id,
+                    workspace_snapshots,
+                    folder_scope.generation,
+                )
                 return self._result(request_id, actions)
 
             try:
@@ -358,6 +363,14 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
+
+    def _capture_closed_code_action_resolve_ownership(
+        self,
+        request_id: Any,
+        workspace_snapshots: Any,
+        folder_generation: int,
+    ) -> None:
+        """Extension hook for later lazy-resolve ownership without live stores."""
 
     def _nova_code_actions(
         self,
