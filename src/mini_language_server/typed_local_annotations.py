@@ -56,6 +56,22 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         super().__init__()
         self.nova_adapter = TypedLocalNovaFunctionAdapter()
 
+    def _explicit_local_annotation(
+        self,
+        snapshot: Any,
+        target: Any,
+    ) -> tuple[str, int] | None:
+        """Return one exact local annotation and initializer start offset."""
+        text = snapshot.symbols.syntax.document.text
+        code = self.nova_adapter.code_view(text)
+        match = _LOCAL_TYPE_SUFFIX.match(code, target.span.end)
+        if match is None:
+            return None
+        initializer_start = match.end()
+        if initializer_start >= len(code) or code[initializer_start] != "=":
+            return None
+        return match.group("type"), initializer_start + 1
+
     def _closed_local_type(
         self,
         snapshot: Any,
@@ -64,11 +80,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         functions: dict[str, list[tuple[Any, Any]]],
     ) -> str | None:
         """Prefer an explicit detached local annotation over initializer inference."""
-        text = snapshot.symbols.syntax.document.text
-        code = self.nova_adapter.code_view(text)
-        match = _LOCAL_TYPE_SUFFIX.match(code, target.span.end)
-        if match is not None:
-            return match.group("type")
+        annotation = self._explicit_local_annotation(snapshot, target)
+        if annotation is not None:
+            return annotation[0]
         return super()._closed_local_type(
             snapshot,
             target,
@@ -83,9 +97,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         seen: frozenset[tuple[int, int]],
     ) -> str | None:
         """Prefer an explicit exact-snapshot local annotation over initializer inference."""
-        text = snapshot.symbols.syntax.document.text
-        code = self.nova_adapter.code_view(text)
-        match = _LOCAL_TYPE_SUFFIX.match(code, target.span.end)
-        if match is not None:
-            return match.group("type")
+        annotation = self._explicit_local_annotation(snapshot, target)
+        if annotation is not None:
+            return annotation[0]
         return super()._local_type(snapshot, target, seen)
