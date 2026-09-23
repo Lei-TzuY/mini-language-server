@@ -1096,3 +1096,51 @@ def test_live_server_response_guard_requires_delivered_pending_request() -> None
             "error": {"code": -32603, "message": "mixed"},
         }
     ) is False
+
+def test_server_request_outbox_wakeup_coalesces_empty_to_nonempty_transitions() -> None:
+    server = LanguageServer()
+    wakeups: list[str] = []
+    server._set_server_request_outbox_wakeup(lambda: wakeups.append("wake"))
+
+    first = server._queue_server_request("workspace/diagnostic/refresh")
+    second = server._queue_server_request("workspace/codeLens/refresh")
+
+    assert wakeups == ["wake"]
+    assert [message["id"] for message in server.drain_server_requests()] == [
+        first,
+        second,
+    ]
+
+    third = server._queue_server_request("workspace/inlayHint/refresh")
+    assert wakeups == ["wake", "wake"]
+    assert [message["id"] for message in server.drain_server_requests()] == [third]
+
+
+def test_server_request_outbox_wakeup_publishes_consumer_ownership_first() -> None:
+    server = LanguageServer()
+    owned: list[str] = []
+    observed: list[tuple[str, ...]] = []
+    server._set_server_request_outbox_wakeup(
+        lambda: observed.append(tuple(owned))
+    )
+
+    request_id = server._queue_server_request(
+        "workspace/configuration",
+        on_queued=owned.append,
+    )
+
+    assert owned == [request_id]
+    assert observed == [(request_id,)]
+
+
+def test_binding_wakeup_to_existing_outbox_signals_once() -> None:
+    server = LanguageServer()
+    request_id = server._queue_server_request("workspace/semanticTokens/refresh")
+    wakeups: list[str] = []
+
+    server._set_server_request_outbox_wakeup(lambda: wakeups.append("wake"))
+
+    assert wakeups == ["wake"]
+    assert [message["id"] for message in server.drain_server_requests()] == [
+        request_id
+    ]
