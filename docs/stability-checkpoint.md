@@ -54,7 +54,7 @@ The following remain deliberate future work:
 - hover and completion
 - semantic tokens
 - multi-file/workspace symbol and reference indexing
-- remaining filesystem lifecycle surfaces: `willRenameFiles` still preflights only open-document ownership, while filesystem watchers or remote providers, full closed-file diagnostic parity (push/textDocument pull/product-only diagnostics/quick fixes), and module/import rewrite semantics remain future executable phases; bounded unopened local-file indexing, negotiated create/delete/rename-triggered reconciliation, and pull-only workspace diagnostics are now part of the stable workspace substrate
+- remaining filesystem lifecycle surfaces: permission-aware filesystem transactions, filesystem watchers or remote providers, full closed-file diagnostic parity (push/textDocument pull/product-only diagnostics/quick fixes), and module/import rewrite semantics remain future executable phases; bounded unopened local-file indexing, unified open+detached `willRenameFiles` preflight, negotiated create/delete/rename-triggered reconciliation, and pull-only workspace diagnostics are now part of the stable workspace substrate
 - broader LSP compliance surface
 - editor-specific integration layers
 
