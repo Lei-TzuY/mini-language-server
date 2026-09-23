@@ -39,6 +39,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self.workspace_folders = WorkspaceFolderSet()
         self._workspace_folder_change_support = False
         self._file_rename_support = False
+        self._file_will_rename_support = False
         self._moniker_support = False
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
@@ -49,6 +50,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 self._client_supports_workspace_folders(params)
             )
             self._file_rename_support = self._client_supports_file_rename(params)
+            self._file_will_rename_support = (
+                self._client_supports_file_will_rename(params)
+            )
             self._moniker_support = self._client_supports_moniker(params)
             try:
                 self.workspace_folders.configure(params)
@@ -76,6 +80,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return None
 
         if "id" in message and self.state is ServerState.RUNNING:
+            if method == "workspace/willRenameFiles" and self._file_will_rename_support:
+                return self._handle_workspace_will_rename(
+                    message.get("id"), message.get("params")
+                )
             if method == "workspace/symbol":
                 return self._handle_workspace_symbol(
                     message.get("id"), message.get("params")
@@ -156,6 +164,21 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                                     }
                                 ]
                             }
+                if self._file_will_rename_support:
+                    workspace_capabilities = capabilities.setdefault("workspace", {})
+                    if isinstance(workspace_capabilities, dict):
+                        file_operations = workspace_capabilities.setdefault(
+                            "fileOperations", {}
+                        )
+                        if isinstance(file_operations, dict):
+                            file_operations["willRename"] = {
+                                "filters": [
+                                    {
+                                        "scheme": "file",
+                                        "pattern": {"glob": "**/*.nova"},
+                                    }
+                                ]
+                            }
         return result
 
     def _handle_document_notification(self, method: str, params: Any) -> None:
@@ -187,18 +210,80 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return
         self._publish_workspace_diagnostics()
 
-    def _handle_workspace_file_renames(self, params: Any) -> None:
-        """Rekey open Nova documents after one negotiated workspace file rename batch."""
+    def _handle_workspace_will_rename(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any]:
+        """Preflight one open-Nova rename batch without mutating workspace state."""
+        try:
+            renames = self._workspace_file_rename_pairs(params)
+        except DocumentError:
+            return self._error(request_id, -32602, "Invalid params")
+        if not renames:
+            return self._result(request_id, None)
+
+        affected_uris = {
+            uri
+            for old_uri, new_uri in renames
+            for uri in (old_uri, new_uri)
+        }
+        captured = tuple(
+            document
+            for document in self.documents.snapshots()
+            if document.uri in affected_uris
+        )
+        try:
+            context = self.requests.start(request_id)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        validation_error: DocumentError | None = None
+        try:
+            self.requests.checkpoint(context)
+
+            def publish() -> dict[str, Any] | None:
+                nonlocal validation_error
+                try:
+                    self.documents.validate_renames(renames)
+                except DocumentError as exc:
+                    validation_error = exc
+                    return None
+                self.requests.checkpoint(context)
+                return self._result(request_id, None)
+
+            try:
+                response = self.documents.commit_matching_if_current(
+                    captured,
+                    lambda document: document.uri in affected_uris,
+                    publish,
+                )
+            except DocumentError:
+                return self._error(request_id, -32801, "Content modified")
+            if validation_error is not None:
+                return self._error(
+                    request_id,
+                    -32803,
+                    f"File rename preflight failed: {validation_error}",
+                )
+            assert response is not None
+            return response
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        finally:
+            self.requests.finish(context)
+
+    def _workspace_file_rename_pairs(
+        self, params: Any
+    ) -> tuple[tuple[str, str], ...]:
         if not isinstance(params, dict):
-            return
+            raise DocumentError("file rename params must be an object")
         files = params.get("files")
         if not isinstance(files, list):
-            return
+            raise DocumentError("file rename params must contain files")
 
         renames: list[tuple[str, str]] = []
         for item in files:
             if not isinstance(item, dict):
-                return
+                raise DocumentError("file rename entries must be objects")
             old_uri = item.get("oldUri")
             new_uri = item.get("newUri")
             if (
@@ -207,12 +292,19 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 or not isinstance(new_uri, str)
                 or not new_uri
             ):
-                return
+                raise DocumentError("file rename entries require oldUri and newUri")
             document = self.documents.get(old_uri)
             if document is None or document.language_id != self.nova_adapter.language_id:
                 continue
             renames.append((old_uri, new_uri))
+        return tuple(renames)
 
+    def _handle_workspace_file_renames(self, params: Any) -> None:
+        """Rekey open Nova documents after one negotiated workspace file rename batch."""
+        try:
+            renames = self._workspace_file_rename_pairs(params)
+        except DocumentError:
+            return
         if not renames:
             return
 
@@ -1200,6 +1292,22 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(text_document, dict):
             return False
         return isinstance(text_document.get("moniker"), dict)
+
+    @staticmethod
+    def _client_supports_file_will_rename(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        file_operations = workspace.get("fileOperations")
+        return (
+            isinstance(file_operations, dict)
+            and file_operations.get("willRename") is True
+        )
 
     @staticmethod
     def _client_supports_file_rename(params: Any) -> bool:
