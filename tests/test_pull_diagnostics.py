@@ -73,10 +73,13 @@ def pull_diagnostics(
     uri: str,
     request_id: int = 2,
     previous_result_id: str | None = None,
+    partial_result_token: str | int | None = None,
 ) -> dict:
     params: dict[str, Any] = {"textDocument": {"uri": uri}}
     if previous_result_id is not None:
         params["previousResultId"] = previous_result_id
+    if partial_result_token is not None:
+        params["partialResultToken"] = partial_result_token
     response = server.handle(
         request("textDocument/diagnostic", request_id=request_id, params=params)
     )
@@ -1218,3 +1221,235 @@ def test_related_documents_are_direct_and_do_not_nest_dependency_reports() -> No
         "relatedDocuments" not in related
         for related in report["relatedDocuments"].values()
     )
+
+
+def test_document_pull_streams_related_documents_as_partial_result() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    first_uri = "file:///workspace/a.nova"
+    second_uri = "file:///workspace/b.nova"
+    caller_uri = "file:///workspace/main.nova"
+    open_document(server, first_uri, "fn target() {}\n")
+    open_document(server, second_uri, "fn target() {}\n")
+    open_document(server, caller_uri, "fn main() { target() }\n")
+    server.drain_notifications()
+
+    response = pull_diagnostics(
+        server,
+        caller_uri,
+        partial_result_token="related",
+    )
+
+    assert response["result"]["kind"] == "full"
+    assert "relatedDocuments" not in response["result"]
+    progress = [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ]
+    assert len(progress) == 1
+    assert progress[0]["params"]["token"] == "related"
+    related = progress[0]["params"]["value"]["relatedDocuments"]
+    assert list(related) == [first_uri, second_uri]
+    assert all(report["kind"] == "full" for report in related.values())
+
+
+def test_document_pull_partial_result_token_is_validated() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "fn main() {}\n")
+    server.drain_notifications()
+
+    for request_id, token in enumerate((None, True, [], {}), start=70):
+        response = server.handle(
+            request(
+                "textDocument/diagnostic",
+                request_id=request_id,
+                params={
+                    "textDocument": {"uri": uri},
+                    "partialResultToken": token,
+                },
+            )
+        )
+        assert response == {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32602, "message": "Invalid params"},
+        }
+
+    assert [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ] == []
+
+
+def test_unchanged_primary_pull_streams_changed_related_document() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    first_uri = "file:///workspace/a.nova"
+    second_uri = "file:///workspace/b.nova"
+    caller_uri = "file:///workspace/main.nova"
+    open_document(server, first_uri, "fn target() { missing() }\n")
+    open_document(server, second_uri, "fn target() {}\n")
+    open_document(server, caller_uri, "fn main() { target() }\n")
+    first = pull_diagnostics(server, caller_uri)["result"]
+    primary_result_id = first["resultId"]
+    first_related_id = first["relatedDocuments"][first_uri]["resultId"]
+    server.drain_notifications()
+
+    server.handle(
+        notification(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": first_uri, "version": 2},
+                "contentChanges": [{"text": "fn target() {}\n"}],
+            },
+        )
+    )
+    server.drain_notifications()
+
+    second = pull_diagnostics(
+        server,
+        caller_uri,
+        request_id=3,
+        previous_result_id=primary_result_id,
+        partial_result_token="related",
+    )
+    assert second["result"] == {
+        "kind": "unchanged",
+        "resultId": primary_result_id,
+    }
+    progress = [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ]
+    assert len(progress) == 1
+    related = progress[0]["params"]["value"]["relatedDocuments"]
+    assert related[first_uri]["kind"] == "full"
+    assert related[first_uri]["items"] == []
+    assert related[first_uri]["resultId"] != first_related_id
+
+
+def test_stale_document_pull_emits_no_related_partial_result(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    first_uri = "file:///workspace/a.nova"
+    second_uri = "file:///workspace/b.nova"
+    caller_uri = "file:///workspace/main.nova"
+    open_document(server, first_uri, "fn target() {}\n")
+    open_document(server, second_uri, "fn target() {}\n")
+    open_document(server, caller_uri, "fn main() { target() }\n")
+    server.drain_notifications()
+    real_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def replace_dependency_before_commit(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        real_checkpoint(context)
+        if calls == 2:
+            server.handle(
+                notification(
+                    "textDocument/didChange",
+                    {
+                        "textDocument": {"uri": first_uri, "version": 2},
+                        "contentChanges": [{"text": "fn target(value: Int) {}\n"}],
+                    },
+                )
+            )
+
+    monkeypatch.setattr(
+        server.requests,
+        "checkpoint",
+        replace_dependency_before_commit,
+    )
+
+    assert pull_diagnostics(
+        server,
+        caller_uri,
+        partial_result_token="related",
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ] == []
+
+
+def test_cancelled_document_pull_emits_no_related_partial_result(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    first_uri = "file:///workspace/a.nova"
+    second_uri = "file:///workspace/b.nova"
+    caller_uri = "file:///workspace/main.nova"
+    open_document(server, first_uri, "fn target() {}\n")
+    open_document(server, second_uri, "fn target() {}\n")
+    open_document(server, caller_uri, "fn main() { target() }\n")
+    server.drain_notifications()
+    real_checkpoint = server.requests.checkpoint
+
+    def cancel_before_checkpoint(context: Any) -> None:
+        server.requests.cancel(context.request_id)
+        real_checkpoint(context)
+
+    monkeypatch.setattr(server.requests, "checkpoint", cancel_before_checkpoint)
+
+    assert pull_diagnostics(
+        server,
+        caller_uri,
+        partial_result_token="related",
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
+    assert [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ] == []
+
+
+def test_document_related_partial_results_chunk_deterministically() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    target_uris = [
+        f"file:///workspace/target-{index:02d}.nova"
+        for index in range(17)
+    ]
+    for uri in reversed(target_uris):
+        open_document(server, uri, "fn target() {}\n")
+    caller_uri = "file:///workspace/main.nova"
+    open_document(server, caller_uri, "fn main() { target() }\n")
+    server.drain_notifications()
+
+    response = pull_diagnostics(
+        server,
+        caller_uri,
+        partial_result_token="related",
+    )
+
+    assert response["result"]["kind"] == "full"
+    progress = [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ]
+    assert len(progress) == 2
+    chunks = [
+        list(item["params"]["value"]["relatedDocuments"])
+        for item in progress
+    ]
+    assert chunks[0] == target_uris[:16]
+    assert chunks[1] == target_uris[16:]
