@@ -337,13 +337,13 @@ def run_session(
             if (
                 not transport_failed
                 and active_server.state is ServerState.RUNNING
-            ):
-                if not write_transport_batch(
+                and not write_transport_batch(
                     _drain_after_dispatch(active_server, None)
-                ):
-                    if active_request_thread is None:
-                        return 1
-                    continue
+                )
+            ):
+                if active_request_thread is None:
+                    return 1
+                continue
             continue
 
         if item is _TRANSPORT_FAILURE:
