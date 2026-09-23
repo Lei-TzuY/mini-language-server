@@ -1,3 +1,5 @@
+from threading import Barrier, Thread
+
 from mini_language_server.diagnostics import Diagnostic
 from mini_language_server.semantic import Reference
 from mini_language_server.server import LanguageServer, ServerState
@@ -1030,3 +1032,37 @@ def test_exit_retires_server_requests_without_new_protocol_traffic() -> None:
     assert server.handle({"jsonrpc": "2.0", "id": sent, "result": None}) is None
     assert server.handle({"jsonrpc": "2.0", "id": unsent, "result": None}) is None
     assert server.completed == []
+
+def test_server_request_outbox_is_thread_safe() -> None:
+    server = LanguageServer()
+    barrier = Barrier(3)
+    ids: list[str] = []
+
+    def queue_requests(prefix: str) -> None:
+        barrier.wait(timeout=5)
+        for index in range(50):
+            ids.append(
+                server._queue_server_request(
+                    "workspace/configuration",
+                    {"items": [{"section": f"{prefix}.{index}"}]},
+                )
+            )
+
+    left = Thread(target=queue_requests, args=("left",))
+    right = Thread(target=queue_requests, args=("right",))
+    left.start()
+    right.start()
+    barrier.wait(timeout=5)
+    left.join(timeout=5)
+    right.join(timeout=5)
+
+    assert not left.is_alive()
+    assert not right.is_alive()
+    assert len(ids) == 100
+    assert len(set(ids)) == 100
+    assert set(ids) == {f"server:{index}" for index in range(1, 101)}
+
+    queued = server.drain_server_requests()
+    assert len(queued) == 100
+    assert {request["id"] for request in queued} == set(ids)
+    assert set(server._pending_server_requests) == set(ids)
