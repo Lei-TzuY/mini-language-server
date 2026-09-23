@@ -88,6 +88,25 @@ def test_utf8_span_range_round_trip_uses_byte_units() -> None:
     assert source.span_from_range(Position(0, 2), Position(0, 6)) == span
 
 
+def test_source_text_maps_utf32_positions_and_offsets() -> None:
+    source = SourceText("a😀β", position_encoding="utf-32")
+
+    assert source.offset_at(Position(0, 0)) == 0
+    assert source.offset_at(Position(0, 1)) == 1
+    assert source.offset_at(Position(0, 2)) == 2
+    assert source.offset_at(Position(0, 3)) == 3
+    assert source.position_at(2) == Position(0, 2)
+    assert source.position_at(3) == Position(0, 3)
+
+
+def test_utf32_span_range_round_trip_uses_code_point_units() -> None:
+    source = SourceText("α😀z", position_encoding="utf-32")
+    span = Span(1, 2)
+
+    assert source.range_from_span(span) == (Position(0, 1), Position(0, 2))
+    assert source.span_from_range(Position(0, 1), Position(0, 2)) == span
+
+
 def test_source_text_rejects_unknown_position_encoding() -> None:
     with pytest.raises(SourceError, match="unsupported position encoding"):
-        SourceText("abc", position_encoding="utf-32")
+        SourceText("abc", position_encoding="utf-7")
