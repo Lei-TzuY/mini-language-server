@@ -9,6 +9,7 @@ from .function_call_arguments import NovaProductLanguageServer as _NovaProductLa
 from .local_call_initializers import direct_local_call_initializer
 from .workspace import WorkspaceIndexError
 
+
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product with bounded exact-workspace call initializer inference."""
 
