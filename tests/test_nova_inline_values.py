@@ -303,19 +303,19 @@ def test_inline_value_uses_negotiated_utf8_ranges() -> None:
         server,
         uri,
         2,
-        viewport=((0, 0), (0, len(text.encode("utf-8")))),
-        stopped=((0, len('fn main(value) { "😀"; '.encode("utf-8"))),) * 2,
+        viewport=((0, 0), (0, len(text.encode()))),
+        stopped=((0, len('fn main(value) { "😀"; '.encode())),) * 2,
     )
 
     assert response["result"][-1] == {
         "range": {
             "start": {
                 "line": 0,
-                "character": len('fn main(value) { "😀"; '.encode("utf-8")),
+                "character": len('fn main(value) { "😀"; '.encode()),
             },
             "end": {
                 "line": 0,
-                "character": len('fn main(value) { "😀"; value'.encode("utf-8")),
+                "character": len('fn main(value) { "😀"; value'.encode()),
             },
         },
         "variableName": "value",
