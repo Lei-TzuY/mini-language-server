@@ -256,3 +256,42 @@ def test_final_product_workspace_symbol_request_is_wrapped_by_trace() -> None:
         "client -> server request workspace/symbol id=9",
         "server -> client response id=9",
     ]
+
+def test_sent_server_request_supersession_is_visible_in_trace() -> None:
+    server = TracedLanguageServer()
+    initialize(server)
+    set_trace(server, "messages")
+    request_id = server._queue_server_request("workspace/configuration")
+    server.drain_server_requests()
+    trace_messages(server)
+
+    assert server._cancel_server_request(request_id) is True
+
+    notifications = server.drain_notifications()
+    assert notifications == [
+        {
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": {"id": request_id},
+        },
+        {
+            "jsonrpc": "2.0",
+            "method": "$/logTrace",
+            "params": {
+                "message": "server -> client notification $/cancelRequest",
+            },
+        },
+    ]
+
+
+def test_unsent_server_request_retraction_does_not_fake_outbound_trace() -> None:
+    server = TracedLanguageServer()
+    initialize(server)
+    set_trace(server, "messages")
+    request_id = server._queue_server_request("workspace/configuration")
+    trace_messages(server)
+
+    assert server._cancel_server_request(request_id) is True
+
+    assert server.drain_server_requests() == []
+    assert trace_messages(server) == []
