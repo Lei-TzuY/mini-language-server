@@ -887,3 +887,41 @@ def test_closed_call_local_rebinds_after_result_annotation_change(
         item["code"] != "nova.argument-type"
         for item in second["items"]
     )
+
+def test_closed_call_local_internal_inference_uses_captured_snapshot(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn make() -> Int { return 1; } "
+        "fn target(value: String) {} "
+        "fn caller() { let local = make(); target(local); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    snapshots = server.workspace_symbols.snapshots()
+    snapshot = next(item for item in snapshots if item.uri == source.absolute().as_uri())
+    functions: dict[str, list[tuple[Any, Any]]] = {}
+    for item in snapshots:
+        for symbol in item.symbols.symbols:
+            if symbol.kind == "function":
+                functions.setdefault(symbol.name, []).append((item, symbol))
+
+    make_snapshot, make_symbol = functions["make"][0]
+    assert server._closed_function_result_type(
+        make_snapshot,
+        make_symbol.span,
+    ) == "Int"
+
+    local = next(
+        symbol
+        for symbol in snapshot.symbols.symbols
+        if symbol.kind == "variable" and symbol.name == "local"
+    )
+    assert server._closed_local_type(
+        snapshot,
+        local,
+        frozenset(),
+        functions,
+    ) == "Int"
