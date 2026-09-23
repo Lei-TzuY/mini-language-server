@@ -18,7 +18,19 @@ def notification(method: str, params: dict[str, Any]) -> dict[str, Any]:
 
 def initialized_server() -> NovaLanguageServer:
     server = NovaLanguageServer()
-    result = server.handle(request("initialize", 1, {"capabilities": {}}))
+    result = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "textDocument": {
+                        "publishDiagnostics": {"versionSupport": True}
+                    }
+                }
+            },
+        )
+    )
     assert result is not None
     return server
 
