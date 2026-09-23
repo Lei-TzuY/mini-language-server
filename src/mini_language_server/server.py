@@ -226,6 +226,16 @@ class LanguageServer:
         self._notifications = []
         return notifications
 
+    def _queue_progress(self, token: str | int, value: Any) -> None:
+        """Queue one standard LSP progress notification."""
+        self._notifications.append(
+            {
+                "jsonrpc": "2.0",
+                "method": "$/progress",
+                "params": {"token": token, "value": value},
+            }
+        )
+
     def drain_server_requests(self) -> list[dict[str, Any]]:
         """Return queued server-to-client requests and clear only that outbox."""
         requests = self._server_requests
