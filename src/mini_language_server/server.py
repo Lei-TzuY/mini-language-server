@@ -59,6 +59,8 @@ class LanguageServer:
         self._notification_lock = RLock()
         self._notifications_open = True
         self._notifications: list[dict[str, Any]] = []
+        self._server_request_lock = RLock()
+        self._server_requests_open = True
         self._server_requests: list[dict[str, Any]] = []
         self._pending_server_requests: dict[str, str] = {}
         self._next_server_request_id = 1
@@ -288,44 +290,50 @@ class LanguageServer:
 
     def drain_server_requests(self) -> list[dict[str, Any]]:
         """Return queued server-to-client requests and clear only that outbox."""
-        requests = self._server_requests
-        self._server_requests = []
-        return requests
+        with self._server_request_lock:
+            requests = self._server_requests
+            self._server_requests = []
+            return requests
 
     def _queue_server_request(
         self, method: str, params: dict[str, Any] | None = None
-    ) -> str:
-        """Queue one tracked server-to-client JSON-RPC request."""
-        request_id = f"server:{self._next_server_request_id}"
-        self._next_server_request_id += 1
-        request: dict[str, Any] = {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": method,
-        }
-        if params is not None:
-            request["params"] = params
-        self._pending_server_requests[request_id] = method
-        self._server_requests.append(request)
-        return request_id
+    ) -> str | None:
+        """Queue one tracked request while the outbound request channel is open."""
+        with self._server_request_lock:
+            if not self._server_requests_open:
+                return None
+            request_id = f"server:{self._next_server_request_id}"
+            self._next_server_request_id += 1
+            request: dict[str, Any] = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+            }
+            if params is not None:
+                request["params"] = params
+            self._pending_server_requests[request_id] = method
+            self._server_requests.append(request)
+            return request_id
 
     def _has_pending_server_request(self, method: str) -> bool:
-        return method in self._pending_server_requests.values()
+        with self._server_request_lock:
+            return method in self._pending_server_requests.values()
 
     def _cancel_server_request(self, request_id: str) -> bool:
         """Retire one pending server request and cancel it remotely if already sent."""
-        method = self._pending_server_requests.pop(request_id, None)
-        if method is None:
-            return False
+        with self._server_request_lock:
+            method = self._pending_server_requests.pop(request_id, None)
+            if method is None:
+                return False
 
-        queued = False
-        remaining: list[dict[str, Any]] = []
-        for request in self._server_requests:
-            if request.get("id") == request_id:
-                queued = True
-                continue
-            remaining.append(request)
-        self._server_requests = remaining
+            queued = False
+            remaining: list[dict[str, Any]] = []
+            for request in self._server_requests:
+                if request.get("id") == request_id:
+                    queued = True
+                    continue
+                remaining.append(request)
+            self._server_requests = remaining
 
         if not queued:
             self._queue_notification("$/cancelRequest", {"id": request_id})
@@ -335,11 +343,12 @@ class LanguageServer:
 
     def _cancel_pending_server_requests(self, method: str) -> tuple[str, ...]:
         """Cancel every currently pending server request for one method."""
-        request_ids = tuple(
-            request_id
-            for request_id, pending_method in self._pending_server_requests.items()
-            if pending_method == method
-        )
+        with self._server_request_lock:
+            request_ids = tuple(
+                request_id
+                for request_id, pending_method in self._pending_server_requests.items()
+                if pending_method == method
+            )
         for request_id in request_ids:
             self._cancel_server_request(request_id)
         return request_ids
@@ -347,19 +356,23 @@ class LanguageServer:
     def _retire_all_server_requests(
         self, *, cancel_remote: bool
     ) -> tuple[str, ...]:
-        """Retire every pending server request at a lifecycle boundary."""
-        request_ids = tuple(self._pending_server_requests)
-        if cancel_remote:
-            for request_id in request_ids:
-                self._cancel_server_request(request_id)
-            return request_ids
+        """Atomically close and retire every pending server request."""
+        with self._server_request_lock:
+            self._server_requests_open = False
+            records = tuple(self._pending_server_requests.items())
+            queued_ids = frozenset(
+                request_id
+                for request in self._server_requests
+                if isinstance((request_id := request.get("id")), str)
+            )
+            self._pending_server_requests.clear()
+            self._server_requests = []
 
-        records = tuple(self._pending_server_requests.items())
-        self._pending_server_requests.clear()
-        self._server_requests = []
         for request_id, method in records:
+            if cancel_remote and request_id not in queued_ids:
+                self._queue_notification("$/cancelRequest", {"id": request_id})
             self._server_request_cancelled(request_id, method)
-        return request_ids
+        return tuple(request_id for request_id, _ in records)
 
     def _server_request_cancelled(self, request_id: str, method: str) -> None:
         """Extension point for consumers that own per-request state."""
@@ -370,9 +383,6 @@ class LanguageServer:
         if not isinstance(request_id, str | int) or isinstance(request_id, bool):
             return
         key = str(request_id)
-        method = self._pending_server_requests.get(key)
-        if method is None:
-            return
         has_result = "result" in message
         has_error = "error" in message
         if has_result == has_error:
@@ -380,7 +390,10 @@ class LanguageServer:
         error = message.get("error") if has_error else None
         if has_error and not isinstance(error, dict):
             return
-        self._pending_server_requests.pop(key, None)
+        with self._server_request_lock:
+            method = self._pending_server_requests.pop(key, None)
+        if method is None:
+            return
         self._server_request_completed(
             key,
             method,
