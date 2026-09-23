@@ -160,9 +160,11 @@ class LanguageServer:
             if self.state is ServerState.SHUTDOWN:
                 return self._error(request_id, -32600, "Shutdown already requested")
             self.requests.retire_all()
-            self._retire_all_server_requests(cancel_remote=True)
+            retired_server_requests = self._retire_all_server_requests(
+                cancel_remote=True
+            )
             self._close_notification_outbox(
-                preserve_methods=frozenset({"$/cancelRequest"})
+                preserve_cancel_ids=frozenset(retired_server_requests)
             )
             self.state = ServerState.SHUTDOWN
             return self._result(request_id, None)
@@ -262,7 +264,7 @@ class LanguageServer:
         return self._append_notification(notification)
 
     def _close_notification_outbox(
-        self, *, preserve_methods: frozenset[str] = frozenset()
+        self, *, preserve_cancel_ids: frozenset[str] = frozenset()
     ) -> tuple[dict[str, Any], ...]:
         """Terminally close notifications and retain only lifecycle-required traffic."""
         with self._notification_lock:
@@ -270,7 +272,9 @@ class LanguageServer:
             preserved = tuple(
                 notification
                 for notification in self._notifications
-                if notification.get("method") in preserve_methods
+                if notification.get("method") == "$/cancelRequest"
+                and isinstance(notification.get("params"), dict)
+                and notification["params"].get("id") in preserve_cancel_ids
             )
             self._notifications = list(preserved)
             return preserved
