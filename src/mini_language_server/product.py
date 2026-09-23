@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
@@ -13,11 +12,6 @@ from .source import Span
 from .workspace import WorkspaceIndexError
 from .workspace_folders import WorkspaceFolderError, WorkspaceFolderSet
 from .workspace_lsp import WorkspaceNovaLanguageServer
-
-
-_ARGUMENT_COUNT_MESSAGE = re.compile(
-    r"^function '([^']+)' expects (\d+) argument\(s\) but got (\d+)$"
-)
 
 
 class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
@@ -486,14 +480,12 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
         diagnostic: Diagnostic,
     ) -> tuple[str, int, int, int, str] | None:
         """Reconstruct one count repair from captured diagnostic/source evidence."""
-        message = _ARGUMENT_COUNT_MESSAGE.fullmatch(diagnostic.message)
-        if message is None:
+        parsed_message = self._argument_count_message(diagnostic.message)
+        if parsed_message is None:
             return None
-        name, expected_text, actual_text = message.groups()
+        name, expected, actual = parsed_message
         if document.text[diagnostic.span.start : diagnostic.span.end] != name:
             return None
-        expected = int(expected_text)
-        actual = int(actual_text)
         parsed = self._call_arguments(document.text, diagnostic.span.end)
         if parsed is None:
             return None
@@ -503,6 +495,27 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
         replacement = list(arguments[:expected])
         replacement.extend("0" for _ in range(expected - len(replacement)))
         return name, expected, opening, closing, ", ".join(replacement)
+
+    @staticmethod
+    def _argument_count_message(message: str) -> tuple[str, int, int] | None:
+        prefix = "function '"
+        separator = "' expects "
+        suffix = " argument(s) but got "
+        if not message.startswith(prefix):
+            return None
+        name_end = message.find(separator, len(prefix))
+        if name_end < 0:
+            return None
+        name = message[len(prefix) : name_end]
+        remainder = message[name_end + len(separator) :]
+        count_end = remainder.find(suffix)
+        if not name or count_end < 0:
+            return None
+        expected_text = remainder[:count_end]
+        actual_text = remainder[count_end + len(suffix) :]
+        if not expected_text.isdecimal() or not actual_text.isdecimal():
+            return None
+        return name, int(expected_text), int(actual_text)
 
     def _argument_count_action(
         self,
