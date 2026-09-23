@@ -231,7 +231,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return self._error(request_id, -32602, "Invalid params")
 
         try:
-            context = self.requests.start(request_id, uri=requested_uri)
+            context = self.requests.start(request_id)
         except RequestError:
             return self._error(request_id, -32602, "Invalid params")
 
