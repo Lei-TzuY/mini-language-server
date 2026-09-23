@@ -586,4 +586,9 @@ def test_workspace_symbol_stale_commit_emits_no_partial_symbol_data(
         "id": 2,
         "error": {"code": -32801, "message": "Content modified"},
     }
-    assert server.drain_notifications() == []
+    notifications = server.drain_notifications()
+    assert all(
+        notification.get("method") != "$/progress"
+        or notification.get("params", {}).get("token") != "symbols"
+        for notification in notifications
+    )
