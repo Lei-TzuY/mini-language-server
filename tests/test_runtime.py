@@ -266,6 +266,25 @@ class SignalingBytesIO(BytesIO):
         return written
 
 
+class SequencedSignalingBytesIO(BytesIO):
+    def __init__(
+        self,
+        *,
+        signals: tuple[tuple[int, Event], ...],
+    ) -> None:
+        super().__init__()
+        self._signals = signals
+        self._write_count = 0
+
+    def write(self, data: bytes) -> int:
+        written = super().write(data)
+        self._write_count += 1
+        for threshold, signal in self._signals:
+            if self._write_count >= threshold:
+                signal.set()
+        return written
+
+
 class LiveCancellationServer(LanguageServer):
     def __init__(self) -> None:
         super().__init__()
@@ -1298,11 +1317,20 @@ def test_runtime_wakes_outbound_server_request_created_by_active_worker() -> Non
         }
     )
     lifecycle_tail = framed(shutdown(3), exit_notification())
-    output_stream = SignalingBytesIO(signal_after_writes=2)
-    input_stream = GatedBytesIO(
+    dependency_sent = Event()
+    worker_response_sent = Event()
+    output_stream = SequencedSignalingBytesIO(
+        signals=((2, dependency_sent), (3, worker_response_sent)),
+    )
+    input_stream = SequencedGatedBytesIO(
         first + dependency_response + lifecycle_tail,
-        gate_offset=len(first),
-        gate=output_stream.signaled,
+        gates=(
+            (len(first), dependency_sent),
+            (
+                len(first) + len(dependency_response),
+                worker_response_sent,
+            ),
+        ),
     )
 
     assert run_session(input_stream, output_stream, server=server) == 0
