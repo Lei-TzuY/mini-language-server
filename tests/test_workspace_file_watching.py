@@ -301,3 +301,49 @@ def test_failed_watcher_registration_keeps_notifications_inactive(
     watch(server, (uri, 2))
 
     assert server.workspace_symbols.get(uri) is before
+
+def test_watcher_registration_can_start_after_workspace_folder_is_added(
+    tmp_path: Path,
+) -> None:
+    server = NovaProductLanguageServer()
+    response = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "workspace": {
+                        "workspaceFolders": True,
+                        "didChangeWatchedFiles": {
+                            "dynamicRegistration": True,
+                        },
+                    }
+                },
+                "workspaceFolders": [],
+            },
+        )
+    )
+    assert response is not None
+    server.handle(notify("initialized", {}))
+    assert server.drain_server_requests() == []
+
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [
+                        {"uri": tmp_path.as_uri(), "name": "workspace"},
+                    ],
+                    "removed": [],
+                }
+            },
+        )
+    )
+
+    queued = server.drain_server_requests()
+    assert len(queued) == 1
+    assert queued[0]["method"] == "client/registerCapability"
+    assert queued[0]["params"]["registrations"][0]["method"] == (
+        "workspace/didChangeWatchedFiles"
+    )
