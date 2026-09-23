@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 
 from .constant_control_flow import proven_non_fallthrough_while_spans
@@ -26,6 +26,12 @@ _RETURN_ANNOTATION = re.compile(rf"->\s*(?P<type>{_IDENTIFIER}|!)\s*$")
 _RETURN_TYPE_DIAGNOSTIC = "nova.return-type"
 _MISSING_RETURN_DIAGNOSTIC = "nova.missing-return"
 _VALUE_RETURN_TYPES = frozenset({"Int", "String", "Bool"})
+
+
+_NeverReturnsResolver = Callable[
+    [str, frozenset[tuple[int, int, int]]],
+    bool,
+]
 
 
 class ReturnTypeNovaFunctionAdapter(TypedLocalNovaFunctionAdapter):
@@ -131,6 +137,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         code: str,
         text: str,
         *,
+        never_resolver: _NeverReturnsResolver | None = None,
         never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> bool:
         """Prove every fallthrough path is closed by a value return or divergence."""
@@ -148,6 +155,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 text,
                 statement.start(),
                 statement.end(),
+                never_resolver=never_resolver,
                 never_resolving=never_resolving,
             ):
                 return True
@@ -164,6 +172,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 self._top_level_never_call_statements(
                     code,
                     text,
+                    resolver=never_resolver,
                     resolving=never_resolving,
                 )
             )
@@ -176,6 +185,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         statement_start: int,
         condition_prefix_end: int,
         *,
+        never_resolver: _NeverReturnsResolver | None = None,
         never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> bool:
         condition = self._if_condition_then_bounds(
@@ -190,6 +200,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         then_returns = self._body_guarantees_value_return(
             code[then_open + 1 : then_close],
             text[then_open + 1 : then_close],
+            never_resolver=never_resolver,
             never_resolving=never_resolving,
         )
         if constant is True:
@@ -206,6 +217,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             else_returns = self._body_guarantees_value_return(
                 code[else_start + 1 : else_close],
                 text[else_start + 1 : else_close],
+                never_resolver=never_resolver,
                 never_resolving=never_resolving,
             )
         else:
@@ -217,6 +229,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 text,
                 nested_if.start(),
                 nested_if.end(),
+                never_resolver=never_resolver,
                 never_resolving=never_resolving,
             )
 
@@ -229,6 +242,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         code: str,
         text: str,
         *,
+        resolver: _NeverReturnsResolver | None = None,
         resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> tuple[tuple[int, int], ...]:
         """Return direct top-level call statements whose exact target never returns."""
@@ -262,7 +276,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     statement_boundary = min(statement_boundary, found)
             if code[call_end:statement_boundary].strip():
                 continue
-            if not self._function_name_never_returns(name, resolving):
+            target_never_returns = (
+                self._function_name_never_returns(name, resolving)
+                if resolver is None
+                else resolver(name, resolving)
+            )
+            if not target_never_returns:
                 continue
 
             statement_end = statement_boundary
