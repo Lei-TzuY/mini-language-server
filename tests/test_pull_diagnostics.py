@@ -732,3 +732,43 @@ def test_related_documents_are_direct_and_do_not_nest_dependency_reports() -> No
         "relatedDocuments" not in related
         for related in report["relatedDocuments"].values()
     )
+
+def test_document_pull_rejects_related_document_change_during_render(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    first_uri = "file:///workspace/a.nova"
+    second_uri = "file:///workspace/b.nova"
+    caller_uri = "file:///workspace/main.nova"
+
+    open_document(server, first_uri, "fn target() {}\n")
+    open_document(server, second_uri, "fn target() {}\n")
+    open_document(server, caller_uri, "fn main() { target() }\n")
+
+    real_source_text = server._source_text
+    replaced = False
+
+    def replace_dependency_after_primary_render(text: str):
+        nonlocal replaced
+        source = real_source_text(text)
+        if not replaced and text == "fn main() { target() }\n":
+            replaced = True
+            server.handle(
+                notification(
+                    "textDocument/didChange",
+                    {
+                        "textDocument": {"uri": first_uri, "version": 2},
+                        "contentChanges": [{"text": "fn target(value: Int) {}\n"}],
+                    },
+                )
+            )
+        return source
+
+    monkeypatch.setattr(server, "_source_text", replace_dependency_after_primary_render)
+
+    assert pull_diagnostics(server, caller_uri) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
