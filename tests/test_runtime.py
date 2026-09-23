@@ -1327,3 +1327,4 @@ def test_runtime_wakes_outbound_server_request_created_by_active_worker() -> Non
         "server-response",
         "worker-finished",
     ]
+    assert server._server_request_outbox_wakeup is None
