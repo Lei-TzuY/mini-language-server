@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from enum import Enum, auto
+from threading import RLock
 from typing import Any
 
 from .cancellation import (
@@ -56,6 +57,7 @@ class LanguageServer:
         self._diagnostic_related_information_support = False
         self._work_done_progress_support = False
         self._work_done_requests: dict[str | int, RequestContext] = {}
+        self._work_done_lock = RLock()
         self.documents = DocumentStore(position_encoding=self.position_encoding)
         self.syntax = SyntaxStore(self.documents)
         self.symbols = SymbolIndex(self.syntax)
@@ -88,7 +90,7 @@ class LanguageServer:
 
         if method == "exit":
             self.requests.retire_all()
-            self._work_done_requests.clear()
+            self._retire_work_done_requests()
             self._retire_all_server_requests(cancel_remote=False)
             self.exit_code = 0 if self.state is ServerState.SHUTDOWN else 1
             self.state = ServerState.EXITED
@@ -164,7 +166,7 @@ class LanguageServer:
             if self.state is ServerState.SHUTDOWN:
                 return self._error(request_id, -32600, "Shutdown already requested")
             self.requests.retire_all()
-            self._work_done_requests.clear()
+            self._retire_work_done_requests()
             self._retire_all_server_requests(cancel_remote=True)
             self.state = ServerState.SHUTDOWN
             return self._result(request_id, None)
@@ -381,19 +383,28 @@ class LanguageServer:
         self, token: str | int, context: RequestContext
     ) -> bool:
         """Bind one active work-done token to exactly one request generation."""
-        if token in self._work_done_requests:
-            return False
-        self._work_done_requests[token] = context
-        return True
+        with self._work_done_lock:
+            if token in self._work_done_requests:
+                return False
+            self._work_done_requests[token] = context
+            return True
 
     def _release_work_done_request(
         self, token: str | int, context: RequestContext
     ) -> bool:
         """Release one token only when it still belongs to this generation."""
-        if self._work_done_requests.get(token) is not context:
-            return False
-        del self._work_done_requests[token]
-        return True
+        with self._work_done_lock:
+            if self._work_done_requests.get(token) is not context:
+                return False
+            del self._work_done_requests[token]
+            return True
+
+    def _retire_work_done_requests(self) -> tuple[str | int, ...]:
+        """Drop terminal progress-token ownership for the complete session."""
+        with self._work_done_lock:
+            tokens = tuple(self._work_done_requests)
+            self._work_done_requests.clear()
+            return tokens
 
     def _handle_work_done_progress_cancel(self, params: Any) -> None:
         """Translate standard progress cancellation to the owning request context."""
@@ -402,7 +413,8 @@ class LanguageServer:
         token = params["token"]
         if isinstance(token, bool) or not isinstance(token, str | int):
             return
-        context = self._work_done_requests.get(token)
+        with self._work_done_lock:
+            context = self._work_done_requests.get(token)
         if context is None:
             return
         self.requests.cancel_context(context)
