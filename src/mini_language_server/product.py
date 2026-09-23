@@ -212,46 +212,20 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
             return self._error(request_id, -32602, "Invalid params")
 
         try:
-            source_range = params.get("range")
-            action_context = params.get("context")
-            if not isinstance(source_range, dict) or not isinstance(action_context, dict):
-                return self._error(request_id, -32602, "Invalid params")
-            start = source_range.get("start")
-            end = source_range.get("end")
-            if not isinstance(start, dict) or not isinstance(end, dict):
-                return self._error(request_id, -32602, "Invalid params")
-            only = action_context.get("only")
-            if only is not None:
-                valid_only = isinstance(only, list) and all(
-                    isinstance(item, str) for item in only
-                )
-                if not valid_only:
-                    return self._error(request_id, -32602, "Invalid params")
-                supports_quickfix = any(
-                    item == "quickfix" or item.startswith("quickfix.") for item in only
-                )
-                if not supports_quickfix:
-                    self.requests.checkpoint(context)
-                    return self._result(request_id, [])
-
             uri = self._document_uri(params)
             assert uri is not None
             document = self.documents.get(uri)
             if document is None or document.language_id != self.nova_adapter.language_id:
                 self.requests.checkpoint(context)
                 return self._result(request_id, [])
-            source = self._source_text(document.text)
-            try:
-                start_offset = source.offset_at(
-                    Position(line=start.get("line"), character=start.get("character"))
-                )
-                end_offset = source.offset_at(
-                    Position(line=end.get("line"), character=end.get("character"))
-                )
-            except SourceError:
+
+            parsed = self._nova_code_action_scope(params, document.text)
+            if parsed is None:
                 return self._error(request_id, -32602, "Invalid params")
-            if end_offset < start_offset:
-                return self._error(request_id, -32602, "Invalid params")
+            source, start_offset, end_offset, supports_quickfix = parsed
+            if not supports_quickfix:
+                self.requests.checkpoint(context)
+                return self._result(request_id, [])
 
             self.requests.checkpoint(context)
             snapshot = self.diagnostics.get(uri)
