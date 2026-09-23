@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from mini_language_server import NovaProductLanguageServer
+from mini_language_server.semantic import SemanticError
 
 
 def request(method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
@@ -241,3 +244,48 @@ def test_unnegotiated_file_rename_notification_does_not_mutate_documents() -> No
 
     assert server.documents.get(old_uri) is previous
     assert server.documents.get(new_uri) is None
+
+def test_malformed_file_rename_batch_is_rejected_before_any_rekey() -> None:
+    server = initialized_server()
+    old_uri = "file:///workspace/helper.nova"
+    new_uri = "file:///workspace/renamed.nova"
+    open_nova(server, old_uri, "fn helper() {}\n")
+    previous_document = server.documents.get(old_uri)
+    previous_workspace = server.workspace_symbols.snapshots()
+    server.drain_notifications()
+
+    server.handle(
+        notify(
+            "workspace/didRenameFiles",
+            {
+                "files": [
+                    {"oldUri": old_uri, "newUri": new_uri},
+                    {"oldUri": "file:///workspace/other.nova"},
+                ]
+            },
+        )
+    )
+
+    assert server.documents.get(old_uri) is previous_document
+    assert server.documents.get(new_uri) is None
+    current_workspace = server.workspace_symbols.snapshots()
+    assert current_workspace.generation == previous_workspace.generation
+    assert tuple(current_workspace) == tuple(previous_workspace)
+    assert server.drain_notifications() == []
+
+
+def test_file_rename_does_not_swallow_semantic_publication_invariant_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = initialized_server()
+    old_uri = "file:///workspace/helper.nova"
+    new_uri = "file:///workspace/renamed.nova"
+    open_nova(server, old_uri, "fn helper() {}\n")
+
+    def fail_publish(*args: Any, **kwargs: Any):
+        raise SemanticError("injected publication invariant failure")
+
+    monkeypatch.setattr(server.nova_adapter, "publish", fail_publish)
+
+    with pytest.raises(SemanticError, match="publication invariant failure"):
+        rename_files(server, (old_uri, new_uri))
