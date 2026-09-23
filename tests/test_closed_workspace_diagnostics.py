@@ -1572,3 +1572,52 @@ def test_closed_explicit_local_matching_type_remains_clean(tmp_path: Path) -> No
     ]
 
     assert all(item["code"] != "nova.local-type" for item in report["items"])
+
+def test_closed_text_document_pull_rejects_unindexed_uri(tmp_path: Path) -> None:
+    server = initialized_server(tmp_path)
+    uri = (tmp_path / "missing.nova").absolute().as_uri()
+
+    assert server.handle(
+        request(
+            "textDocument/diagnostic",
+            40,
+            {"textDocument": {"uri": uri}},
+        )
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 40,
+        "error": {"code": -32602, "message": "Invalid params"},
+    }
+
+
+def test_closed_text_document_pull_honors_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text("fn main() { missing(); }\n", encoding="utf-8")
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+    original_checkpoint = server.requests.checkpoint
+
+    def cancel_before_checkpoint(context: Any) -> None:
+        server.requests.cancel(context.request_id)
+        original_checkpoint(context)
+
+    monkeypatch.setattr(
+        server.requests,
+        "checkpoint",
+        cancel_before_checkpoint,
+    )
+
+    assert server.handle(
+        request(
+            "textDocument/diagnostic",
+            41,
+            {"textDocument": {"uri": uri}},
+        )
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 41,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
