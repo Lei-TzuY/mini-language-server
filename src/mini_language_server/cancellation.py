@@ -80,6 +80,14 @@ class RequestTracker:
             context._cancelled.set()
             return True
 
+    def cancel_all(self) -> tuple[str | int, ...]:
+        """Cancel every active request context without retiring its identity."""
+        with self._lock:
+            contexts = tuple(self._active.values())
+            for context in contexts:
+                context._cancelled.set()
+            return tuple(context.request_id for context in contexts)
+
     def finish(self, context: RequestContext) -> bool:
         """Finish exactly this request generation.
 
