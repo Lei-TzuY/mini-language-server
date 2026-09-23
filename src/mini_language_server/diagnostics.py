@@ -20,7 +20,7 @@ DIAGNOSTIC_TAG_VALUES = {"unnecessary": 1, "deprecated": 2}
 
 @dataclass(frozen=True, slots=True)
 class DiagnosticRelatedInformation:
-    """A same-snapshot source location related to one diagnostic."""
+    """A source location related to one diagnostic and its exact semantic parent."""
 
     uri: str
     span: Span
@@ -135,7 +135,6 @@ class DiagnosticSnapshot:
                     )
                 by_uri[related.uri] = related.semantic
         return tuple(by_uri[uri] for uri in sorted(by_uri))
-
 
 
 _T = TypeVar("_T")
