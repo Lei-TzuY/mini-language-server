@@ -27,15 +27,17 @@ def initialize(
     *,
     code_action: bool = True,
     document_changes: bool = False,
+    change_annotations: bool = False,
 ) -> dict[str, Any]:
     text_document: dict[str, Any] = {}
     if code_action:
         text_document["codeAction"] = {}
-    workspace = (
-        {"workspaceEdit": {"documentChanges": True}}
-        if document_changes
-        else {}
-    )
+    workspace_edit: dict[str, Any] = {}
+    if document_changes:
+        workspace_edit["documentChanges"] = True
+    if change_annotations:
+        workspace_edit["changeAnnotationSupport"] = {}
+    workspace = {"workspaceEdit": workspace_edit} if workspace_edit else {}
     result = server.handle(
         request(
             "initialize",
@@ -234,6 +236,35 @@ def test_unresolved_function_quick_fix_uses_versioned_edit_when_negotiated() -> 
                         "end": {"line": 1, "character": 0},
                     },
                     "newText": "fn missing() {}\n",
+                }
+            ],
+        }
+    ]
+
+
+def test_quick_fix_uses_change_annotation_when_negotiated() -> None:
+    server = NovaLanguageServer()
+    initialize(server, document_changes=True, change_annotations=True)
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, 5, "fn main() { missing() }\n")
+
+    result = code_action(server, uri, 2, 0, 12, 19)
+
+    edit = result["result"][0]["edit"]
+    assert edit["changeAnnotations"] == {
+        "edit:1": {"label": "Create function 'missing'"}
+    }
+    assert edit["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": 5},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 1, "character": 0},
+                    },
+                    "newText": "fn missing() {}\n",
+                    "annotationId": "edit:1",
                 }
             ],
         }

@@ -460,9 +460,11 @@ class NovaLanguageServer(LanguageServer):
                 raise AssertionError(
                     "document-scoped code action escaped its captured document"
                 )
+            title = action.get("title")
             rendered = self._workspace_edit(
                 changes,
                 versions={document.uri: document.version},
+                annotation_label=title if isinstance(title, str) else None,
             )
             preserved = {key: value for key, value in edit.items() if key != "changes"}
             action["edit"] = {**preserved, **rendered}

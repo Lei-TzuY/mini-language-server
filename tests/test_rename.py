@@ -18,11 +18,20 @@ def notification(method: str, params: object | None = None) -> dict:
     return message
 
 
-def initialized_server(*, document_changes: bool = False) -> LanguageServer:
+def initialized_server(
+    *,
+    document_changes: bool = False,
+    change_annotations: bool = False,
+) -> LanguageServer:
     server = LanguageServer()
+    workspace_edit: dict = {}
+    if document_changes:
+        workspace_edit["documentChanges"] = True
+    if change_annotations:
+        workspace_edit["changeAnnotationSupport"] = {}
     capabilities = (
-        {"workspace": {"workspaceEdit": {"documentChanges": True}}}
-        if document_changes
+        {"workspace": {"workspaceEdit": workspace_edit}}
+        if workspace_edit
         else {}
     )
     server.handle(request("initialize", params={"capabilities": capabilities}))
@@ -341,3 +350,40 @@ def test_document_changes_capability_must_be_literal_true() -> None:
     assert response is not None
     assert "changes" in response["result"]
     assert "documentChanges" not in response["result"]
+
+
+def test_rename_uses_change_annotations_when_negotiated() -> None:
+    server = initialized_server(document_changes=True, change_annotations=True)
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "let foo = 1\nfoo foo\n", version=7)
+    publish_semantics(server, uri)
+
+    response = server.handle(request("textDocument/rename", params=rename_params(uri)))
+
+    assert response is not None
+    result = response["result"]
+    assert result["changeAnnotations"] == {
+        "edit:1": {"label": "Rename 'foo' to 'bar'"}
+    }
+    assert len(result["documentChanges"]) == 1
+    edits = result["documentChanges"][0]["edits"]
+    assert len(edits) == 3
+    assert {edit["annotationId"] for edit in edits} == {"edit:1"}
+
+
+def test_change_annotation_support_without_document_changes_keeps_legacy_edits() -> None:
+    server = initialized_server(change_annotations=True)
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "let foo = 1\nfoo foo\n")
+    publish_semantics(server, uri)
+
+    response = server.handle(request("textDocument/rename", params=rename_params(uri)))
+
+    assert response is not None
+    result = response["result"]
+    assert "documentChanges" not in result
+    assert "changeAnnotations" not in result
+    assert all(
+        "annotationId" not in edit
+        for edit in result["changes"][uri]
+    )

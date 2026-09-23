@@ -118,7 +118,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 snapshot.uri: snapshot.symbols.syntax.document.version
                 for snapshot in snapshots
             }
-            workspace_edit = self._workspace_edit(changes, versions=versions)
+            workspace_edit = self._workspace_edit(
+                changes,
+                versions=versions,
+                annotation_label=f"Rename '{name}' to '{new_name}'",
+            )
             self.requests.checkpoint(context)
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(

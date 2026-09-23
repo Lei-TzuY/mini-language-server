@@ -18,15 +18,17 @@ def initialize_params(
     *,
     properties: list[str] | None = None,
     document_changes: bool = False,
+    change_annotations: bool = False,
 ) -> dict[str, Any]:
     code_action: dict[str, Any] = {}
     if properties is not None:
         code_action["resolveSupport"] = {"properties": properties}
-    workspace = (
-        {"workspaceEdit": {"documentChanges": True}}
-        if document_changes
-        else {}
-    )
+    workspace_edit: dict[str, Any] = {}
+    if document_changes:
+        workspace_edit["documentChanges"] = True
+    if change_annotations:
+        workspace_edit["changeAnnotationSupport"] = {}
+    workspace = {"workspaceEdit": workspace_edit} if workspace_edit else {}
     return {
         "capabilities": {
             "textDocument": {"codeAction": code_action},
@@ -234,3 +236,47 @@ def test_code_action_resolve_restores_versioned_edit_when_negotiated() -> None:
             }
         ]
     }
+
+
+def test_code_action_resolve_restores_annotated_versioned_edit() -> None:
+    server = NovaProductLanguageServer()
+    initialized = server.handle(
+        request(
+            "initialize",
+            1,
+            initialize_params(
+                properties=["edit"],
+                document_changes=True,
+                change_annotations=True,
+            ),
+        )
+    )
+    assert initialized is not None
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() { missing() }\n", version=7)
+
+    action = unresolved_action(server, uri)
+    assert "edit" not in action
+
+    resolved = server.handle(request("codeAction/resolve", 3, action))
+
+    assert resolved is not None
+    edit = resolved["result"]["edit"]
+    assert edit["changeAnnotations"] == {
+        "edit:1": {"label": "Create function 'missing'"}
+    }
+    assert edit["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": 7},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 1, "character": 0},
+                    },
+                    "newText": "fn missing() {}\n",
+                    "annotationId": "edit:1",
+                }
+            ],
+        }
+    ]

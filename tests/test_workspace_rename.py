@@ -12,13 +12,17 @@ def notify(method: str, params: dict) -> dict:
 
 
 def initialize(
-    server: WorkspaceNovaLanguageServer, *, document_changes: bool = False
+    server: WorkspaceNovaLanguageServer,
+    *,
+    document_changes: bool = False,
+    change_annotations: bool = False,
 ) -> None:
-    workspace = (
-        {"workspaceEdit": {"documentChanges": True}}
-        if document_changes
-        else {}
-    )
+    workspace_edit: dict = {}
+    if document_changes:
+        workspace_edit["documentChanges"] = True
+    if change_annotations:
+        workspace_edit["changeAnnotationSupport"] = {}
+    workspace = {"workspaceEdit": workspace_edit} if workspace_edit else {}
     result = server.handle(
         request("initialize", 1, {"capabilities": {"workspace": workspace}})
     )
@@ -198,3 +202,30 @@ def test_workspace_rename_returns_versioned_document_changes_when_negotiated() -
         "line": 0,
         "character": 13,
     }
+
+
+def test_workspace_rename_annotations_cover_all_cross_file_edits() -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize(server, document_changes=True, change_annotations=True)
+    declaration_uri = "file:///workspace/library.nova"
+    caller_uri = "file:///workspace/main.nova"
+    other_uri = "file:///workspace/other.nova"
+    open_nova(server, declaration_uri, "fn target() {}\n", version=3)
+    open_nova(server, caller_uri, "fn caller() { target() }\n", version=5)
+    open_nova(server, other_uri, "fn other() { target() }\n", version=7)
+
+    result = rename(server, caller_uri)["result"]
+
+    assert result["changeAnnotations"] == {
+        "edit:1": {"label": "Rename 'target' to 'renamed'"}
+    }
+    assert [item["textDocument"] for item in result["documentChanges"]] == [
+        {"uri": declaration_uri, "version": 3},
+        {"uri": caller_uri, "version": 5},
+        {"uri": other_uri, "version": 7},
+    ]
+    assert all(
+        edit["annotationId"] == "edit:1"
+        for item in result["documentChanges"]
+        for edit in item["edits"]
+    )

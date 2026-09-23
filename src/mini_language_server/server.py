@@ -39,6 +39,7 @@ class LanguageServer:
         self.exit_code: int | None = None
         self.position_encoding = DEFAULT_POSITION_ENCODING
         self._workspace_edit_document_changes = False
+        self._workspace_edit_change_annotations = False
         self.documents = DocumentStore(position_encoding=self.position_encoding)
         self.syntax = SyntaxStore(self.documents)
         self.symbols = SymbolIndex(self.syntax)
@@ -87,6 +88,9 @@ class LanguageServer:
             self.position_encoding = self._negotiate_position_encoding(params)
             self._workspace_edit_document_changes = (
                 self._client_supports_workspace_document_changes(params)
+            )
+            self._workspace_edit_change_annotations = (
+                self._client_supports_workspace_change_annotations(params)
             )
             self.documents.set_position_encoding(self.position_encoding)
             self.state = ServerState.RUNNING
@@ -522,6 +526,7 @@ class LanguageServer:
             result = self._workspace_edit(
                 {semantics.uri: edits},
                 versions={semantics.uri: document.version},
+                annotation_label=f"Rename '{target.name}' to '{new_name}'",
             )
             return self._current_semantic_result(semantics, request_id, result)
         except RequestCancelled:
@@ -607,12 +612,20 @@ class LanguageServer:
         changes: dict[str, list[dict[str, Any]]],
         *,
         versions: dict[str, int],
+        annotation_label: str | None = None,
     ) -> dict[str, Any]:
         """Render deterministic WorkspaceEdit payloads from captured snapshot versions."""
         ordered = {uri: changes[uri] for uri in sorted(changes)}
         if not self._workspace_edit_document_changes:
             return {"changes": ordered}
 
+        annotate = (
+            self._workspace_edit_change_annotations
+            and isinstance(annotation_label, str)
+            and bool(annotation_label)
+            and any(ordered.values())
+        )
+        annotation_id = "edit:1"
         document_changes: list[dict[str, Any]] = []
         for uri, edits in ordered.items():
             version = versions.get(uri)
@@ -620,13 +633,43 @@ class LanguageServer:
                 raise AssertionError(
                     f"versioned workspace edit requires captured version for {uri}"
                 )
+            rendered_edits = (
+                [
+                    {**edit, "annotationId": annotation_id}
+                    for edit in edits
+                ]
+                if annotate
+                else edits
+            )
             document_changes.append(
                 {
                     "textDocument": {"uri": uri, "version": version},
-                    "edits": edits,
+                    "edits": rendered_edits,
                 }
             )
-        return {"documentChanges": document_changes}
+
+        result: dict[str, Any] = {"documentChanges": document_changes}
+        if annotate:
+            result["changeAnnotations"] = {
+                annotation_id: {"label": annotation_label}
+            }
+        return result
+
+    @staticmethod
+    def _client_supports_workspace_change_annotations(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        workspace_edit = workspace.get("workspaceEdit")
+        if not isinstance(workspace_edit, dict):
+            return False
+        support = workspace_edit.get("changeAnnotationSupport")
+        return isinstance(support, dict)
 
     @staticmethod
     def _client_supports_completion(params: Any) -> bool:

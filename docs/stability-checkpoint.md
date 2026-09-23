@@ -53,7 +53,7 @@ The following remain deliberate future work:
 - hover and completion
 - semantic tokens
 - multi-file/workspace symbol and reference indexing
-- WorkspaceEdit change annotations or resource operations when a concrete editor workflow requires them
+- WorkspaceEdit resource operations when a concrete editor workflow requires file create/rename/delete semantics
 - broader LSP compliance surface
 - editor-specific integration layers
 
