@@ -744,7 +744,7 @@ def test_closed_call_site_repairs_respect_range_and_lazy_resolve(
     first = "fn pair(left: Int, right: Int) {}"
     second = "fn text(value: String) {}"
     third = "fn caller(value: Int) { pair(value) text(1) }"
-    source.write_bytes(f"{first}\n{second}\n{third}\n".encode("utf-8"))
+    source.write_bytes(f"{first}\n{second}\n{third}\n".encode())
     server = initialized_server(
         tmp_path,
         document_changes=True,
