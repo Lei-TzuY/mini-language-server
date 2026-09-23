@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from threading import Event, Thread
+from typing import Any
+
 import pytest
 
 from mini_language_server.workspace import WorkspaceIndexError
@@ -321,3 +324,271 @@ def test_workspace_symbol_rejects_scope_change_after_search_capture(
         "id": 2,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+def initialize_with_work_done(server: WorkspaceNovaLanguageServer) -> dict:
+    result = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "workspace": {"symbol": {}},
+                    "window": {"workDoneProgress": True},
+                }
+            },
+        )
+    )
+    assert result is not None
+    return result
+
+
+def workspace_symbol_source(count: int) -> str:
+    return "".join(f"fn symbol_{index:02d}() {{}}\n" for index in range(count))
+
+
+def test_workspace_symbol_partial_results_stream_after_exact_commit() -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/many.nova"
+    open_nova(server, uri, workspace_symbol_source(20))
+    server.drain_notifications()
+
+    response = server.handle(
+        request(
+            "workspace/symbol",
+            2,
+            {"query": "", "partialResultToken": "symbols"},
+        )
+    )
+
+    assert response == {"jsonrpc": "2.0", "id": 2, "result": []}
+    progress = server.drain_notifications()
+    assert [item["params"]["token"] for item in progress] == ["symbols", "symbols"]
+    assert [len(item["params"]["value"]) for item in progress] == [16, 4]
+    streamed = [
+        symbol
+        for item in progress
+        for symbol in item["params"]["value"]
+    ]
+    assert [item["name"] for item in streamed] == [
+        f"symbol_{index:02d}" for index in range(20)
+    ]
+
+
+def test_workspace_symbol_without_partial_token_keeps_full_result() -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize(server)
+    open_nova(
+        server,
+        "file:///workspace/main.nova",
+        "fn alpha() {}\nfn beta() {}\n",
+    )
+    server.drain_notifications()
+
+    response = server.handle(request("workspace/symbol", 2, {"query": ""}))
+
+    assert response is not None
+    assert [item["name"] for item in response["result"]] == ["alpha", "beta"]
+    assert server.drain_notifications() == []
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("partialResultToken", True),
+        ("partialResultToken", {}),
+        ("workDoneToken", False),
+        ("workDoneToken", []),
+    ],
+)
+def test_workspace_symbol_rejects_invalid_progress_tokens(
+    key: str, value: Any
+) -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize(server)
+
+    assert server.handle(
+        request("workspace/symbol", 2, {"query": "", key: value})
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32602, "message": "Invalid params"},
+    }
+
+
+def test_workspace_symbol_reports_work_done_progress_when_negotiated() -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize_with_work_done(server)
+    open_nova(
+        server,
+        "file:///workspace/main.nova",
+        "fn alpha() {}\nfn beta() {}\n",
+    )
+    server.drain_notifications()
+
+    response = server.handle(
+        request(
+            "workspace/symbol",
+            2,
+            {"query": "", "workDoneToken": "work"},
+        )
+    )
+
+    assert response is not None
+    assert [item["name"] for item in response["result"]] == ["alpha", "beta"]
+    notifications = server.drain_notifications()
+    assert [item["params"] for item in notifications] == [
+        {
+            "token": "work",
+            "value": {
+                "kind": "begin",
+                "title": "Workspace symbols",
+                "cancellable": True,
+                "percentage": 0,
+            },
+        },
+        {
+            "token": "work",
+            "value": {
+                "kind": "report",
+                "message": "Processed 2 of 2 workspace symbols",
+                "percentage": 100,
+            },
+        },
+        {
+            "token": "work",
+            "value": {
+                "kind": "end",
+                "message": "Workspace symbol search complete",
+            },
+        },
+    ]
+
+
+def test_workspace_symbol_ignores_work_done_output_without_client_support() -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize(server)
+    open_nova(server, "file:///workspace/main.nova", "fn alpha() {}\n")
+    server.drain_notifications()
+
+    response = server.handle(
+        request(
+            "workspace/symbol",
+            2,
+            {"query": "", "workDoneToken": "work"},
+        )
+    )
+
+    assert response is not None
+    assert [item["name"] for item in response["result"]] == ["alpha"]
+    assert server.drain_notifications() == []
+
+
+def test_workspace_symbol_cancellation_ends_work_done_without_partial_data(
+    monkeypatch: Any,
+) -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize_with_work_done(server)
+    open_nova(server, "file:///workspace/main.nova", workspace_symbol_source(4))
+    server.drain_notifications()
+    entered = Event()
+    release = Event()
+    responses: list[dict[str, Any] | None] = []
+    original = server.requests.checkpoint
+    calls = 0
+
+    def blocked_checkpoint(context) -> None:
+        nonlocal calls
+        calls += 1
+        original(context)
+        if calls == 2:
+            entered.set()
+            assert release.wait(timeout=5)
+            original(context)
+
+    monkeypatch.setattr(server.requests, "checkpoint", blocked_checkpoint)
+    thread = Thread(
+        target=lambda: responses.append(
+            server.handle(
+                request(
+                    "workspace/symbol",
+                    2,
+                    {
+                        "query": "",
+                        "partialResultToken": "symbols",
+                        "workDoneToken": "work",
+                    },
+                )
+            )
+        )
+    )
+    thread.start()
+    assert entered.wait(timeout=5)
+    server.handle(notify("$/cancelRequest", {"id": 2}))
+    release.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert responses == [
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "error": {"code": -32800, "message": "Request cancelled"},
+        }
+    ]
+    notifications = server.drain_notifications()
+    assert [item["params"]["token"] for item in notifications] == ["work", "work"]
+    assert notifications[0]["params"]["value"]["kind"] == "begin"
+    assert notifications[-1]["params"]["value"] == {
+        "kind": "end",
+        "message": "Workspace symbol search cancelled",
+    }
+
+
+def test_workspace_symbol_stale_commit_emits_no_partial_symbol_data(
+    monkeypatch: Any,
+) -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize(server)
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn alpha() {}\n")
+    server.drain_notifications()
+    original = server.workspace_symbols.get(uri)
+    document = server.documents.get(uri)
+    assert original is not None and document is not None
+    real_commit = server.workspace_symbols.commit_snapshots_if_current
+    injected = False
+
+    def replace_then_commit(snapshots, callback):
+        nonlocal injected
+        if not injected:
+            injected = True
+            replacement = server.nova_adapter.publish(server, document)
+            server.workspace_symbols.replace(replacement, expected=original)
+        return real_commit(snapshots, callback)
+
+    monkeypatch.setattr(
+        server.workspace_symbols,
+        "commit_snapshots_if_current",
+        replace_then_commit,
+    )
+
+    response = server.handle(
+        request(
+            "workspace/symbol",
+            2,
+            {"query": "", "partialResultToken": "symbols"},
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    notifications = server.drain_notifications()
+    assert all(
+        notification.get("method") != "$/progress"
+        or notification.get("params", {}).get("token") != "symbols"
+        for notification in notifications
+    )
