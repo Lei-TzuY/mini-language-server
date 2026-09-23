@@ -17,7 +17,7 @@ LSP / JSON-RPC lifecycle
 
 ## Current capabilities
 
-- bounded LSP `Content-Length` framing and JSON-RPC lifecycle handling
+- bounded LSP `Content-Length` framing and JSON-RPC lifecycle handling with notification-only `initialized`/`exit` shape enforcement and idempotent terminal exit semantics
 - standard LSP `$/setTrace` (`off` / `messages` / `verbose`) with product-wide `$/logTrace` lifecycle observability for client traffic, outbound notifications/progress, and tracked server-to-client requests; verbose mode records deterministic structural metadata without copying source text or arbitrary payload values
 - document open/change/close with monotonic versions and incremental edits
 - negotiated LSP position encoding across the complete session (`utf-8`, `utf-16`, and `utf-32`, defaulting compatibly to `utf-16`), with one coordinate contract for incremental edits, navigation/diagnostic/formatting ranges, workspace edits, and semantic-token starts/lengths
