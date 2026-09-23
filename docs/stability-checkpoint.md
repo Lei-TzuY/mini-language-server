@@ -12,7 +12,7 @@ The checkpoint covers:
 4. syntax snapshot publication
 5. symbol snapshot publication
 6. semantic reference publication
-7. diagnostic publication and notification emission with negotiated push version/tag/related-location metadata
+7. diagnostic publication plus push/pull rendering with negotiated version/tag/related-location metadata and exact direct related-document pull dependencies
 8. definition/reference/rename queries
 9. request cancellation
 10. tracked server-to-client JSON-RPC requests, response retirement, and validated consumer response delivery
