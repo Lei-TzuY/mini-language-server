@@ -164,11 +164,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             items = [self._diagnostic(source, item) for item in snapshot.diagnostics]
             result_id = self._diagnostic_result_id(document, snapshot)
             report = self._diagnostic_report(previous_result_id, result_id, items)
-            (
-                related_documents,
-                related_snapshots,
-                related_reports,
-            ) = self._pull_related_document_reports(snapshot)
+            try:
+                (
+                    related_documents,
+                    related_snapshots,
+                    related_reports,
+                ) = self._pull_related_document_reports(snapshot)
+            except DiagnosticError:
+                return self._error(request_id, -32801, "Content modified")
             if related_reports:
                 report["relatedDocuments"] = related_reports
 
