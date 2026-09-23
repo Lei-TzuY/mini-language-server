@@ -1096,3 +1096,29 @@ def test_live_server_response_guard_requires_delivered_pending_request() -> None
             "error": {"code": -32603, "message": "mixed"},
         }
     ) is False
+
+def test_server_request_queue_wakes_bound_runtime_only_while_running() -> None:
+    server = LanguageServer()
+    wakes: list[str] = []
+    server._set_runtime_outbound_wakeup(lambda: wakes.append("wake"))
+
+    unsent = server._queue_server_request("test/pre-initialize")
+    assert unsent == "server:1"
+    assert wakes == []
+    server.drain_server_requests()
+
+    assert server.handle(request("initialize", request_id=2)) is not None
+    request_id = server._queue_server_request(
+        "test/dependency",
+        {"value": "needed"},
+    )
+    assert request_id == "server:2"
+    assert wakes == ["wake"]
+
+    assert server.handle(request("shutdown", request_id=3)) == {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": None,
+    }
+    server._queue_server_request("test/post-shutdown")
+    assert wakes == ["wake"]
