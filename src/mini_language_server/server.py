@@ -6,7 +6,13 @@ from collections.abc import Iterable
 from enum import Enum, auto
 from typing import Any
 
-from .cancellation import RequestCancelled, RequestError, RequestTracker, StaleRequest
+from .cancellation import (
+    RequestCancelled,
+    RequestContext,
+    RequestError,
+    RequestTracker,
+    StaleRequest,
+)
 from .diagnostics import (
     DIAGNOSTIC_TAG_VALUES,
     Diagnostic,
@@ -49,6 +55,7 @@ class LanguageServer:
         self._diagnostic_tag_values: frozenset[int] = frozenset()
         self._diagnostic_related_information_support = False
         self._work_done_progress_support = False
+        self._work_done_requests: dict[str | int, RequestContext] = {}
         self.documents = DocumentStore(position_encoding=self.position_encoding)
         self.syntax = SyntaxStore(self.documents)
         self.symbols = SymbolIndex(self.syntax)
@@ -168,6 +175,10 @@ class LanguageServer:
 
         if not is_request and method == "$/cancelRequest":
             self._handle_cancel_request(message.get("params"))
+            return None
+
+        if not is_request and method == "window/workDoneProgress/cancel":
+            self._handle_work_done_progress_cancel(message.get("params"))
             return None
 
         if not is_request and method.startswith("textDocument/"):
@@ -363,6 +374,36 @@ class LanguageServer:
         error: dict[str, Any] | None,
     ) -> None:
         """Extension point for consumers that need a tracked client response payload."""
+
+    def _register_work_done_request(
+        self, token: str | int, context: RequestContext
+    ) -> bool:
+        """Bind one active work-done token to exactly one request generation."""
+        if token in self._work_done_requests:
+            return False
+        self._work_done_requests[token] = context
+        return True
+
+    def _release_work_done_request(
+        self, token: str | int, context: RequestContext
+    ) -> bool:
+        """Release one token only when it still belongs to this generation."""
+        if self._work_done_requests.get(token) is not context:
+            return False
+        del self._work_done_requests[token]
+        return True
+
+    def _handle_work_done_progress_cancel(self, params: Any) -> None:
+        """Translate standard progress cancellation to the owning request context."""
+        if not isinstance(params, dict) or "token" not in params:
+            return
+        token = params["token"]
+        if isinstance(token, bool) or not isinstance(token, str | int):
+            return
+        context = self._work_done_requests.get(token)
+        if context is None:
+            return
+        self.requests.cancel_context(context)
 
     def _handle_cancel_request(self, params: Any) -> None:
         """Apply an LSP cancellation notification to the matching active request."""
