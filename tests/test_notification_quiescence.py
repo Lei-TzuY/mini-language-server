@@ -38,6 +38,9 @@ def test_shutdown_discards_stale_notifications_but_preserves_remote_cancel() -> 
         "textDocument/publishDiagnostics",
         {"uri": "file:///workspace/main.nova", "diagnostics": []},
     )
+    earlier = server._queue_server_request("workspace/configuration")
+    server.drain_server_requests()
+    assert server._cancel_server_request(earlier) is True
 
     sent = server._queue_server_request("workspace/diagnostic/refresh")
     assert server.drain_server_requests()[0]["id"] == sent
