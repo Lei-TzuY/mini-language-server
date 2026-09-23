@@ -7,10 +7,10 @@ from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any
 
+from .closed_return_types import NovaProductLanguageServer as _NovaProductLanguageServer
 from .constant_control_flow import proven_non_fallthrough_while_spans
 from .constant_values import bounded_boolean_constant_value
 from .diagnostics import Diagnostic
-from .expression_local_types import NovaProductLanguageServer as _NovaProductLanguageServer
 from .return_types import ReturnTypeNovaFunctionAdapter
 from .semantic import SemanticSnapshot
 from .source import Span
