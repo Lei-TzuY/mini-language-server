@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import Any, BinaryIO
 
 MAX_CONTENT_LENGTH = 8 * 1024 * 1024
+MAX_HEADER_BYTES = 64 * 1024
+MAX_HEADER_COUNT = 64
+MAX_HEADER_LINE_LENGTH = 8192
 
 
 class FramingError(ValueError):
@@ -29,26 +32,56 @@ class JsonRpcError:
 class MessageReader:
     """Read Content-Length framed JSON-RPC messages from a binary stream."""
 
-    def __init__(self, stream: BinaryIO, *, max_content_length: int = MAX_CONTENT_LENGTH) -> None:
+    def __init__(
+        self,
+        stream: BinaryIO,
+        *,
+        max_content_length: int = MAX_CONTENT_LENGTH,
+        max_header_bytes: int = MAX_HEADER_BYTES,
+        max_header_count: int = MAX_HEADER_COUNT,
+    ) -> None:
         if max_content_length <= 0:
             raise ValueError("max_content_length must be positive")
+        if max_header_bytes <= 0:
+            raise ValueError("max_header_bytes must be positive")
+        if max_header_count <= 0:
+            raise ValueError("max_header_count must be positive")
         self._stream = stream
         self._max_content_length = max_content_length
+        self._max_header_bytes = max_header_bytes
+        self._max_header_count = max_header_count
 
     def read(self) -> dict[str, Any] | None:
         headers: dict[str, str] = {}
         saw_anything = False
+        header_bytes = 0
+        header_count = 0
 
         while True:
-            raw = self._stream.readline()
+            remaining_header_bytes = self._max_header_bytes - header_bytes
+            read_limit = min(
+                MAX_HEADER_LINE_LENGTH,
+                remaining_header_bytes,
+            ) + 1
+            raw = self._stream.readline(read_limit)
             if raw == b"":
                 if not saw_anything:
                     return None
                 raise FramingError("unexpected EOF while reading headers")
             saw_anything = True
+
+            header_bytes += len(raw)
+            if header_bytes > self._max_header_bytes:
+                raise FramingError("header section exceeds configured size limit")
+
             if raw in (b"\r\n", b"\n"):
                 break
-            if len(raw) > 8192:
+
+            header_count += 1
+            if header_count > self._max_header_count:
+                raise FramingError("header count exceeds configured limit")
+
+            if len(raw) > MAX_HEADER_LINE_LENGTH:
                 raise FramingError("header line too long")
             try:
                 line = raw.decode("ascii").rstrip("\r\n")
