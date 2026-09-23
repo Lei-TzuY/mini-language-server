@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .function_call_arguments import NovaProductLanguageServer as _NovaProductLanguageServer
+from .local_call_initializers import direct_local_call_initializer
 from .workspace import WorkspaceIndexError
-
-_IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
-_LOCAL_CALL_PREFIX = re.compile(rf"\s*=\s*(?P<name>{_IDENTIFIER})\s*\(")
-_LOCAL_INITIALIZER_TAIL = re.compile(
-    rf"\s*(?=\}}|let\b|{_IDENTIFIER}(?:\s*\(|\b)|$)"
-)
-
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product with bounded exact-workspace call initializer inference."""
@@ -31,24 +24,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return inherited
 
         text = snapshot.symbols.syntax.document.text
-        code = self.nova_adapter.code_view(text)
-        suffix = code[target.span.end :]
-        call = _LOCAL_CALL_PREFIX.match(suffix)
-        if call is None:
-            return None
-
-        expression_start = target.span.end + call.start("name")
-        expression = text[expression_start:]
-        expression_code = code[expression_start:]
-        name_end = call.end("name") - call.start("name")
-        parsed = self._call_argument_bounds(expression, name_end)
+        parsed = direct_local_call_initializer(
+            text,
+            self.nova_adapter.code_view(text),
+            target.span.end,
+            self._call_argument_bounds,
+        )
         if parsed is None:
             return None
-        closing = parsed[1]
-        if _LOCAL_INITIALIZER_TAIL.match(expression_code[closing + 1 :]) is None:
-            return None
-
-        return self._function_call_return_type(expression[: closing + 1])
+        _, expression = parsed
+        return self._function_call_return_type(expression)
 
     def _handle_workspace_hover(
         self, request_id: Any, params: Any
