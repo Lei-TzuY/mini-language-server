@@ -69,6 +69,9 @@ def initialized_server(
 def code_action_params(
     uri: str,
     *,
+    line: int = 0,
+    start: int = 12,
+    end: int = 19,
     only: list[str] | None = None,
 ) -> dict[str, Any]:
     context: dict[str, Any] = {"diagnostics": []}
@@ -77,8 +80,8 @@ def code_action_params(
     return {
         "textDocument": {"uri": uri},
         "range": {
-            "start": {"line": 0, "character": 12},
-            "end": {"line": 0, "character": 19},
+            "start": {"line": line, "character": start},
+            "end": {"line": line, "character": end},
         },
         "context": context,
     }
@@ -89,13 +92,22 @@ def closed_action(
     uri: str,
     *,
     request_id: int = 2,
+    line: int = 0,
+    start: int = 12,
+    end: int = 19,
     only: list[str] | None = None,
 ) -> dict[str, Any]:
     response = server.handle(
         request(
             "textDocument/codeAction",
             request_id,
-            code_action_params(uri, only=only),
+            code_action_params(
+                uri,
+                line=line,
+                start=start,
+                end=end,
+                only=only,
+            ),
         )
     )
     assert response is not None
@@ -465,3 +477,152 @@ def test_closed_lazy_action_rejects_open_takeover_during_planning(
         "error": {"code": -32801, "message": "Content modified"},
     }
     assert server.documents.get(uri) is not None
+
+def test_closed_return_type_mismatch_gets_literal_repair(tmp_path: Path) -> None:
+    source = tmp_path / "return.nova"
+    text = 'fn value() -> Int { return "bad"; }\n'
+    source.write_bytes(text.encode("utf-8"))
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+    start = text.index('"bad"')
+
+    response = closed_action(
+        server,
+        uri,
+        request_id=30,
+        start=start,
+        end=start + len('"bad"'),
+    )
+
+    assert len(response["result"]) == 1
+    action = response["result"][0]
+    assert action["title"] == "Replace return expression with Int literal"
+    assert action["diagnostics"][0]["code"] == "nova.return-type"
+    assert action["edit"]["changes"][uri] == [
+        {
+            "range": {
+                "start": {"line": 0, "character": start},
+                "end": {"line": 0, "character": start + len('"bad"')},
+            },
+            "newText": "0",
+        }
+    ]
+    assert server.documents.get(uri) is None
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_local_type_mismatch_gets_literal_repair_with_null_version(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "local.nova"
+    text = 'fn caller() { let local: Int = "bad"; }\n'
+    source.write_bytes(text.encode("utf-8"))
+    server = initialized_server(tmp_path, document_changes=True)
+    uri = source.absolute().as_uri()
+    start = text.index('"bad"')
+
+    response = closed_action(
+        server,
+        uri,
+        request_id=31,
+        start=start,
+        end=start + len('"bad"'),
+    )
+
+    assert len(response["result"]) == 1
+    action = response["result"][0]
+    assert action["title"] == "Replace local initializer with Int literal"
+    assert action["diagnostics"][0]["code"] == "nova.local-type"
+    assert action["edit"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": None},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": start},
+                        "end": {"line": 0, "character": start + len('"bad"')},
+                    },
+                    "newText": "0",
+                }
+            ],
+        }
+    ]
+
+
+def test_closed_type_repairs_respect_requested_range(tmp_path: Path) -> None:
+    source = tmp_path / "types.nova"
+    first = 'fn value() -> Int { return "bad"; }'
+    second = 'fn caller() { let local: String = 1; }'
+    text = f"{first}\n{second}\n"
+    source.write_bytes(text.encode("utf-8"))
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+
+    return_start = first.index('"bad"')
+    returned = closed_action(
+        server,
+        uri,
+        request_id=32,
+        line=0,
+        start=return_start,
+        end=return_start + len('"bad"'),
+    )
+    assert [item["title"] for item in returned["result"]] == [
+        "Replace return expression with Int literal"
+    ]
+
+    local_start = second.index("1")
+    local = closed_action(
+        server,
+        uri,
+        request_id=33,
+        line=1,
+        start=local_start,
+        end=local_start + 1,
+    )
+    assert [item["title"] for item in local["result"]] == [
+        "Replace local initializer with String literal"
+    ]
+    assert local["result"][0]["edit"]["changes"][uri][0]["newText"] == '""'
+
+
+def test_closed_type_mismatch_repair_uses_lazy_resolve(tmp_path: Path) -> None:
+    source = tmp_path / "return.nova"
+    text = 'fn value() -> Bool { return 1; }\n'
+    source.write_bytes(text.encode("utf-8"))
+    server = initialized_server(
+        tmp_path,
+        document_changes=True,
+        resolve_edit=True,
+    )
+    uri = source.absolute().as_uri()
+    start = text.index("1")
+
+    action = closed_action(
+        server,
+        uri,
+        request_id=34,
+        start=start,
+        end=start + 1,
+    )["result"][0]
+
+    assert action["title"] == "Replace return expression with Bool literal"
+    assert "edit" not in action
+    assert action["data"]["novaCodeActionResolve"] >= 1
+
+    resolved = server.handle(request("codeAction/resolve", 35, action))
+    assert resolved is not None
+    assert resolved["result"]["edit"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": None},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": start},
+                        "end": {"line": 0, "character": start + 1},
+                    },
+                    "newText": "false",
+                }
+            ],
+        }
+    ]

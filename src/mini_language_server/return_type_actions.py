@@ -27,6 +27,38 @@ _MISSING_RETURN = re.compile(
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product with executable return-diagnostic repairs."""
 
+    def _closed_nova_code_actions(
+        self,
+        uri: str,
+        document: Any,
+        source: Any,
+        diagnostics: tuple[Diagnostic, ...],
+        start_offset: int,
+        end_offset: int,
+    ) -> list[dict[str, Any]]:
+        """Add detached repairs whose policy is fully captured by the diagnostic."""
+        actions = super()._closed_nova_code_actions(
+            uri,
+            document,
+            source,
+            diagnostics,
+            start_offset,
+            end_offset,
+        )
+        for diagnostic in diagnostics:
+            if diagnostic.code != "nova.return-type":
+                continue
+            if not self._return_diagnostic_overlaps(
+                diagnostic,
+                start_offset=start_offset,
+                end_offset=end_offset,
+            ):
+                continue
+            action = self._return_type_quick_fix(uri, source, diagnostic)
+            if action is not None:
+                actions.append(action)
+        return actions
+
     def _nova_code_actions(
         self,
         uri: str,
