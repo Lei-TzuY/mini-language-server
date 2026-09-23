@@ -69,3 +69,13 @@ def test_return_inference_reachability_runs_after_control_flow_analysis() -> Non
     inferred = modules.index("mini_language_server.inferred_function_returns")
 
     assert semantic < nested < inferred
+
+
+def test_closed_unreachable_layer_precedes_completion_publication() -> None:
+    modules = [base.__module__ for base in NovaProductLanguageServer.__mro__]
+
+    completion = modules.index("mini_language_server.completion_pipeline")
+    closed_unreachable = modules.index("mini_language_server.closed_unreachable")
+    unary_plus = modules.index("mini_language_server.unary_plus")
+
+    assert completion < closed_unreachable < unary_plus
