@@ -906,6 +906,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self._watched_files_registration_request = None
         if error is None and result is None:
             self._watched_files_registration_active = True
+            self._refresh_closed_workspace_files()
 
     def _workspace_function_query(self, params: Any):
         parsed = self._semantic_query(params)
