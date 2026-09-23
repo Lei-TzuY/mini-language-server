@@ -237,11 +237,14 @@ def test_create_delete_notifications_update_closed_workspace_reports(
     )["result"]["items"] == []
 
 
-def test_closed_text_document_pull_remains_outside_ownership(
+def test_closed_text_document_pull_returns_detached_report(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "closed.nova"
-    source.write_text("fn main() { missing(); }\n", encoding="utf-8")
+    source.write_text(
+        'fn main() { missing(); let local: Int = "bad"; }\n',
+        encoding="utf-8",
+    )
     server = initialized_server(tmp_path)
     uri = source.absolute().as_uri()
 
@@ -253,10 +256,182 @@ def test_closed_text_document_pull_remains_outside_ownership(
         )
     )
 
-    assert response == {
+    assert response is not None
+    report = response["result"]
+    assert report["kind"] == "full"
+    assert report["resultId"].startswith("null:")
+    assert [item["code"] for item in report["items"]] == [
+        "nova.unresolved-function",
+        "nova.local-type",
+    ]
+    assert server.documents.get(uri) is None
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_text_document_pull_supports_unchanged_result(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text("fn main() { missing(); }\n", encoding="utf-8")
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+
+    first = server.handle(
+        request(
+            "textDocument/diagnostic",
+            9,
+            {"textDocument": {"uri": uri}},
+        )
+    )
+    assert first is not None
+    result_id = first["result"]["resultId"]
+
+    second = server.handle(
+        request(
+            "textDocument/diagnostic",
+            10,
+            {
+                "textDocument": {"uri": uri},
+                "previousResultId": result_id,
+            },
+        )
+    )
+
+    assert second == {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "result": {"kind": "unchanged", "resultId": result_id},
+    }
+
+
+def test_closed_text_document_pull_rebinds_cross_file_type_evidence(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        'fn make() -> String { return "bad"; }\n',
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn main() { let local: Int = make(); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    caller_uri = caller.absolute().as_uri()
+
+    first = server.handle(
+        request(
+            "textDocument/diagnostic",
+            9,
+            {"textDocument": {"uri": caller_uri}},
+        )
+    )
+    assert first is not None
+    assert any(
+        item["code"] == "nova.local-type"
+        for item in first["result"]["items"]
+    )
+
+    provider.write_text(
+        "fn make() -> Int { return 1; }\n",
+        encoding="utf-8",
+    )
+    assert server._sync_closed_workspace_files() is True
+
+    second = server.handle(
+        request(
+            "textDocument/diagnostic",
+            10,
+            {"textDocument": {"uri": caller_uri}},
+        )
+    )
+    assert second is not None
+    assert all(
+        item["code"] != "nova.local-type"
+        for item in second["result"]["items"]
+    )
+
+
+def test_open_buffer_takes_over_closed_text_document_pull(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text("fn main() { missing(); }\n", encoding="utf-8")
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+
+    closed = server.handle(
+        request(
+            "textDocument/diagnostic",
+            9,
+            {"textDocument": {"uri": uri}},
+        )
+    )
+    assert closed is not None
+    assert closed["result"]["resultId"].startswith("null:")
+
+    server.handle(
+        notify(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "nova",
+                    "version": 1,
+                    "text": "fn main() {}\n",
+                }
+            },
+        )
+    )
+
+    opened = server.handle(
+        request(
+            "textDocument/diagnostic",
+            10,
+            {"textDocument": {"uri": uri}},
+        )
+    )
+    assert opened is not None
+    assert opened["result"]["resultId"].startswith("1:")
+    assert opened["result"]["items"] == []
+
+
+def test_closed_text_document_pull_rejects_workspace_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text("fn main() { missing(); }\n", encoding="utf-8")
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+    original_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def replace_before_commit(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        original_checkpoint(context)
+        if calls == 2:
+            source.write_text("fn main() {}\n", encoding="utf-8")
+            assert server._sync_closed_workspace_files() is True
+
+    monkeypatch.setattr(
+        server.requests,
+        "checkpoint",
+        replace_before_commit,
+    )
+
+    assert server.handle(
+        request(
+            "textDocument/diagnostic",
+            9,
+            {"textDocument": {"uri": uri}},
+        )
+    ) == {
         "jsonrpc": "2.0",
         "id": 9,
-        "error": {"code": -32602, "message": "Invalid params"},
+        "error": {"code": -32801, "message": "Content modified"},
     }
 
 
@@ -1397,3 +1572,52 @@ def test_closed_explicit_local_matching_type_remains_clean(tmp_path: Path) -> No
     ]
 
     assert all(item["code"] != "nova.local-type" for item in report["items"])
+
+def test_closed_text_document_pull_rejects_unindexed_uri(tmp_path: Path) -> None:
+    server = initialized_server(tmp_path)
+    uri = (tmp_path / "missing.nova").absolute().as_uri()
+
+    assert server.handle(
+        request(
+            "textDocument/diagnostic",
+            40,
+            {"textDocument": {"uri": uri}},
+        )
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 40,
+        "error": {"code": -32602, "message": "Invalid params"},
+    }
+
+
+def test_closed_text_document_pull_honors_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text("fn main() { missing(); }\n", encoding="utf-8")
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+    original_checkpoint = server.requests.checkpoint
+
+    def cancel_before_checkpoint(context: Any) -> None:
+        server.requests.cancel(context.request_id)
+        original_checkpoint(context)
+
+    monkeypatch.setattr(
+        server.requests,
+        "checkpoint",
+        cancel_before_checkpoint,
+    )
+
+    assert server.handle(
+        request(
+            "textDocument/diagnostic",
+            41,
+            {"textDocument": {"uri": uri}},
+        )
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 41,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
