@@ -937,3 +937,120 @@ def test_cancel_unknown_server_request_is_noop() -> None:
     assert server._cancel_server_request("server:missing") is False
     assert server.drain_server_requests() == []
     assert server.drain_notifications() == []
+
+def test_shutdown_cancels_sent_server_requests_and_ignores_late_response() -> None:
+    class RecordingServer(LanguageServer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.completed: list[str] = []
+            self.cancelled: list[tuple[str, str]] = []
+
+        def _server_request_completed(
+            self,
+            request_id: str,
+            method: str,
+            *,
+            result: object,
+            error: dict[str, object] | None,
+        ) -> None:
+            self.completed.append(request_id)
+
+        def _server_request_cancelled(self, request_id: str, method: str) -> None:
+            self.cancelled.append((request_id, method))
+
+    server = RecordingServer()
+    server.handle(request("initialize"))
+    pending = server._queue_server_request("workspace/configuration")
+    assert len(server.drain_server_requests()) == 1
+
+    response = server.handle(request("shutdown", request_id=2))
+
+    assert response == {"jsonrpc": "2.0", "id": 2, "result": None}
+    assert server.state is ServerState.SHUTDOWN
+    assert server.cancelled == [(pending, "workspace/configuration")]
+    assert server.drain_notifications() == [
+        {
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": {"id": pending},
+        }
+    ]
+    assert not server._has_pending_server_request("workspace/configuration")
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": pending,
+            "result": [{"tabSize": 2, "insertSpaces": True}],
+        }
+    ) is None
+    assert server.completed == []
+
+
+def test_shutdown_retracts_unsent_server_requests_without_remote_cancel() -> None:
+    server = initialized_server()
+    server._queue_server_request("workspace/configuration")
+
+    response = server.handle(request("shutdown", request_id=2))
+
+    assert response == {"jsonrpc": "2.0", "id": 2, "result": None}
+    assert server.drain_server_requests() == []
+    assert server.drain_notifications() == []
+    assert not server._has_pending_server_request("workspace/configuration")
+
+
+def test_exit_retires_sent_server_requests_without_new_protocol_traffic() -> None:
+    class RecordingServer(LanguageServer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.completed: list[str] = []
+            self.cancelled: list[tuple[str, str]] = []
+
+        def _server_request_completed(
+            self,
+            request_id: str,
+            method: str,
+            *,
+            result: object,
+            error: dict[str, object] | None,
+        ) -> None:
+            self.completed.append(request_id)
+
+        def _server_request_cancelled(self, request_id: str, method: str) -> None:
+            self.cancelled.append((request_id, method))
+
+    server = RecordingServer()
+    server.handle(request("initialize"))
+    pending = server._queue_server_request("workspace/configuration")
+    server.drain_server_requests()
+
+    assert server.handle(notification("exit")) is None
+
+    assert server.state is ServerState.EXITED
+    assert server.exit_code == 1
+    assert server.cancelled == [(pending, "workspace/configuration")]
+    assert server.drain_notifications() == []
+    assert not server._has_pending_server_request("workspace/configuration")
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": pending,
+            "result": [],
+        }
+    ) is None
+    assert server.completed == []
+
+
+def test_exited_server_ignores_new_client_messages_before_dispatch() -> None:
+    server = initialized_server()
+    server.handle(notification("exit"))
+
+    assert server.handle(request("workspace/unknown", request_id=9)) is None
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": "server:missing",
+            "result": None,
+        }
+    ) is None
