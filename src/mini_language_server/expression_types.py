@@ -39,6 +39,134 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return comparison_type
         return self._integer_arithmetic_type(semantic, expression, span)
 
+    def _closed_argument_type(
+        self,
+        snapshot: Any,
+        argument: Span,
+    ) -> str | None:
+        """Extend detached reference evidence with bounded expression typing."""
+        inherited = super()._closed_argument_type(snapshot, argument)
+        if inherited is not None:
+            return inherited
+        text = snapshot.symbols.syntax.document.text
+        return self._closed_expression_type(
+            snapshot,
+            text[argument.start : argument.end],
+            argument,
+        )
+
+    def _closed_expression_type(
+        self,
+        snapshot: Any,
+        expression: str,
+        span: Span,
+    ) -> str | None:
+        """Type one detached expression using only same-snapshot leaf evidence."""
+        expression, span = self._trim_expression(expression, span)
+        expression, span = self._unwrap_expression_with_span(expression, span)
+        if not expression:
+            return None
+
+        parts = self._split_top_level_logical(expression, span, "||")
+        if parts is not None:
+            if not parts:
+                return None
+            return (
+                "Bool"
+                if all(
+                    self._closed_expression_type(snapshot, part, part_span) == "Bool"
+                    for part, part_span in parts
+                )
+                else None
+            )
+
+        parts = self._split_top_level_logical(expression, span, "&&")
+        if parts is not None:
+            if not parts:
+                return None
+            return (
+                "Bool"
+                if all(
+                    self._closed_expression_type(snapshot, part, part_span) == "Bool"
+                    for part, part_span in parts
+                )
+                else None
+            )
+
+        operators = self._top_level_comparison_operators(expression)
+        if operators:
+            if len(operators) != 1:
+                return None
+            operator, offset = operators[0]
+            left_span = Span(span.start, span.start + offset)
+            right_span = Span(span.start + offset + len(operator), span.end)
+            left_type = self._closed_expression_type(
+                snapshot,
+                expression[:offset],
+                left_span,
+            )
+            right_type = self._closed_expression_type(
+                snapshot,
+                expression[offset + len(operator) :],
+                right_span,
+            )
+            if operator in _EQUALITY:
+                if left_type == right_type and left_type in _BOUNDED_EQUALITY_TYPES:
+                    return "Bool"
+                return None
+            if operator in _ORDERING and left_type == right_type == "Int":
+                return "Bool"
+            return None
+
+        split = self._top_level_operator(expression, _ADDITIVE)
+        if split is None:
+            split = self._top_level_operator(expression, _MULTIPLICATIVE)
+        if split is not None:
+            operator, offset = split
+            left_span = Span(span.start, span.start + offset)
+            right_span = Span(span.start + offset + len(operator), span.end)
+            left_type = self._closed_expression_type(
+                snapshot,
+                expression[:offset],
+                left_span,
+            )
+            right_type = self._closed_expression_type(
+                snapshot,
+                expression[offset + len(operator) :],
+                right_span,
+            )
+            if left_type == right_type == "Int":
+                return "Int"
+            if operator == "+" and left_type == right_type == "String":
+                return "String"
+            return None
+
+        unary = self._unary_negation_operand(expression, span)
+        if unary is not None:
+            operand, operand_span = unary
+            return (
+                "Int"
+                if self._closed_expression_type(snapshot, operand, operand_span)
+                == "Int"
+                else None
+            )
+
+        if expression.startswith("!") and not expression.startswith("!="):
+            operand, operand_span = self._trim_expression(
+                expression[1:],
+                Span(span.start + 1, span.end),
+            )
+            if not operand:
+                return None
+            return (
+                "Bool"
+                if self._closed_expression_type(snapshot, operand, operand_span)
+                == "Bool"
+                else None
+            )
+
+        return super()._closed_argument_type(snapshot, span)
+
     def _argument_type(self, snapshot: Any, argument: Span) -> str | None:
         text = snapshot.symbols.syntax.document.text
         expression = text[argument.start : argument.end]
