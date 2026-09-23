@@ -15,6 +15,7 @@ from mini_language_server import (
 )
 from mini_language_server.cancellation import RequestCancelled, StaleRequest
 from mini_language_server.runtime import run_session
+from mini_language_server.workspace import WorkspaceIndexError
 from mini_language_server.workspace_folders import WorkspaceFolderError
 from mini_language_server.workspace_lsp import WorkspaceNovaLanguageServer
 
@@ -686,6 +687,144 @@ def test_runtime_dispatches_workspace_folder_change_while_request_is_active() ->
         "workspace-change",
         "workspace-stale",
         "after-workspace",
+    ]
+
+
+class LiveFileRenameServer(WorkspaceNovaLanguageServer):
+    def __init__(self, old_uri: str, new_uri: str) -> None:
+        super().__init__()
+        self.old_uri = old_uri
+        self.new_uri = new_uri
+        self.entered = Event()
+        self.changed = Event()
+        self.events: list[str] = []
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/workspace-index"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            context = self.requests.start(message["id"])
+            snapshots = self.workspace_symbols.snapshots()
+            try:
+                self.events.append("workspace-index-start")
+                self.entered.set()
+                assert self.changed.wait(timeout=5)
+                self.requests.checkpoint(context)
+                self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots,
+                    lambda: None,
+                )
+                raise AssertionError("stale workspace index passed commit guard")
+            except WorkspaceIndexError:
+                self.events.append("workspace-index-stale")
+                return self._error(message["id"], -32801, "Content modified")
+            finally:
+                self.requests.finish(context)
+
+        if (
+            message.get("method") == "test/after-file-rename"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            self.events.append("after-file-rename")
+            return self._result(message["id"], {"ok": True})
+
+        response = super().handle(message)
+        if (
+            message.get("method") == "workspace/didRenameFiles"
+            and self.documents.get(self.new_uri) is not None
+        ):
+            self.events.append("file-rename")
+            self.changed.set()
+        return response
+
+
+def file_rename_initialize(request_id: int = 1) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "initialize",
+        "params": {
+            "capabilities": {
+                "workspace": {
+                    "fileOperations": {"didRename": True},
+                }
+            }
+        },
+    }
+
+
+def file_rename_notification(old_uri: str, new_uri: str) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "method": "workspace/didRenameFiles",
+        "params": {
+            "files": [
+                {
+                    "oldUri": old_uri,
+                    "newUri": new_uri,
+                }
+            ]
+        },
+    }
+
+
+def test_runtime_dispatches_file_rename_while_workspace_request_is_active() -> None:
+    old_uri = "file:///workspace/helper.nova"
+    new_uri = "file:///workspace/renamed.nova"
+    server = LiveFileRenameServer(old_uri, new_uri)
+    first = framed(
+        file_rename_initialize(),
+        open_notification(old_uri, version=1, text="fn helper() {}\n"),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/workspace-index",
+            "params": {},
+        },
+    )
+    tail = framed(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "test/after-file-rename",
+            "params": {},
+        },
+        file_rename_notification(old_uri, new_uri),
+        shutdown(4),
+        exit_notification(),
+    )
+    input_stream = GatedBytesIO(
+        first + tail,
+        gate_offset=len(first),
+        gate=server.entered,
+    )
+    output_stream = BytesIO()
+
+    assert run_session(input_stream, output_stream, server=server) == 0
+
+    messages = decoded(output_stream.getvalue())
+    assert [message.get("id") for message in messages if "id" in message] == [
+        1,
+        2,
+        3,
+        4,
+    ]
+    stale = next(message for message in messages if message.get("id") == 2)
+    assert stale == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert server.documents.get(old_uri) is None
+    assert server.documents.get(new_uri) is not None
+    assert server.events == [
+        "workspace-index-start",
+        "file-rename",
+        "workspace-index-stale",
+        "after-file-rename",
     ]
 
 
