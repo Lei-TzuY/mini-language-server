@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .semantic import SemanticError
 from .server import ServerState
 from .source import Span
 from .tracing import TraceLanguageServerMixin
+from .uint_conversion_operand_completion import _direct_conversion_operand
 from .unary_plus import NovaProductLanguageServer as _ProductLanguageServer
 from .workspace import WorkspaceIndexError
 
@@ -29,13 +31,11 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
         self._function_completion_snippets = False
         self._completion_insert_replace = False
         self._completion_list_edit_range = False
+        self._inline_completion = False
 
     def handle(self, message: Any) -> dict[str, Any] | None:
-        if (
-            isinstance(message, dict)
-            and message.get("method") == "initialize"
-            and self.state is ServerState.PRE_INITIALIZE
-        ):
+        method = message.get("method") if isinstance(message, dict) else None
+        if method == "initialize" and self.state is ServerState.PRE_INITIALIZE:
             params = message.get("params")
             self._function_completion_snippets = (
                 self._client_supports_completion_snippets(params)
@@ -46,7 +46,147 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             self._completion_list_edit_range = (
                 "editRange" in self._client_completion_list_item_defaults(params)
             )
-        return super().handle(message)
+            self._inline_completion = self._client_supports_inline_completion(params)
+
+        if (
+            method == "textDocument/inlineCompletion"
+            and isinstance(message, dict)
+            and "id" in message
+            and self.state is ServerState.RUNNING
+            and self._inline_completion
+        ):
+            return self._handle_inline_completion(
+                message.get("id"),
+                message.get("params"),
+            )
+
+        result = super().handle(message)
+        if (
+            method == "initialize"
+            and result is not None
+            and "result" in result
+            and self._inline_completion
+        ):
+            capabilities = result["result"].get("capabilities")
+            if isinstance(capabilities, dict):
+                capabilities["inlineCompletionProvider"] = {}
+        return result
+
+    def _handle_inline_completion(
+        self,
+        request_id: Any,
+        params: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            return self._error(request_id, -32602, "Invalid params")
+        context_value = params.get("context")
+        if not isinstance(context_value, dict):
+            return self._error(request_id, -32602, "Invalid params")
+        trigger_kind = context_value.get("triggerKind")
+        if (
+            isinstance(trigger_kind, bool)
+            or not isinstance(trigger_kind, int)
+            or trigger_kind not in {1, 2}
+        ):
+            return self._error(request_id, -32602, "Invalid params")
+
+        parsed = self._semantic_query(params)
+        if parsed is None:
+            return self._error(request_id, -32602, "Invalid params")
+        semantics, offset, source = parsed
+
+        uri = self._document_uri(params)
+        assert uri is not None
+        try:
+            request_context = self.requests.start(request_id, uri=uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(request_context)
+            if semantics is None:
+                self.requests.checkpoint(request_context)
+                return self._result(request_id, [])
+
+            text = semantics.symbols.syntax.document.text
+            code = self.nova_adapter.code_view(text)
+            span = self._completion_identifier_span(code, offset)
+            prefix = self._completion_identifier_prefix(code, offset)
+            if not prefix:
+                self.requests.checkpoint(request_context)
+                return self._current_semantic_result(semantics, request_id, [])
+
+            if code[max(0, span.start - 2) : span.start] == "::":
+                self.requests.checkpoint(request_context)
+                return self._current_semantic_result(semantics, request_id, [])
+            if _direct_conversion_operand(code, offset) is not None:
+                self.requests.checkpoint(request_context)
+                return self._current_semantic_result(semantics, request_id, [])
+
+            snapshots = self.workspace_symbols.snapshots()
+            candidates = self._typed_completion_items(
+                semantics,
+                offset,
+                snapshots=snapshots,
+            )
+            current_identifier = code[span.start : span.end]
+
+            ranked: dict[str, tuple[int, dict[str, Any]]] = {}
+            for item in candidates:
+                label = item.get("label")
+                detail = item.get("detail")
+                if (
+                    not isinstance(label, str)
+                    or not label.startswith(prefix)
+                    or label == current_identifier
+                    or not isinstance(detail, str)
+                ):
+                    continue
+                classification = self._completion_classification(detail)
+                rank = 3 if classification is None else classification[1]
+                rendered = {
+                    "insertText": label,
+                    "range": self._range(source, span),
+                }
+                previous = ranked.get(label)
+                if previous is None or rank < previous[0]:
+                    ranked[label] = (rank, rendered)
+
+            items = [
+                rendered
+                for _, rendered in sorted(
+                    ranked.values(),
+                    key=lambda entry: (
+                        entry[0],
+                        entry[1]["insertText"],
+                    ),
+                )
+            ]
+            if trigger_kind == 2 and items:
+                items = items[:1]
+
+            self.requests.checkpoint(request_context)
+
+            def publish() -> dict[str, Any]:
+                self.requests.checkpoint(request_context)
+                return self._result(request_id, items)
+
+            try:
+                return self.semantics.commit_if_current(
+                    semantics,
+                    lambda: self.workspace_symbols.commit_snapshots_if_current(
+                        snapshots,
+                        publish,
+                    ),
+                )
+            except (SemanticError, WorkspaceIndexError):
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(request_context)
 
     def _handle_workspace_completion(
         self, request_id: Any, params: Any
@@ -264,6 +404,18 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
         if detail == "function" or detail.startswith("fn "):
             return _COMPLETION_KIND_FUNCTION, 2
         return None
+
+    @staticmethod
+    def _client_supports_inline_completion(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        text_document = capabilities.get("textDocument")
+        if not isinstance(text_document, dict):
+            return False
+        return isinstance(text_document.get("inlineCompletion"), dict)
 
     @staticmethod
     def _client_completion_list_item_defaults(params: Any) -> frozenset[str]:
