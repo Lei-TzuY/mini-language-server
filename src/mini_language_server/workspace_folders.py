@@ -6,7 +6,6 @@ import threading
 import urllib.parse
 from dataclasses import dataclass
 
-
 _UNRESERVED = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
 )
