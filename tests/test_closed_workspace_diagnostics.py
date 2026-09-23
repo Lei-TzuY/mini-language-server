@@ -497,7 +497,7 @@ def test_closed_unknown_argument_expression_does_not_guess_type(tmp_path: Path) 
     source = tmp_path / "closed.nova"
     source.write_text(
         "fn target(value: String) {} "
-        "fn caller() { let local = 1 target(local) }\n",
+        "fn caller() { let local = 1 + 2 target(local) }\n",
         encoding="utf-8",
     )
     server = initialized_server(tmp_path)
@@ -577,7 +577,7 @@ def test_closed_literal_initialized_local_reports_argument_type(
     source = tmp_path / "closed.nova"
     source.write_text(
         "fn target(value: String) {} "
-        "fn caller() { let local = 1; target(local); }\n",
+        "fn caller() { let local = 1 target(local) }\n",
         encoding="utf-8",
     )
     server = initialized_server(tmp_path)
