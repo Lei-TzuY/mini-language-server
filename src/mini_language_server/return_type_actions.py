@@ -46,7 +46,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             end_offset,
         )
         for diagnostic in diagnostics:
-            if diagnostic.code != "nova.return-type":
+            if diagnostic.code not in {"nova.return-type", "nova.missing-return"}:
                 continue
             if not self._return_diagnostic_overlaps(
                 diagnostic,
@@ -54,7 +54,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 end_offset=end_offset,
             ):
                 continue
-            action = self._return_type_quick_fix(uri, source, diagnostic)
+            if diagnostic.code == "nova.return-type":
+                action = self._return_type_quick_fix(uri, source, diagnostic)
+            else:
+                action = self._missing_return_quick_fix(
+                    uri,
+                    document,
+                    source,
+                    diagnostic,
+                )
             if action is not None:
                 actions.append(action)
         return actions

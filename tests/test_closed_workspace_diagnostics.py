@@ -1812,3 +1812,147 @@ def test_closed_document_pull_rejects_open_related_document_drift(
         for item in server.drain_notifications()
         if item.get("method") == "$/progress"
     ] == []
+
+def test_closed_missing_return_matches_structural_branch_proof(tmp_path: Path) -> None:
+    source = tmp_path / "returns.nova"
+    source.write_text(
+        "fn empty() -> Int {}\n"
+        "fn complete(flag: Bool) -> Int { "
+        "if (flag) { return 1; } else { return 0; } }\n"
+        "fn incomplete(flag: Bool) -> String { "
+        'if (flag) { return "ok"; } }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    missing = [
+        item["message"]
+        for item in report["items"]
+        if item["code"] == "nova.missing-return"
+    ]
+    assert missing == [
+        "function 'empty' with return type 'Int' has no value return",
+        "function 'incomplete' with return type 'String' has no value return",
+    ]
+
+
+def test_closed_missing_return_reuses_constant_and_loop_termination(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "control.nova"
+    source.write_text(
+        "fn constant() -> Int { if (1 < 2) { return 1; } }\n"
+        "fn diverges() -> String { while (true) { continue; } }\n"
+        "fn uncertain(flag: Bool) -> Bool { while (flag) { continue; } }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    missing = [
+        item["message"]
+        for item in report["items"]
+        if item["code"] == "nova.missing-return"
+    ]
+    assert missing == [
+        "function 'uncertain' with return type 'Bool' has no value return"
+    ]
+
+
+def test_closed_tail_expression_arbitrates_missing_return(tmp_path: Path) -> None:
+    source = tmp_path / "tails.nova"
+    source.write_text(
+        "fn good() -> Int { 7 }\n"
+        'fn bad() -> Int { "wrong" }\n'
+        "fn unknown(value) -> Int { value }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    return_types = [
+        item["message"]
+        for item in report["items"]
+        if item["code"] == "nova.return-type"
+    ]
+    missing = [
+        item["message"]
+        for item in report["items"]
+        if item["code"] == "nova.missing-return"
+    ]
+    assert return_types == [
+        "return type mismatch: expected 'Int', got 'String'"
+    ]
+    assert missing == [
+        "function 'unknown' with return type 'Int' has no value return"
+    ]
+
+
+def test_closed_cross_file_explicit_never_call_closes_return_obligation(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        "fn halt() -> ! { while (true) { continue; } }\n",
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn value() -> Int { halt(); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    caller_uri = caller.absolute().as_uri()
+
+    first = reports_by_uri(workspace_diagnostics(server))[caller_uri]
+    assert all(item["code"] != "nova.missing-return" for item in first["items"])
+
+    provider.write_text(
+        "fn halt() -> Unit { return (); }\n",
+        encoding="utf-8",
+    )
+    assert server._sync_closed_workspace_files() is True
+
+    second = reports_by_uri(
+        workspace_diagnostics(server, request_id=3)
+    )[caller_uri]
+    assert [
+        item["message"]
+        for item in second["items"]
+        if item["code"] == "nova.missing-return"
+    ] == ["function 'value' with return type 'Int' has no value return"]
+
+
+def test_closed_inferred_never_effect_is_transitive_and_cycle_safe(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "effects.nova"
+    source.write_text(
+        "fn halt() { while (true) { continue; } }\n"
+        "fn wrapper() { halt(); }\n"
+        "fn value() -> Int { wrapper(); }\n"
+        "fn left() { right(); }\n"
+        "fn right() { left(); }\n"
+        "fn cyclic() -> String { left(); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    missing = [
+        item["message"]
+        for item in report["items"]
+        if item["code"] == "nova.missing-return"
+    ]
+    assert missing == [
+        "function 'cyclic' with return type 'String' has no value return"
+    ]
