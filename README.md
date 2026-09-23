@@ -49,7 +49,7 @@ LSP / JSON-RPC lifecycle
 - conservative Nova range formatting reindents only leading whitespace spans fully contained in the requested range, computes structural depth from the complete trivia-aware document view, and never publishes edits that escape the requested range
 - conservative on-type Nova formatting reindents only the current line when `}` is typed, using the same trivia-aware structural view and exact semantic/document publication guard
 - push diagnostics with stale-notification suppression
-- request cancellation and stale-document rejection, including terminal shutdown/exit retirement of all in-flight client requests so resumed workers can only observe cancellation after the session lifecycle closes
+- request cancellation and stale-document rejection, including terminal shutdown/exit retirement of all in-flight client requests so resumed workers can only observe cancellation after the session lifecycle closes; the outbound notification channel is terminally quiesced at the same boundary, dropping queued diagnostics/progress/trace traffic and rejecting late worker emissions while preserving only shutdown-time `$/cancelRequest` notifications required for already-delivered server requests
 - deterministic concurrency regressions for same-version snapshot replacement, close/reopen, and out-of-order publication
 - CI across Ubuntu, macOS, and Windows on Python 3.11 and 3.13
 
