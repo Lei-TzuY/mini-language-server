@@ -89,3 +89,13 @@ def test_closed_definite_initialization_precedes_unreachable_and_completion() ->
     unreachable = modules.index("mini_language_server.closed_unreachable")
 
     assert completion < definite < unreachable
+
+
+def test_closed_assignment_semantics_precede_completion_and_definite_init() -> None:
+    modules = [base.__module__ for base in NovaProductLanguageServer.__mro__]
+
+    completion = modules.index("mini_language_server.completion_pipeline")
+    assignment = modules.index("mini_language_server.closed_assignment_semantics")
+    definite = modules.index("mini_language_server.closed_definite_initialization")
+
+    assert completion < assignment < definite
