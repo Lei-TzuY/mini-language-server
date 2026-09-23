@@ -109,3 +109,29 @@ def test_request_validation_rejects_ambiguous_ids_and_missing_documents() -> Non
 
     with pytest.raises(RequestError):
         tracker.start(1, uri="file:///missing.nova")
+
+def test_cancel_all_marks_every_active_generation_without_finishing_it() -> None:
+    tracker = RequestTracker(DocumentStore())
+    first = tracker.start(1)
+    second = tracker.start("second")
+
+    assert tracker.cancel_all() == (1, "second")
+    assert first.cancelled is True
+    assert second.cancelled is True
+    assert len(tracker) == 2
+
+    with pytest.raises(RequestCancelled):
+        tracker.checkpoint(first)
+    with pytest.raises(RequestCancelled):
+        tracker.checkpoint(second)
+
+    assert tracker.finish(first) is True
+    assert tracker.finish(second) is True
+    assert len(tracker) == 0
+
+
+def test_cancel_all_on_empty_tracker_is_harmless() -> None:
+    tracker = RequestTracker(DocumentStore())
+
+    assert tracker.cancel_all() == ()
+    assert len(tracker) == 0
