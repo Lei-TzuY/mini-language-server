@@ -90,6 +90,7 @@ def test_closed_definite_initialization_precedes_unreachable_and_completion() ->
 
     assert completion < definite < unreachable
 
+
 def test_closed_assignment_semantics_precede_completion_and_definite_init() -> None:
     modules = [base.__module__ for base in NovaProductLanguageServer.__mro__]
 
