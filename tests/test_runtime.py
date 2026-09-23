@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
 from threading import Event
 from typing import Any
 
@@ -1667,3 +1668,175 @@ def test_stdout_failure_retires_worker_created_server_request() -> None:
     assert server.drain_server_requests() == []
     assert server.drain_notifications() == []
     assert server._server_request_outbox_wakeup is None
+
+
+class LiveClosedFileOperationServer(WorkspaceNovaLanguageServer):
+    def __init__(
+        self,
+        path: Path,
+        uri: str,
+        method: str,
+    ) -> None:
+        super().__init__()
+        self.path = path
+        self.uri = uri
+        self.method = method
+        self.entered = Event()
+        self.changed = Event()
+        self.events: list[str] = []
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/closed-workspace-index"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            context = self.requests.start(message["id"])
+            snapshots = self.workspace_symbols.snapshots()
+            try:
+                self.events.append("closed-index-start")
+                if self.method == "workspace/didCreateFiles":
+                    self.path.write_bytes(b"fn target() {}\n")
+                else:
+                    self.path.unlink()
+                self.entered.set()
+                assert self.changed.wait(timeout=5)
+                self.requests.checkpoint(context)
+                self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots,
+                    lambda: None,
+                )
+                raise AssertionError("stale closed-file workspace passed commit guard")
+            except WorkspaceIndexError:
+                self.events.append("closed-index-stale")
+                return self._error(message["id"], -32801, "Content modified")
+            finally:
+                self.requests.finish(context)
+
+        if (
+            message.get("method") == "test/after-closed-file-operation"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            self.events.append("after-closed-file-operation")
+            return self._result(message["id"], {"ok": True})
+
+        response = super().handle(message)
+        if message.get("method") == self.method:
+            indexed = self.workspace_symbols.get(self.uri) is not None
+            expected = self.method == "workspace/didCreateFiles"
+            if indexed is expected:
+                self.events.append(
+                    "file-create" if expected else "file-delete"
+                )
+                self.changed.set()
+        return response
+
+
+def closed_file_operation_initialize(
+    root_uri: str,
+    method: str,
+    request_id: int = 1,
+) -> dict[str, Any]:
+    capability = (
+        "didCreate"
+        if method == "workspace/didCreateFiles"
+        else "didDelete"
+    )
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "initialize",
+        "params": {
+            "capabilities": {
+                "workspace": {
+                    "workspaceFolders": True,
+                    "fileOperations": {capability: True},
+                }
+            },
+            "workspaceFolders": [{"uri": root_uri, "name": "workspace"}],
+        },
+    }
+
+
+def closed_file_operation_notification(
+    method: str,
+    uri: str,
+) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": {"files": [{"uri": uri}]},
+    }
+
+
+@pytest.mark.parametrize(
+    ("method", "event_name"),
+    [
+        ("workspace/didCreateFiles", "file-create"),
+        ("workspace/didDeleteFiles", "file-delete"),
+    ],
+)
+def test_runtime_dispatches_closed_file_operations_while_workspace_request_is_active(
+    tmp_path: Path,
+    method: str,
+    event_name: str,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    if method == "workspace/didDeleteFiles":
+        provider.write_bytes(b"fn target() {}\n")
+    uri = provider.absolute().as_uri()
+    server = LiveClosedFileOperationServer(provider, uri, method)
+
+    first = framed(
+        closed_file_operation_initialize(tmp_path.as_uri(), method),
+        {"jsonrpc": "2.0", "method": "initialized", "params": {}},
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/closed-workspace-index",
+            "params": {},
+        },
+    )
+    tail = framed(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "test/after-closed-file-operation",
+            "params": {},
+        },
+        closed_file_operation_notification(method, uri),
+        shutdown(4),
+        exit_notification(),
+    )
+    input_stream = GatedBytesIO(
+        first + tail,
+        gate_offset=len(first),
+        gate=server.entered,
+    )
+    output_stream = BytesIO()
+
+    assert run_session(input_stream, output_stream, server=server) == 0
+
+    messages = decoded(output_stream.getvalue())
+    assert [message.get("id") for message in messages if "id" in message] == [
+        1,
+        2,
+        3,
+        4,
+    ]
+    stale = next(message for message in messages if message.get("id") == 2)
+    assert stale == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert (server.workspace_symbols.get(uri) is not None) is (
+        method == "workspace/didCreateFiles"
+    )
+    assert server.events == [
+        "closed-index-start",
+        event_name,
+        "closed-index-stale",
+        "after-closed-file-operation",
+    ]
