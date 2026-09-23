@@ -7,7 +7,7 @@ from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
-from .documents import Document
+from .documents import Document, DocumentError
 from .nova import NovaFunctionSyntax, NovaLanguageServer
 from .semantic import SemanticError, SemanticSnapshot
 from .server import ServerState
@@ -325,7 +325,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
         analyzer = self._workspace_file_analyzer
         if analyzer.documents.get(uri) is not None:
-            with suppress(Exception):
+            with suppress(DocumentError):
                 analyzer.documents.close(uri)
             analyzer.diagnostics.discard(uri)
             analyzer.semantics.discard(uri)
@@ -363,6 +363,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if previous is not None:
                 with suppress(WorkspaceIndexError):
                     self.workspace_symbols.remove(uri, expected=previous)
+            self._reload_background_workspace_file(uri)
             self._publish_workspace_diagnostics()
             return
         if method not in {"textDocument/didOpen", "textDocument/didChange"}:
@@ -420,6 +421,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             with suppress(WorkspaceIndexError):
                 self.workspace_symbols.replace(semantic, expected=current)
 
+        self._reconcile_watched_workspace_files()
         self._publish_workspace_diagnostics()
         after = self.workspace_symbols.snapshots()
         self._workspace_folder_scope_changed(
@@ -1060,7 +1062,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 changes[uri] = [edit for _, edit in ordered]
 
             versions = {
-                snapshot.uri: snapshot.symbols.syntax.document.version
+                snapshot.uri: self._workspace_snapshot_version(snapshot)
                 for snapshot in snapshots
             }
             workspace_edit = self._workspace_edit(
@@ -1132,6 +1134,22 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return self._error(request_id, -32800, "Request cancelled")
         finally:
             self.requests.finish(context)
+
+    @staticmethod
+    def _client_supports_watched_files(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        watched_files = workspace.get("didChangeWatchedFiles")
+        return (
+            isinstance(watched_files, dict)
+            and watched_files.get("dynamicRegistration") is True
+        )
 
     @staticmethod
     def _client_supports_workspace_folders(params: Any) -> bool:
