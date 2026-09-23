@@ -107,7 +107,7 @@ def run_session(
         while True:
             try:
                 message = reader.read()
-            except FramingError:
+            except (FramingError, OSError):
                 inbox.put(_TRANSPORT_FAILURE)
                 return
 
