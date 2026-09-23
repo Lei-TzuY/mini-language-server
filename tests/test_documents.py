@@ -353,3 +353,69 @@ def test_position_encoding_cannot_change_after_document_open() -> None:
 
     with pytest.raises(DocumentError, match="while documents are open"):
         store.set_position_encoding("utf-8")
+
+def test_matching_snapshot_guard_rejects_new_matching_document() -> None:
+    store = DocumentStore()
+    first = store.open(
+        uri="file:///workspace/a.nova",
+        language_id="nova",
+        version=1,
+        text="a",
+    )
+    captured = (first,)
+
+    store.open(
+        uri="file:///workspace/b.nova",
+        language_id="nova",
+        version=1,
+        text="b",
+    )
+
+    with pytest.raises(DocumentError, match="matching open document set changed"):
+        store.commit_matching_if_current(
+            captured,
+            lambda document: document.uri.startswith("file:///workspace/"),
+            lambda: True,
+        )
+
+
+def test_matching_snapshot_guard_ignores_nonmatching_document_addition() -> None:
+    store = DocumentStore()
+    first = store.open(
+        uri="file:///workspace/a.nova",
+        language_id="nova",
+        version=1,
+        text="a",
+    )
+    captured = (first,)
+
+    store.open(
+        uri="file:///outside/b.nova",
+        language_id="nova",
+        version=1,
+        text="b",
+    )
+
+    assert store.commit_matching_if_current(
+        captured,
+        lambda document: document.uri.startswith("file:///workspace/"),
+        lambda: "committed",
+    ) == "committed"
+
+
+def test_matching_snapshot_guard_rejects_replaced_matching_snapshot() -> None:
+    store = DocumentStore()
+    first = store.open(
+        uri="file:///workspace/a.nova",
+        language_id="nova",
+        version=1,
+        text="a",
+    )
+    store.replace(uri=first.uri, version=2, text="new")
+
+    with pytest.raises(DocumentError, match="stale document snapshot"):
+        store.commit_matching_if_current(
+            (first,),
+            lambda document: document.uri.startswith("file:///workspace/"),
+            lambda: True,
+        )
