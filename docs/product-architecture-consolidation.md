@@ -6,11 +6,13 @@ That preserved behavior locally, but made product semantics depend on a long,
 order-sensitive inheritance chain.
 
 Completion publication is the first consolidated domain. Function snippets,
-negotiated insert/replace edits, semantic classification and ranking, and
-identifier-prefix filtering now execute in one
-`completion_pipeline.NovaProductLanguageServer` boundary over the earlier
-product base. One exact semantic/workspace publication gate protects the
-combined transformation.
+negotiated insert/replace edits, negotiated CompletionList shared edit-range
+defaults, semantic classification and ranking, and identifier-prefix filtering
+now execute in one `completion_pipeline.NovaProductLanguageServer` boundary
+over the earlier product base. Shared list defaults are emitted only when the
+client advertises the corresponding CompletionList property; otherwise the
+pipeline preserves the existing item-array/per-item edit shape. One exact
+semantic/workspace publication gate protects the combined transformation.
 
 Unary-plus support is the second consolidated feature boundary. Diagnostic
 detection and its exact-snapshot quick fix now live in
