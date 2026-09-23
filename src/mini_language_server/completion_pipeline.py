@@ -10,13 +10,13 @@ from __future__ import annotations
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
+from .closed_unreachable import NovaProductLanguageServer as _ProductLanguageServer
 from .nova import NovaFunctionSyntax
 from .semantic import SemanticError
 from .server import ServerState
 from .source import Span
 from .tracing import TraceLanguageServerMixin
 from .uint_conversion_operand_completion import _direct_conversion_operand
-from .closed_unreachable import NovaProductLanguageServer as _ProductLanguageServer
 from .workspace import WorkspaceIndexError
 
 _COMPLETION_KIND_FUNCTION = 3
