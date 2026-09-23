@@ -16,7 +16,7 @@ from .workspace import WorkspaceIndexError
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _LOCAL_INITIALIZER_SUFFIX = re.compile(
     r'\s*=\s*(?P<value>\d+|true\b|false\b|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z0-9_]*\b)'
-    r"\s*(?=\}|let\b|[A-Za-z_][A-Za-z0-9_]*(?:\s*\(|\b)|$)"
+    r"\s*;?\s*(?=\}|let\b|[A-Za-z_][A-Za-z0-9_]*(?:\s*\(|\b)|$)"
 )
 _CLOSED_CALL_RESULT_TYPES = frozenset({"Int", "String", "Bool", "Unit", "UInt"})
 
