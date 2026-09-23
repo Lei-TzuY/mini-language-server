@@ -266,6 +266,25 @@ class SignalingBytesIO(BytesIO):
         return written
 
 
+class SequencedSignalingBytesIO(BytesIO):
+    def __init__(
+        self,
+        *,
+        signals: tuple[tuple[int, Event], ...],
+    ) -> None:
+        super().__init__()
+        self._signals = signals
+        self._write_count = 0
+
+    def write(self, data: bytes) -> int:
+        written = super().write(data)
+        self._write_count += 1
+        for threshold, signal in self._signals:
+            if self._write_count >= threshold:
+                signal.set()
+        return written
+
+
 class LiveCancellationServer(LanguageServer):
     def __init__(self) -> None:
         super().__init__()
@@ -811,15 +830,16 @@ class ActiveTransportAbortServer(LanguageServer):
         ):
             context = self.requests.start(message["id"])
             try:
+                self.events.append("request-started")
+                self.entered.set()
+                assert context._cancelled.wait(timeout=5)
+                self.events.append("request-cancelled")
                 self._queue_notification("test/stale-notification", {"value": 1})
                 self._queue_server_request(
                     "workspace/configuration",
                     {"items": [{"section": "test"}]},
                 )
-                self.events.append("request-started")
-                self.entered.set()
-                assert context._cancelled.wait(timeout=5)
-                self.events.append("request-cancelled")
+                self.events.append("late-outbound-attempted")
                 self.requests.checkpoint(context)
                 raise AssertionError("transport-aborted request passed checkpoint")
             except RequestCancelled:
@@ -869,7 +889,11 @@ def test_eof_aborts_active_request_and_discards_late_outbound_traffic() -> None:
             },
         }
     ]
-    assert server.events == ["request-started", "request-cancelled"]
+    assert server.events == [
+        "request-started",
+        "request-cancelled",
+        "late-outbound-attempted",
+    ]
     assert len(server.requests) == 0
     assert server.drain_notifications() == []
     assert server.drain_server_requests() == []
@@ -1215,3 +1239,125 @@ def test_runtime_delivers_sent_server_response_while_request_is_active() -> None
         "server-response",
         "worker-finished",
     ]
+
+class WorkerCreatedServerRequestRuntimeServer(LanguageServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.response_received = Event()
+        self.events: list[str] = []
+        self.dependency_request_id: str | None = None
+        self.dependency_result: object = None
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/create-and-wait-for-dependency"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            self.events.append("worker-started")
+
+            def own_request(request_id: str) -> None:
+                self.dependency_request_id = request_id
+                self.events.append("server-request-owned")
+
+            self._queue_server_request(
+                "test/worker-dependency",
+                {"value": "needed"},
+                on_queued=own_request,
+            )
+            self.events.append("worker-waiting")
+            assert self.response_received.wait(timeout=5)
+            self.events.append("worker-finished")
+            return self._result(
+                message["id"],
+                {"dependency": self.dependency_result},
+            )
+
+        return super().handle(message)
+
+    def _server_request_completed(
+        self,
+        request_id: str,
+        method: str,
+        *,
+        result: Any,
+        error: dict[str, Any] | None,
+    ) -> None:
+        super()._server_request_completed(
+            request_id,
+            method,
+            result=result,
+            error=error,
+        )
+        if request_id != self.dependency_request_id:
+            return
+        assert method == "test/worker-dependency"
+        assert error is None
+        self.dependency_result = result
+        self.events.append("server-response")
+        self.response_received.set()
+
+
+def test_runtime_wakes_outbound_server_request_created_by_active_worker() -> None:
+    server = WorkerCreatedServerRequestRuntimeServer()
+    first = framed(
+        initialize(),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/create-and-wait-for-dependency",
+            "params": {},
+        },
+    )
+    dependency_response = framed(
+        {
+            "jsonrpc": "2.0",
+            "id": "server:1",
+            "result": {"value": 9},
+        }
+    )
+    lifecycle_tail = framed(shutdown(3), exit_notification())
+    dependency_sent = Event()
+    worker_response_sent = Event()
+    output_stream = SequencedSignalingBytesIO(
+        signals=((2, dependency_sent), (3, worker_response_sent)),
+    )
+    input_stream = SequencedGatedBytesIO(
+        first + dependency_response + lifecycle_tail,
+        gates=(
+            (len(first), dependency_sent),
+            (
+                len(first) + len(dependency_response),
+                worker_response_sent,
+            ),
+        ),
+    )
+
+    assert run_session(input_stream, output_stream, server=server) == 0
+
+    messages = decoded(output_stream.getvalue())
+    assert [message.get("id") for message in messages] == [
+        1,
+        "server:1",
+        2,
+        3,
+    ]
+    assert messages[1] == {
+        "jsonrpc": "2.0",
+        "id": "server:1",
+        "method": "test/worker-dependency",
+        "params": {"value": "needed"},
+    }
+    assert messages[2] == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {"dependency": {"value": 9}},
+    }
+    assert server.events == [
+        "worker-started",
+        "server-request-owned",
+        "worker-waiting",
+        "server-response",
+        "worker-finished",
+    ]
+    assert server._server_request_outbox_wakeup is None

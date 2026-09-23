@@ -15,6 +15,7 @@ from .protocol import FramingError, MessageReader, encode_message
 from .server import LanguageServer, ServerState
 
 _TRANSPORT_FAILURE = object()
+_SERVER_REQUEST_OUTBOX_READY = object()
 
 
 def _write_batch(
@@ -232,6 +233,10 @@ def run_session(
             if request_id is not None:
                 finish_transport_request(request_id)
 
+    def wake_server_request_outbox() -> None:
+        events.put(_SERVER_REQUEST_OUTBOX_READY)
+
+    active_server._set_server_request_outbox_wakeup(wake_server_request_outbox)
     reader_thread = Thread(target=read_inbound, name="lsp-stdio-reader", daemon=True)
     reader_thread.start()
 
@@ -253,7 +258,10 @@ def run_session(
                     item.error is not None
                     and not isinstance(item.error, RequestCancelled)
                 ):
+                    active_server._set_server_request_outbox_wakeup(None)
                     raise item.error
+                active_server._set_server_request_outbox_wakeup(None)
+                active_server._retire_all_server_requests(cancel_remote=False)
                 reader_thread.join()
                 return 1
             if pending_shutdown_response is not None:
@@ -261,6 +269,7 @@ def run_session(
                     item.error is not None
                     and not isinstance(item.error, RequestCancelled)
                 ):
+                    active_server._set_server_request_outbox_wakeup(None)
                     raise item.error
                 cancelled_response: dict[str, object] = {
                     "jsonrpc": "2.0",
@@ -283,11 +292,23 @@ def run_session(
                 continue
             replay_controls()
             if item.error is not None:
+                active_server._set_server_request_outbox_wakeup(None)
                 raise item.error
             _write_batch(
                 output_stream,
                 _drain_after_dispatch(active_server, item.response),
             )
+            continue
+
+        if item is _SERVER_REQUEST_OUTBOX_READY:
+            if (
+                not transport_failed
+                and active_server.state is ServerState.RUNNING
+            ):
+                _write_batch(
+                    output_stream,
+                    _drain_after_dispatch(active_server, None),
+                )
             continue
 
         if item is _TRANSPORT_FAILURE:
@@ -296,9 +317,11 @@ def run_session(
                 active_server.abort_transport(
                     active_request_id=active_request_id,
                 )
+                active_server._set_server_request_outbox_wakeup(None)
                 transport_failed = True
                 continue
             active_server.abort_transport()
+            active_server._set_server_request_outbox_wakeup(None)
             reader_thread.join()
             return 1
 
@@ -378,6 +401,7 @@ def run_session(
 
     if active_request_thread is not None:
         active_request_thread.join()
+    active_server._set_server_request_outbox_wakeup(None)
     reader_thread.join()
     return active_server.exit_code if active_server.exit_code is not None else 1
 

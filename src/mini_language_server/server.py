@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from enum import Enum, auto
 from threading import RLock
 from typing import Any
@@ -63,6 +63,7 @@ class LanguageServer:
         self._server_requests: list[dict[str, Any]] = []
         self._pending_server_requests: dict[str, str] = {}
         self._next_server_request_id = 1
+        self._server_request_outbox_wakeup: Callable[[], None] | None = None
 
     def abort_transport(
         self, *, active_request_id: str | int | None = None
@@ -318,11 +319,33 @@ class LanguageServer:
             self._server_requests = []
             return requests
 
-    def _queue_server_request(
-        self, method: str, params: dict[str, Any] | None = None
-    ) -> str:
-        """Queue one tracked server-to-client JSON-RPC request."""
+    def _set_server_request_outbox_wakeup(
+        self, wakeup: Callable[[], None] | None
+    ) -> None:
+        """Bind one transport wakeup to the server-request outbox.
+
+        The callback fires only when transport work may be required: once when a
+        non-empty outbox is first bound, and on later empty-to-non-empty transitions.
+        It is invoked outside the outbox lock so transports may enqueue their own
+        event without participating in server request ownership.
+        """
         with self._server_request_lock:
+            self._server_request_outbox_wakeup = wakeup
+            should_wake = wakeup is not None and bool(self._server_requests)
+        if should_wake:
+            assert wakeup is not None
+            wakeup()
+
+    def _queue_server_request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        on_queued: Callable[[str], None] | None = None,
+    ) -> str:
+        """Queue one tracked request with ownership fixed before transport visibility."""
+        with self._server_request_lock:
+            outbox_was_empty = not self._server_requests
             request_id = f"server:{self._next_server_request_id}"
             self._next_server_request_id += 1
             request: dict[str, Any] = {
@@ -334,7 +357,26 @@ class LanguageServer:
                 request["params"] = params
             self._pending_server_requests[request_id] = method
             self._server_requests.append(request)
-            return request_id
+            if on_queued is not None:
+                on_queued(request_id)
+            self._server_request_queued(request_id, method, params)
+            wakeup = (
+                self._server_request_outbox_wakeup
+                if outbox_was_empty
+                else None
+            )
+
+        if wakeup is not None:
+            wakeup()
+        return request_id
+
+    def _server_request_queued(
+        self,
+        request_id: str,
+        method: str,
+        params: dict[str, Any] | None,
+    ) -> None:
+        """Extension point that runs before a newly visible outbox may wake transport."""
 
     def _has_pending_server_request(self, method: str) -> bool:
         with self._server_request_lock:
