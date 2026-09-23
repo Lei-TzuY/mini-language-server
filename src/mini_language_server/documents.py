@@ -224,6 +224,68 @@ class DocumentStore:
             self._documents[uri] = document
             return document
 
+    def rename_many(
+        self, renames: Iterable[tuple[str, str]]
+    ) -> tuple[tuple[Document, Document], ...]:
+        """Atomically rekey open documents while preserving version/text snapshots."""
+        materialized = tuple(renames)
+        if not materialized:
+            return ()
+
+        old_uris: list[str] = []
+        new_uris: list[str] = []
+        for old_uri, new_uri in materialized:
+            if (
+                not isinstance(old_uri, str)
+                or not old_uri
+                or not isinstance(new_uri, str)
+                or not new_uri
+            ):
+                raise DocumentError("rename URIs must be non-empty strings")
+            if old_uri == new_uri:
+                raise DocumentError("rename source and destination must differ")
+            old_uris.append(old_uri)
+            new_uris.append(new_uri)
+
+        if len(set(old_uris)) != len(old_uris):
+            raise DocumentError("rename sources must be unique")
+        if len(set(new_uris)) != len(new_uris):
+            raise DocumentError("rename destinations must be unique")
+
+        with self._lock:
+            current = [
+                (old_uri, new_uri, self._documents.get(old_uri))
+                for old_uri, new_uri in materialized
+            ]
+            moving = [
+                (old_uri, new_uri, document)
+                for old_uri, new_uri, document in current
+                if document is not None
+            ]
+            if not moving:
+                return ()
+
+            moving_sources = {old_uri for old_uri, _, _ in moving}
+            for _, new_uri, _ in moving:
+                if new_uri in self._documents and new_uri not in moving_sources:
+                    raise DocumentError(f"rename destination already open: {new_uri}")
+
+            for old_uri, _, _ in moving:
+                self._documents.pop(old_uri)
+
+            renamed: list[tuple[Document, Document]] = []
+            for _, new_uri, previous in moving:
+                assert previous is not None
+                replacement = Document(
+                    new_uri,
+                    previous.language_id,
+                    previous.version,
+                    previous.text,
+                )
+                self._documents[new_uri] = replacement
+                renamed.append((previous, replacement))
+            return tuple(renamed)
+
     def close(self, uri: str) -> Document:
         with self._lock:
             try:
