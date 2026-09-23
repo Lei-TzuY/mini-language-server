@@ -5,6 +5,7 @@ from typing import Any
 
 from mini_language_server import NovaProductLanguageServer
 from mini_language_server.semantic_tokens import TOKEN_TYPES
+from mini_language_server.workspace import WorkspaceIndexError
 
 
 def request(method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
@@ -16,7 +17,11 @@ def notify(method: str, params: dict[str, Any]) -> dict[str, Any]:
 
 
 def initialize(
-    server: NovaProductLanguageServer, *, modifiers: list[str]
+    server: NovaProductLanguageServer,
+    *,
+    modifiers: list[str],
+    refresh_support: bool = False,
+    workspace_folders: list[dict[str, str]] | None = None,
 ) -> list[str]:
     response = server.handle(
         request(
@@ -29,8 +34,25 @@ def initialize(
                             "requests": {"full": True, "range": True},
                             "tokenModifiers": modifiers,
                         }
-                    }
-                }
+                    },
+                    "workspace": {
+                        **(
+                            {"semanticTokens": {"refreshSupport": True}}
+                            if refresh_support
+                            else {}
+                        ),
+                        **(
+                            {"workspaceFolders": True}
+                            if workspace_folders is not None
+                            else {}
+                        ),
+                    },
+                },
+                **(
+                    {"workspaceFolders": workspace_folders}
+                    if workspace_folders is not None
+                    else {}
+                ),
             },
         )
     )
@@ -244,3 +266,185 @@ def test_reference_semantic_tokens_honor_cancellation() -> None:
             "error": {"code": -32800, "message": "Request cancelled"},
         }
     ]
+
+
+def test_semantic_token_refresh_requested_for_cross_file_resolution_change() -> None:
+    server = NovaProductLanguageServer()
+    legend = initialize(server, modifiers=[], refresh_support=True)
+    caller_uri = "file:///workspace/caller.nova"
+    library_uri = "file:///workspace/library.nova"
+    caller_text = "fn caller() { target(); }\n"
+    open_nova(server, caller_uri, caller_text)
+
+    before = set(decode(semantic_tokens(server, caller_uri, 20)["result"]["data"], legend))
+    assert (0, 14, 6, "function", frozenset()) not in before
+    assert server.drain_server_requests() == []
+
+    open_nova(server, library_uri, "fn target() {}\n")
+    refresh = server.drain_server_requests()
+    assert len(refresh) == 1
+    assert refresh[0]["method"] == "workspace/semanticTokens/refresh"
+    assert "params" not in refresh[0]
+
+    after = set(decode(semantic_tokens(server, caller_uri, 21)["result"]["data"], legend))
+    assert (0, 14, 6, "function", frozenset()) in after
+
+
+def test_semantic_token_refresh_coalesces_until_response_then_rearms() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, modifiers=[], refresh_support=True)
+    caller_uri = "file:///workspace/caller.nova"
+    library_uri = "file:///workspace/library.nova"
+    open_nova(server, caller_uri, "fn caller() { target(); }\n")
+    open_nova(server, library_uri, "fn target() {}\n")
+    first = server.drain_server_requests()
+    assert len(first) == 1
+    first_id = first[0]["id"]
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": library_uri, "version": 2},
+                "contentChanges": [{"text": "fn target(value: Int) {}\n"}],
+            },
+        )
+    )
+    assert server.drain_server_requests() == []
+
+    assert server.handle(
+        {"jsonrpc": "2.0", "id": first_id, "result": None}
+    ) is None
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": library_uri, "version": 3},
+                "contentChanges": [{"text": "fn target(flag: Bool) {}\n"}],
+            },
+        )
+    )
+    second = server.drain_server_requests()
+    assert len(second) == 1
+    assert second[0]["method"] == "workspace/semanticTokens/refresh"
+    assert second[0]["id"] != first_id
+
+
+def test_semantic_token_refresh_error_response_rearms_future_refresh() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, modifiers=[], refresh_support=True)
+    caller_uri = "file:///workspace/caller.nova"
+    library_uri = "file:///workspace/library.nova"
+    open_nova(server, caller_uri, "fn caller() { target(); }\n")
+    open_nova(server, library_uri, "fn target() {}\n")
+    refresh = server.drain_server_requests()[0]
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": refresh["id"],
+            "error": {"code": -32603, "message": "refresh failed"},
+        }
+    ) is None
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": library_uri, "version": 2},
+                "contentChanges": [{"text": "fn target(value: Int) {}\n"}],
+            },
+        )
+    )
+    requests = server.drain_server_requests()
+    assert len(requests) == 1
+    assert requests[0]["method"] == "workspace/semanticTokens/refresh"
+
+
+def test_semantic_token_refresh_requires_workspace_client_support() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, modifiers=[], refresh_support=False)
+    open_nova(server, "file:///workspace/caller.nova", "fn caller() { target(); }\n")
+    open_nova(server, "file:///workspace/library.nova", "fn target() {}\n")
+
+    assert server.drain_server_requests() == []
+
+
+def test_single_document_change_does_not_send_global_semantic_token_refresh() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, modifiers=[], refresh_support=True)
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn target() {}\n")
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": "fn target(value: Int) {}\n"}],
+            },
+        )
+    )
+
+    assert server.drain_server_requests() == []
+
+
+def test_failed_workspace_replacement_does_not_request_semantic_token_refresh(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, modifiers=[], refresh_support=True)
+    caller_uri = "file:///workspace/caller.nova"
+    library_uri = "file:///workspace/library.nova"
+    open_nova(server, caller_uri, "fn caller() { target(); }\n")
+    open_nova(server, library_uri, "fn target() {}\n")
+    first = server.drain_server_requests()[0]
+    server.handle({"jsonrpc": "2.0", "id": first["id"], "result": None})
+
+    def reject_replace(*args: Any, **kwargs: Any) -> Any:
+        raise WorkspaceIndexError("stale workspace")
+
+    monkeypatch.setattr(server.workspace_symbols, "replace", reject_replace)
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": library_uri, "version": 2},
+                "contentChanges": [{"text": "fn target(value: Int) {}\n"}],
+            },
+        )
+    )
+
+    assert server.drain_server_requests() == []
+
+
+def test_workspace_folder_change_requests_semantic_token_refresh() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        modifiers=[],
+        refresh_support=True,
+        workspace_folders=[{"uri": "file:///workspace/a", "name": "a"}],
+    )
+    target_uri = "file:///workspace/a/target.nova"
+    caller_uri = "file:///workspace/b/caller.nova"
+    open_nova(server, target_uri, "fn target() {}\n")
+    open_nova(server, caller_uri, "fn caller() { target(); }\n")
+    assert server.drain_server_requests() == []
+
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [{"uri": "file:///workspace/b", "name": "b"}],
+                    "removed": [],
+                }
+            },
+        )
+    )
+
+    refresh = server.drain_server_requests()
+    assert len(refresh) == 1
+    assert refresh[0]["method"] == "workspace/semanticTokens/refresh"
