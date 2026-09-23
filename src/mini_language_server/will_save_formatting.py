@@ -232,10 +232,7 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
             if record is None:
                 return
             generation, scopes = record
-            if generation != self._formatting_configuration_generation:
-                stale = True
-            else:
-                stale = False
+            stale = generation != self._formatting_configuration_generation
             if (
                 stale
                 or error is not None
