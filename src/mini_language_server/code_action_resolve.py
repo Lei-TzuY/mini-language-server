@@ -11,13 +11,15 @@ from .diagnostics import DiagnosticError, DiagnosticSnapshot
 from .semantic import SemanticSnapshot
 from .server import ServerState
 from .workspace import WorkspaceIndexError
+from .workspace_folders import WorkspaceFolderError
 
 
 @dataclass(frozen=True, slots=True)
 class _CodeActionResolveRecord:
-    diagnostic: DiagnosticSnapshot
+    diagnostic: DiagnosticSnapshot | None
     workspace: tuple[SemanticSnapshot, ...]
     action: dict[str, Any]
+    folder_generation: int | None = None
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -28,6 +30,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         self._code_action_resolve_edit = False
         self._code_action_resolve_next = 1
         self._code_action_resolve_records: dict[int, _CodeActionResolveRecord] = {}
+        self._closed_code_action_resolve_ownership: dict[
+            str | int,
+            tuple[Any, int],
+        ] = {}
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -68,56 +74,144 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         return super().handle(message)
 
+    def _capture_closed_code_action_resolve_ownership(
+        self,
+        request_id: Any,
+        workspace_snapshots: Any,
+        folder_generation: int,
+    ) -> None:
+        """Capture detached ownership exactly when the eager action wins commit."""
+        if (
+            not self._code_action_resolve_edit
+            or isinstance(request_id, bool)
+            or not isinstance(request_id, str | int)
+        ):
+            return
+        self._closed_code_action_resolve_ownership[request_id] = (
+            workspace_snapshots,
+            folder_generation,
+        )
+
     def _handle_lazy_code_action(self, message: dict[str, Any]) -> dict[str, Any] | None:
         request_id = message.get("id")
+        request_key = (
+            request_id
+            if isinstance(request_id, str | int) and not isinstance(request_id, bool)
+            else None
+        )
+        if request_key is not None:
+            self._closed_code_action_resolve_ownership.pop(request_key, None)
+
         params = message.get("params")
         uri = self._document_uri(params)
         snapshot = self.diagnostics.get(uri) if uri is not None else None
         snapshots = self.workspace_symbols.snapshots()
 
         response = super().handle(message)
-        if (
-            snapshot is None
-            or response is None
-            or not isinstance(response.get("result"), list)
-        ):
+        closed_ownership = (
+            self._closed_code_action_resolve_ownership.pop(request_key, None)
+            if request_key is not None
+            else None
+        )
+        if response is None or not isinstance(response.get("result"), list):
             return response
 
-        def enrich() -> dict[str, Any]:
-            for action in response["result"]:
-                if not isinstance(action, dict) or not isinstance(action.get("edit"), dict):
-                    continue
-                token = self._code_action_resolve_next
-                self._code_action_resolve_next += 1
-                stored = dict(action)
-                data = stored.get("data")
-                data = dict(data) if isinstance(data, dict) else {}
-                data["novaCodeActionResolve"] = token
-                stored["data"] = data
-                action["data"] = dict(data)
-                action.pop("edit", None)
-                self._code_action_resolve_records[token] = _CodeActionResolveRecord(
-                    snapshot,
-                    snapshots,
-                    stored,
+        if snapshot is not None:
+            def enrich_live() -> dict[str, Any]:
+                return self._defer_code_action_edits(
+                    response,
+                    diagnostic=snapshot,
+                    workspace=snapshots,
+                    folder_generation=None,
                 )
-            while len(self._code_action_resolve_records) > 256:
-                oldest = min(self._code_action_resolve_records)
-                del self._code_action_resolve_records[oldest]
+
+            try:
+                return self.diagnostics.commit_if_current(
+                    snapshot,
+                    lambda: self.workspace_symbols.commit_snapshots_if_current(
+                        snapshots,
+                        enrich_live,
+                    ),
+                )
+            except (DiagnosticError, WorkspaceIndexError):
+                return self._error(request_id, -32801, "Content modified")
+
+        if closed_ownership is None:
             return response
 
-        try:
-            return self.diagnostics.commit_if_current(
-                snapshot,
-                lambda: self.workspace_symbols.commit_snapshots_if_current(
-                    snapshots, enrich
-                ),
-            )
-        except (DiagnosticError, WorkspaceIndexError):
+        workspace_snapshots, folder_generation = closed_ownership
+        captured_semantics = tuple(workspace_snapshots)
+        if not self._closed_workspace_snapshots_current(captured_semantics):
+            self._refresh_closed_workspace_files()
             return self._error(request_id, -32801, "Content modified")
 
+        stale_closed_inputs = False
+
+        def enrich_closed() -> dict[str, Any] | None:
+            nonlocal stale_closed_inputs
+            if not self._closed_workspace_snapshots_current(captured_semantics):
+                stale_closed_inputs = True
+                return None
+            return self._defer_code_action_edits(
+                response,
+                diagnostic=None,
+                workspace=workspace_snapshots,
+                folder_generation=folder_generation,
+            )
+
+        try:
+            enriched = self.workspace_folders.commit_if_current(
+                folder_generation,
+                lambda: self.workspace_symbols.commit_snapshots_if_current(
+                    workspace_snapshots,
+                    enrich_closed,
+                ),
+            )
+        except (WorkspaceFolderError, WorkspaceIndexError):
+            return self._error(request_id, -32801, "Content modified")
+
+        if stale_closed_inputs:
+            self._refresh_closed_workspace_files()
+            return self._error(request_id, -32801, "Content modified")
+        assert enriched is not None
+        return enriched
+
+    def _defer_code_action_edits(
+        self,
+        response: dict[str, Any],
+        *,
+        diagnostic: DiagnosticSnapshot | None,
+        workspace: tuple[SemanticSnapshot, ...],
+        folder_generation: int | None,
+    ) -> dict[str, Any]:
+        """Store exact eager edits and return lazy action shells."""
+        for action in response["result"]:
+            if not isinstance(action, dict) or not isinstance(action.get("edit"), dict):
+                continue
+            token = self._code_action_resolve_next
+            self._code_action_resolve_next += 1
+            stored = dict(action)
+            data = stored.get("data")
+            data = dict(data) if isinstance(data, dict) else {}
+            data["novaCodeActionResolve"] = token
+            stored["data"] = data
+            action["data"] = dict(data)
+            action.pop("edit", None)
+            self._code_action_resolve_records[token] = _CodeActionResolveRecord(
+                diagnostic,
+                workspace,
+                stored,
+                folder_generation,
+            )
+        while len(self._code_action_resolve_records) > 256:
+            oldest = min(self._code_action_resolve_records)
+            del self._code_action_resolve_records[oldest]
+        return response
+
     def _handle_code_action_resolve(
-        self, request_id: Any, params: Any
+        self,
+        request_id: Any,
+        params: Any,
     ) -> dict[str, Any]:
         if not isinstance(params, dict):
             return self._error(request_id, -32602, "Invalid params")
@@ -131,8 +225,28 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if record is None:
             return self._error(request_id, -32602, "Invalid params")
 
-        uri = record.diagnostic.semantic.uri
-        if self.diagnostics.get(uri) is not record.diagnostic:
+        if record.diagnostic is None:
+            return self._handle_closed_code_action_resolve(
+                request_id,
+                params,
+                record,
+            )
+        return self._handle_live_code_action_resolve(
+            request_id,
+            params,
+            record,
+        )
+
+    def _handle_live_code_action_resolve(
+        self,
+        request_id: Any,
+        params: dict[str, Any],
+        record: _CodeActionResolveRecord,
+    ) -> dict[str, Any]:
+        diagnostic = record.diagnostic
+        assert diagnostic is not None
+        uri = diagnostic.semantic.uri
+        if self.diagnostics.get(uri) is not diagnostic:
             return self._error(request_id, -32801, "Content modified")
 
         try:
@@ -152,14 +266,75 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 return self._result(request_id, resolved)
 
             return self.diagnostics.commit_if_current(
-                record.diagnostic,
+                diagnostic,
                 lambda: self.workspace_symbols.commit_snapshots_if_current(
-                    record.workspace, commit
+                    record.workspace,
+                    commit,
                 ),
             )
         except RequestCancelled:
             return self._error(request_id, -32800, "Request cancelled")
         except (StaleRequest, DiagnosticError, WorkspaceIndexError):
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _handle_closed_code_action_resolve(
+        self,
+        request_id: Any,
+        params: dict[str, Any],
+        record: _CodeActionResolveRecord,
+    ) -> dict[str, Any]:
+        folder_generation = record.folder_generation
+        if folder_generation is None:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            context = self.requests.start(request_id)
+        except RequestError:
+            return self._error(request_id, -32801, "Content modified")
+
+        captured_semantics = tuple(record.workspace)
+        try:
+            self.requests.checkpoint(context)
+            if not self._closed_workspace_snapshots_current(captured_semantics):
+                self._refresh_closed_workspace_files()
+                return self._error(request_id, -32801, "Content modified")
+
+            resolved = dict(params)
+            edit = record.action.get("edit")
+            if isinstance(edit, dict):
+                resolved["edit"] = edit
+
+            stale_closed_inputs = False
+
+            def publish() -> dict[str, Any] | None:
+                nonlocal stale_closed_inputs
+                if not self._closed_workspace_snapshots_current(captured_semantics):
+                    stale_closed_inputs = True
+                    return None
+                self.requests.checkpoint(context)
+                return self._result(request_id, resolved)
+
+            try:
+                response = self.workspace_folders.commit_if_current(
+                    folder_generation,
+                    lambda: self.workspace_symbols.commit_snapshots_if_current(
+                        record.workspace,
+                        publish,
+                    ),
+                )
+            except (WorkspaceFolderError, WorkspaceIndexError):
+                return self._error(request_id, -32801, "Content modified")
+
+            if stale_closed_inputs:
+                self._refresh_closed_workspace_files()
+                return self._error(request_id, -32801, "Content modified")
+            assert response is not None
+            return response
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
