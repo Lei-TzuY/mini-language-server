@@ -8,7 +8,7 @@ The checkpoint covers:
 
 1. JSON-RPC/LSP framing and lifecycle
 2. document snapshots, versions, and incremental edits
-3. source positions and spans with session-wide LSP UTF-8/UTF-16 position encoding negotiation
+3. source positions and spans with session-wide LSP UTF-8/UTF-16/UTF-32 position encoding negotiation
 4. syntax snapshot publication
 5. symbol snapshot publication
 6. semantic reference publication
