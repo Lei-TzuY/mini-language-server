@@ -7,7 +7,7 @@ from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
-from .documents import Document
+from .documents import Document, DocumentError
 from .nova import NovaFunctionSyntax, NovaLanguageServer
 from .semantic import SemanticError
 from .server import ServerState
@@ -38,6 +38,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self.workspace_symbols = WorkspaceSymbolIndex()
         self.workspace_folders = WorkspaceFolderSet()
         self._workspace_folder_change_support = False
+        self._file_rename_support = False
         self._moniker_support = False
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
@@ -47,6 +48,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             self._workspace_folder_change_support = (
                 self._client_supports_workspace_folders(params)
             )
+            self._file_rename_support = self._client_supports_file_rename(params)
             self._moniker_support = self._client_supports_moniker(params)
             try:
                 self.workspace_folders.configure(params)
@@ -62,6 +64,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         ):
             if self._workspace_folder_change_support:
                 self._handle_workspace_folder_change(message.get("params"))
+            return None
+
+        if (
+            method == "workspace/didRenameFiles"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+        ):
+            if self._file_rename_support:
+                self._handle_workspace_file_renames(message.get("params"))
             return None
 
         if "id" in message and self.state is ServerState.RUNNING:
@@ -130,6 +141,21 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                             "supported": True,
                             "changeNotifications": True,
                         }
+                if self._file_rename_support:
+                    workspace_capabilities = capabilities.setdefault("workspace", {})
+                    if isinstance(workspace_capabilities, dict):
+                        file_operations = workspace_capabilities.setdefault(
+                            "fileOperations", {}
+                        )
+                        if isinstance(file_operations, dict):
+                            file_operations["didRename"] = {
+                                "filters": [
+                                    {
+                                        "scheme": "file",
+                                        "pattern": {"glob": "**/*.nova"},
+                                    }
+                                ]
+                            }
         return result
 
     def _handle_document_notification(self, method: str, params: Any) -> None:
@@ -160,6 +186,75 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         except WorkspaceIndexError:
             return
         self._publish_workspace_diagnostics()
+
+    def _handle_workspace_file_renames(self, params: Any) -> None:
+        """Rekey open Nova documents after one negotiated workspace file rename batch."""
+        if not isinstance(params, dict):
+            return
+        files = params.get("files")
+        if not isinstance(files, list):
+            return
+
+        renames: list[tuple[str, str]] = []
+        for item in files:
+            if not isinstance(item, dict):
+                return
+            old_uri = item.get("oldUri")
+            new_uri = item.get("newUri")
+            if (
+                not isinstance(old_uri, str)
+                or not old_uri
+                or not isinstance(new_uri, str)
+                or not new_uri
+            ):
+                return
+            document = self.documents.get(old_uri)
+            if document is None or document.language_id != self.nova_adapter.language_id:
+                continue
+            renames.append((old_uri, new_uri))
+
+        if not renames:
+            return
+
+        before = self.workspace_symbols.snapshots()
+        previous_workspace = {
+            old_uri: self.workspace_symbols.get(old_uri)
+            for old_uri, _ in renames
+        }
+        try:
+            moved = self.documents.rename_many(renames)
+        except DocumentError:
+            return
+        if not moved:
+            return
+
+        for previous, current in moved:
+            indexed = previous_workspace.get(previous.uri)
+            if indexed is not None:
+                self.workspace_symbols.remove(previous.uri, expected=indexed)
+            self.diagnostics.discard(previous.uri)
+            self.semantics.discard(previous.uri)
+            self.symbols.discard(previous.uri)
+            self.syntax.discard(previous.uri)
+            self._document_uri_renamed(previous.uri, current.uri)
+            self._queue_publish_diagnostics(previous.uri, None, [])
+
+        for _, document in moved:
+            try:
+                semantic = self.nova_adapter.publish(self, document)
+            except SyntaxError:
+                continue
+            if not self.workspace_folders.contains(document.uri):
+                continue
+            self.workspace_symbols.replace(
+                semantic,
+                expected=self.workspace_symbols.get(document.uri),
+            )
+
+        self._publish_workspace_diagnostics()
+        after = self.workspace_symbols.snapshots()
+        if before.generation != after.generation:
+            self._workspace_scope_changed(before, after)
 
     def _handle_workspace_folder_change(self, params: Any) -> None:
         before = self.workspace_symbols.snapshots()
@@ -1105,6 +1200,22 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(text_document, dict):
             return False
         return isinstance(text_document.get("moniker"), dict)
+
+    @staticmethod
+    def _client_supports_file_rename(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        file_operations = workspace.get("fileOperations")
+        return (
+            isinstance(file_operations, dict)
+            and file_operations.get("didRename") is True
+        )
 
     @staticmethod
     def _client_supports_workspace_folders(params: Any) -> bool:

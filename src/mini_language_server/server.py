@@ -551,6 +551,9 @@ class LanguageServer:
         except DocumentError:
             return
 
+    def _document_uri_renamed(self, old_uri: str, new_uri: str) -> None:
+        """Extension point for URI-keyed feature caches after an atomic document rekey."""
+
     def _handle_semantic_request(
         self, method: str, request_id: Any, params: Any
     ) -> dict[str, Any]:

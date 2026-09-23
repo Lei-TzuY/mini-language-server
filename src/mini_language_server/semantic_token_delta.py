@@ -61,6 +61,12 @@ class SemanticTokenDeltaMixin:
                     self._semantic_token_results.pop(uri, None)
         return response
 
+    def _document_uri_renamed(self, old_uri: str, new_uri: str) -> None:
+        super()._document_uri_renamed(old_uri, new_uri)
+        with self._semantic_token_result_lock:
+            self._semantic_token_results.pop(old_uri, None)
+            self._semantic_token_results.pop(new_uri, None)
+
     def _handle_delta_capable_full(
         self, message: dict[str, Any]
     ) -> dict[str, Any] | None:

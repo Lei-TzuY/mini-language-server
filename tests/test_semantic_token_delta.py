@@ -403,3 +403,52 @@ def test_workspace_drift_rejects_delta_history_publication(monkeypatch: Any) -> 
     assert fresh is not None
     assert fresh["result"]["resultId"] == "2"
     assert fresh["result"]["edits"]
+
+def test_file_rename_retires_semantic_token_delta_lineage() -> None:
+    server = FinalNovaProductLanguageServer()
+    response = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "textDocument": {
+                        "semanticTokens": {
+                            "requests": {"full": {"delta": True}}
+                        }
+                    },
+                    "workspace": {
+                        "fileOperations": {"didRename": True},
+                    },
+                }
+            },
+        )
+    )
+    assert response is not None
+    old_uri = "file:///workspace/main.nova"
+    new_uri = "file:///workspace/renamed.nova"
+    open_document(server, old_uri, "fn alpha() {}\n")
+    full = server.handle(
+        request("textDocument/semanticTokens/full", 2, token_params(old_uri))
+    )
+    assert full is not None
+    previous = full["result"]["resultId"]
+
+    server.handle(
+        notification(
+            "workspace/didRenameFiles",
+            {"files": [{"oldUri": old_uri, "newUri": new_uri}]},
+        )
+    )
+
+    fresh = server.handle(
+        request(
+            "textDocument/semanticTokens/full/delta",
+            3,
+            token_params(new_uri, previous),
+        )
+    )
+    assert fresh is not None
+    assert fresh["result"]["data"]
+    assert "edits" not in fresh["result"]
+    assert fresh["result"]["resultId"] != previous
