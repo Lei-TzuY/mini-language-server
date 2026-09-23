@@ -10,6 +10,7 @@ from .assignment_diagnostics import NovaProductLanguageServer as _NovaProductLan
 from .constant_control_flow import proven_non_fallthrough_while_spans
 from .constant_values import bounded_boolean_constant_value
 from .diagnostics import Diagnostic
+from .return_types import _NeverReturnsResolver
 from .semantic import SemanticSnapshot
 from .source import Span
 
@@ -141,6 +142,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         branch_open: int,
         branch_close: int,
         branch_scope: tuple[int, ...],
+        *,
+        never_resolver: _NeverReturnsResolver | None = None,
+        never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> bool:
         if any(
             self._brace_scope_at(code, match.start()) == branch_scope
@@ -158,7 +162,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         branch_text = text[branch_open + 1 : branch_close]
         return bool(
             self._top_level_never_call_statements(
-                branch_code, branch_text
+                branch_code,
+                branch_text,
+                resolver=never_resolver,
+                resolving=never_resolving,
             )
         )
 
@@ -170,13 +177,22 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         branch_close: int,
         branch_scope: tuple[int, ...],
         assignments: list[tuple[int, tuple[int, ...]]],
+        *,
+        never_resolver: _NeverReturnsResolver | None = None,
+        never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> bool:
         if self._direct_scope_assigned(
             branch_open, branch_close, branch_scope, assignments
         ):
             return True
         if self._direct_scope_terminates(
-            code, text, branch_open, branch_close, branch_scope
+            code,
+            text,
+            branch_open,
+            branch_close,
+            branch_scope,
+            never_resolver=never_resolver,
+            never_resolving=never_resolving,
         ):
             return True
         return self._complete_if_chain_initializes(
@@ -186,6 +202,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             branch_close,
             branch_scope,
             assignments,
+            never_resolver=never_resolver,
+            never_resolving=never_resolving,
         )
 
     def _complete_if_chain_initializes(
@@ -196,6 +214,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         end_offset: int,
         reference_scope: tuple[int, ...],
         assignments: list[tuple[int, tuple[int, ...]]],
+        *,
+        never_resolver: _NeverReturnsResolver | None = None,
+        never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> bool:
         """Prove every reachable arm assigns or terminates before the join."""
         pairs = self._matching_braces(code)
@@ -220,6 +241,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 if_close,
                 reference_scope + (if_open,),
                 assignments,
+                never_resolver=never_resolver,
+                never_resolving=never_resolving,
             )
             if constant is True:
                 if branch_assigned:
@@ -253,6 +276,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         branch_close,
                         reference_scope + (branch_open,),
                         assignments,
+                        never_resolver=never_resolver,
+                        never_resolving=never_resolving,
                     )
                     if branch_constant is True:
                         if all_reachable_assigned and branch_assigned:
@@ -281,6 +306,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     branch_close,
                     reference_scope + (branch_open,),
                     assignments,
+                    never_resolver=never_resolver,
+                    never_resolving=never_resolving,
                 )
                 if all_reachable_assigned and branch_assigned:
                     return True
@@ -311,14 +338,30 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         reference_start: int,
         reference_scope: tuple[int, ...],
         assignments: list[tuple[int, tuple[int, ...]]],
+        *,
+        never_resolver: _NeverReturnsResolver | None = None,
+        never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> bool:
         """Prove a bounded complete if/else-if/else join before the reference."""
         return self._complete_if_chain_initializes(
-            code, text, 0, reference_start, reference_scope, assignments
+            code,
+            text,
+            0,
+            reference_start,
+            reference_scope,
+            assignments,
+            never_resolver=never_resolver,
+            never_resolving=never_resolving,
         )
 
     def _nova_reads_before_first_assignment(
-        self, semantic: SemanticSnapshot, code: str, declaration: re.Match[str]
+        self,
+        semantic: SemanticSnapshot,
+        code: str,
+        declaration: re.Match[str],
+        *,
+        never_resolver: _NeverReturnsResolver | None = None,
+        never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> tuple[Diagnostic, ...]:
         text = semantic.symbols.syntax.document.text
         name_span = Span(*declaration.span("name"))
@@ -355,7 +398,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 and reference_scope[: len(assignment_scope)] == assignment_scope
                 for assignment_start, assignment_scope in assignments
             ) or self._if_else_join_initializes(
-                code, text, reference.span.start, reference_scope, assignments
+                code,
+                text,
+                reference.span.start,
+                reference_scope,
+                assignments,
+                never_resolver=never_resolver,
+                never_resolving=never_resolving,
             )
             if definitely_initialized:
                 continue
