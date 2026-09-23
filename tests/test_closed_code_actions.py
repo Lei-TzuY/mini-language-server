@@ -203,7 +203,7 @@ def test_closed_quick_fix_rejects_disk_drift_and_refreshes_index(
 
     def drift_after_plan(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         actions = original(*args, **kwargs)
-        source.write_text(replacement, encoding="utf-8")
+        source.write_bytes(replacement.encode("utf-8"))
         return actions
 
     monkeypatch.setattr(
