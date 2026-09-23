@@ -164,6 +164,7 @@ def run_session(
     active_request_thread: Thread | None = None
     active_request_id: str | int | None = None
     transport_failed = False
+    reader_failed = False
     pending_shutdown_prefix: tuple[dict[str, object], ...] = ()
     pending_shutdown_response: dict[str, object] | None = None
     active_request_saw_live_mutation = False
@@ -233,6 +234,26 @@ def run_session(
             if request_id is not None:
                 finish_transport_request(request_id)
 
+    def fail_transport(*, reader_stopped: bool = False) -> None:
+        nonlocal transport_failed, reader_failed
+        if reader_stopped:
+            reader_failed = True
+        if transport_failed:
+            return
+        active_server.abort_transport(active_request_id=active_request_id)
+        active_server._set_server_request_outbox_wakeup(None)
+        transport_failed = True
+
+    def write_batch(messages: tuple[dict[str, object], ...]) -> bool:
+        if transport_failed:
+            return False
+        try:
+            _write_batch(output_stream, messages)
+        except OSError:
+            fail_transport()
+            return False
+        return True
+
     def wake_server_request_outbox() -> None:
         events.put(_SERVER_REQUEST_OUTBOX_READY)
 
@@ -262,7 +283,8 @@ def run_session(
                     raise item.error
                 active_server._set_server_request_outbox_wakeup(None)
                 active_server._retire_all_server_requests(cancel_remote=False)
-                reader_thread.join()
+                if reader_failed:
+                    reader_thread.join()
                 return 1
             if pending_shutdown_response is not None:
                 if (
@@ -279,14 +301,14 @@ def run_session(
                         "message": "Request cancelled",
                     },
                 }
-                _write_batch(
-                    output_stream,
+                if not write_batch(
                     (
                         *pending_shutdown_prefix,
                         cancelled_response,
                         pending_shutdown_response,
-                    ),
-                )
+                    )
+                ):
+                    return 1
                 pending_shutdown_prefix = ()
                 pending_shutdown_response = None
                 continue
@@ -294,10 +316,10 @@ def run_session(
             if item.error is not None:
                 active_server._set_server_request_outbox_wakeup(None)
                 raise item.error
-            _write_batch(
-                output_stream,
-                _drain_after_dispatch(active_server, item.response),
-            )
+            if not write_batch(
+                _drain_after_dispatch(active_server, item.response)
+            ):
+                return 1
             continue
 
         if item is _SERVER_REQUEST_OUTBOX_READY:
@@ -305,25 +327,22 @@ def run_session(
                 not transport_failed
                 and active_server.state is ServerState.RUNNING
             ):
-                _write_batch(
-                    output_stream,
-                    _drain_after_dispatch(active_server, None),
-                )
+                if not write_batch(
+                    _drain_after_dispatch(active_server, None)
+                ):
+                    if active_request_thread is None:
+                        return 1
             continue
 
         if item is _TRANSPORT_FAILURE:
+            fail_transport(reader_stopped=True)
             if active_request_thread is not None:
-                assert active_request_id is not None
-                active_server.abort_transport(
-                    active_request_id=active_request_id,
-                )
-                active_server._set_server_request_outbox_wakeup(None)
-                transport_failed = True
                 continue
-            active_server.abort_transport()
-            active_server._set_server_request_outbox_wakeup(None)
             reader_thread.join()
             return 1
+
+        if transport_failed:
+            continue
 
         assert isinstance(item, dict)
         replay_controls()
@@ -341,10 +360,10 @@ def run_session(
                 response = dispatch_foreground(item)
                 assert response is None
                 replay_controls()
-                _write_batch(
-                    output_stream,
-                    _drain_after_dispatch(active_server, None),
-                )
+                if not write_batch(
+                    _drain_after_dispatch(active_server, None)
+                ):
+                    continue
                 continue
             if (
                 active_server.state is ServerState.RUNNING
@@ -370,10 +389,10 @@ def run_session(
                 response = dispatch_foreground(item)
                 active_request_saw_live_mutation = True
                 replay_controls()
-                _write_batch(
-                    output_stream,
-                    _drain_after_dispatch(active_server, response),
-                )
+                if not write_batch(
+                    _drain_after_dispatch(active_server, response)
+                ):
+                    continue
             else:
                 deferred.append(item)
             continue
@@ -394,10 +413,10 @@ def run_session(
 
         response = dispatch_foreground(item)
         replay_controls()
-        _write_batch(
-            output_stream,
-            _drain_after_dispatch(active_server, response),
-        )
+        if not write_batch(
+            _drain_after_dispatch(active_server, response)
+        ):
+            return 1
 
     if active_request_thread is not None:
         active_request_thread.join()
