@@ -46,6 +46,12 @@ def local_path_from_file_uri(uri: str) -> Path | None:
     return Path(path_text)
 
 
+def is_local_nova_file_uri(uri: str) -> bool:
+    """Return whether one URI names a supported local .nova file shape."""
+    path = local_path_from_file_uri(uri)
+    return path is not None and path.suffix == ".nova"
+
+
 def read_closed_workspace_file(
     uri: str,
     *,
