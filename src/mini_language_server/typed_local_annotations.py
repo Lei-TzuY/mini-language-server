@@ -61,6 +61,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         snapshot: Any,
         target: Any,
         seen: frozenset[tuple[int, int]],
+        functions: dict[str, list[tuple[Any, Any]]],
     ) -> str | None:
         """Prefer an explicit detached local annotation over initializer inference."""
         text = snapshot.symbols.syntax.document.text
@@ -68,7 +69,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         match = _LOCAL_TYPE_SUFFIX.match(code, target.span.end)
         if match is not None:
             return match.group("type")
-        return super()._closed_local_type(snapshot, target, seen)
+        return super()._closed_local_type(
+            snapshot,
+            target,
+            seen,
+            functions,
+        )
 
     def _local_type(
         self,
