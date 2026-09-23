@@ -7,6 +7,7 @@ import re
 from .local_declaration_diagnostics import (
     NovaProductLanguageServer as _NovaProductLanguageServer,
 )
+from .return_types import _NeverReturnsResolver
 
 _LOOP_CONTROL_STATEMENT = re.compile(r"\b(?:break|continue)\b\s*;")
 _WHILE_PREFIX = re.compile(r"\bwhile\s*\([^{};]*\)\s*$")
@@ -22,9 +23,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         branch_open: int,
         branch_close: int,
         branch_scope: tuple[int, ...],
+        *,
+        never_resolver: _NeverReturnsResolver | None = None,
+        never_resolving: frozenset[tuple[int, int, int]] = frozenset(),
     ) -> bool:
         if super()._direct_scope_terminates(
-            code, text, branch_open, branch_close, branch_scope
+            code,
+            text,
+            branch_open,
+            branch_close,
+            branch_scope,
+            never_resolver=never_resolver,
+            never_resolving=never_resolving,
         ):
             return True
         if not self._scope_is_inside_while(code, branch_scope):

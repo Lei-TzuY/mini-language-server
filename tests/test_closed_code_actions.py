@@ -1006,3 +1006,154 @@ def test_closed_unreachable_lazy_resolve_rejects_disk_drift(
         "id": 63,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+
+def test_closed_uninitialized_read_initializes_exact_declaration(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "read.nova"
+    text = "fn main() { var value: Int; let copy = value; }\n"
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(tmp_path, document_changes=True)
+    uri = source.absolute().as_uri()
+    read_start = text.rindex("value")
+    semicolon = text.index(";", text.index("var value"))
+
+    actions = closed_action(
+        server,
+        uri,
+        request_id=70,
+        start=read_start,
+        end=read_start + len("value"),
+    )["result"]
+    action = next(
+        item
+        for item in actions
+        if item["diagnostics"][0]["code"] == "nova.uninitialized-read"
+    )
+
+    assert action["title"] == "Initialize 'value' at declaration"
+    assert action["edit"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": None},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": semicolon},
+                        "end": {"line": 0, "character": semicolon},
+                    },
+                    "newText": " = 0",
+                }
+            ],
+        }
+    ]
+    assert server.documents.get(uri) is None
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_uninitialized_read_uses_bounded_defaults(tmp_path: Path) -> None:
+    source = tmp_path / "defaults.nova"
+    text = (
+        "fn main() { "
+        "var text: String; let first = text; "
+        "var flag: Bool; let second = flag; }\n"
+    )
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+
+    text_read = text.index("text", text.index("first"))
+    text_actions = closed_action(
+        server,
+        uri,
+        request_id=71,
+        start=text_read,
+        end=text_read + len("text"),
+    )["result"]
+    text_action = next(
+        item for item in text_actions
+        if item["diagnostics"][0]["code"] == "nova.uninitialized-read"
+    )
+    assert text_action["edit"]["changes"][uri][0]["newText"] == ' = ""'
+
+    flag_read = text.index("flag", text.index("second"))
+    flag_actions = closed_action(
+        server,
+        uri,
+        request_id=72,
+        start=flag_read,
+        end=flag_read + len("flag"),
+    )["result"]
+    flag_action = next(
+        item for item in flag_actions
+        if item["diagnostics"][0]["code"] == "nova.uninitialized-read"
+    )
+    assert flag_action["edit"]["changes"][uri][0]["newText"] == " = false"
+
+
+def test_closed_uninitialized_read_does_not_guess_shadowed_declaration(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "shadowed.nova"
+    text = (
+        "fn main(flag: Bool) { var value: Int; "
+        "if flag { var value: Int; let copy = value; } }\n"
+    )
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+    read_start = text.rindex("value")
+
+    actions = closed_action(
+        server,
+        uri,
+        request_id=73,
+        start=read_start,
+        end=read_start + len("value"),
+    )["result"]
+
+    assert [
+        item
+        for item in actions
+        if item["diagnostics"][0]["code"] == "nova.uninitialized-read"
+        and item["title"].startswith("Initialize '")
+    ] == []
+
+
+def test_closed_uninitialized_read_lazy_resolve_rejects_disk_drift(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "read.nova"
+    text = "fn main() { var value: Int; let copy = value; }\n"
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(
+        tmp_path,
+        document_changes=True,
+        resolve_edit=True,
+    )
+    uri = source.absolute().as_uri()
+    read_start = text.rindex("value")
+
+    actions = closed_action(
+        server,
+        uri,
+        request_id=74,
+        start=read_start,
+        end=read_start + len("value"),
+    )["result"]
+    action = next(
+        item
+        for item in actions
+        if item["diagnostics"][0]["code"] == "nova.uninitialized-read"
+    )
+    assert "edit" not in action
+
+    source.write_text(
+        "fn main() { var value: Int = 1; let copy = value; }\n",
+        encoding="utf-8",
+    )
+    assert server.handle(request("codeAction/resolve", 75, action)) == {
+        "jsonrpc": "2.0",
+        "id": 75,
+        "error": {"code": -32801, "message": "Content modified"},
+    }

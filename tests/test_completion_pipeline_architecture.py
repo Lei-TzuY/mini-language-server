@@ -79,3 +79,13 @@ def test_closed_unreachable_layer_precedes_completion_publication() -> None:
     unary_plus = modules.index("mini_language_server.unary_plus")
 
     assert completion < closed_unreachable < unary_plus
+
+
+def test_closed_definite_initialization_precedes_unreachable_and_completion() -> None:
+    modules = [base.__module__ for base in NovaProductLanguageServer.__mro__]
+
+    completion = modules.index("mini_language_server.completion_pipeline")
+    definite = modules.index("mini_language_server.closed_definite_initialization")
+    unreachable = modules.index("mini_language_server.closed_unreachable")
+
+    assert completion < definite < unreachable
