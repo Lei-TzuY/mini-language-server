@@ -39,6 +39,7 @@ _SYMBOL_KINDS = {
     "parameter": 13,
 }
 _WORKSPACE_SYMBOL_PARTIAL_CHUNK_SIZE = 16
+_WORKSPACE_WATCH_REGISTRATION_ID = "mini-language-server.workspace.nova-files"
 
 
 class WorkspaceNovaLanguageServer(NovaLanguageServer):
@@ -53,6 +54,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self._file_delete_support = False
         self._file_rename_support = False
         self._file_will_rename_support = False
+        self._watched_files_dynamic_registration = False
+        self._watched_files_registration_attempted = False
+        self._watched_files_registration_request: str | None = None
+        self._watched_files_registration_active = False
         self._moniker_support = False
         self._closed_workspace_index_initialized = False
         self._closed_workspace_uris: dict[WorkspaceUriIdentity, str] = {}
@@ -72,6 +77,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             self._file_rename_support = self._client_supports_file_rename(params)
             self._file_will_rename_support = (
                 self._client_supports_file_will_rename(params)
+            )
+            self._watched_files_dynamic_registration = (
+                self._client_supports_dynamic_watched_files_registration(params)
             )
             self._moniker_support = self._client_supports_moniker(params)
             try:
@@ -106,6 +114,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         ):
             if self._file_delete_support:
                 self._handle_workspace_file_index_change(message.get("params"))
+            return None
+
+        if (
+            method == "workspace/didChangeWatchedFiles"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+        ):
+            if self._watched_files_registration_active:
+                self._handle_workspace_watched_file_changes(message.get("params"))
             return None
 
         if (
@@ -174,10 +191,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             method == "initialized"
             and "id" not in message
             and self.state is ServerState.RUNNING
-            and not self._closed_workspace_index_initialized
         ):
-            self._closed_workspace_index_initialized = True
-            self._refresh_closed_workspace_files()
+            if not self._closed_workspace_index_initialized:
+                self._closed_workspace_index_initialized = True
+                self._refresh_closed_workspace_files()
+            self._queue_workspace_file_watcher_registration()
         if method == "initialize" and result is not None and "result" in result:
             params = message.get("params")
             capabilities = result["result"].get("capabilities")
@@ -349,6 +367,46 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return self._error(request_id, -32800, "Request cancelled")
         finally:
             self.requests.finish(context)
+
+    def _handle_workspace_watched_file_changes(self, params: Any) -> None:
+        """Reconcile detached Nova files after a registered watcher notification."""
+        try:
+            changes = self._workspace_watched_file_changes(params)
+        except DocumentError:
+            return
+        if not any(
+            self._workspace_file_affects_closed_index(uri)
+            for uri, _ in changes
+        ):
+            return
+        self._refresh_closed_workspace_files()
+
+    @staticmethod
+    def _workspace_watched_file_changes(
+        params: Any,
+    ) -> tuple[tuple[str, int], ...]:
+        if not isinstance(params, dict):
+            raise DocumentError("watched-file params must be an object")
+        changes = params.get("changes")
+        if not isinstance(changes, list):
+            raise DocumentError("watched-file params must contain changes")
+
+        parsed: list[tuple[str, int]] = []
+        for item in changes:
+            if not isinstance(item, dict):
+                raise DocumentError("watched-file changes must be objects")
+            uri = item.get("uri")
+            change_type = item.get("type")
+            if not isinstance(uri, str) or not uri:
+                raise DocumentError("watched-file changes require uri")
+            if (
+                isinstance(change_type, bool)
+                or not isinstance(change_type, int)
+                or change_type not in {1, 2, 3}
+            ):
+                raise DocumentError("watched-file changes require valid type")
+            parsed.append((uri, change_type))
+        return tuple(parsed)
 
     def _handle_workspace_file_index_change(self, params: Any) -> None:
         """Reconcile detached Nova files after negotiated create/delete notifications."""
@@ -817,6 +875,37 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             self.workspace_symbols.commit_snapshots_if_current(snapshots, publish)
         except WorkspaceIndexError:
             return
+
+    def _server_request_cancelled(self, request_id: str, method: str) -> None:
+        super()._server_request_cancelled(request_id, method)
+        if (
+            method == "client/registerCapability"
+            and request_id == self._watched_files_registration_request
+        ):
+            self._watched_files_registration_request = None
+
+    def _server_request_completed(
+        self,
+        request_id: str,
+        method: str,
+        *,
+        result: Any,
+        error: dict[str, Any] | None,
+    ) -> None:
+        super()._server_request_completed(
+            request_id,
+            method,
+            result=result,
+            error=error,
+        )
+        if (
+            method != "client/registerCapability"
+            or request_id != self._watched_files_registration_request
+        ):
+            return
+        self._watched_files_registration_request = None
+        if error is None and result is None:
+            self._watched_files_registration_active = True
 
     def _workspace_function_query(self, params: Any):
         parsed = self._semantic_query(params)
@@ -1647,6 +1736,54 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(text_document, dict):
             return False
         return isinstance(text_document.get("moniker"), dict)
+
+    @staticmethod
+    def _client_supports_dynamic_watched_files_registration(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        watched = workspace.get("didChangeWatchedFiles")
+        return (
+            isinstance(watched, dict)
+            and watched.get("dynamicRegistration") is True
+        )
+
+    def _queue_workspace_file_watcher_registration(self) -> None:
+        if (
+            not self._watched_files_dynamic_registration
+            or self._watched_files_registration_attempted
+        ):
+            return
+        self._watched_files_registration_attempted = True
+
+        def own_registration(request_id: str) -> None:
+            self._watched_files_registration_request = request_id
+
+        self._queue_server_request(
+            "client/registerCapability",
+            {
+                "registrations": [
+                    {
+                        "id": _WORKSPACE_WATCH_REGISTRATION_ID,
+                        "method": "workspace/didChangeWatchedFiles",
+                        "registerOptions": {
+                            "watchers": [
+                                {
+                                    "globPattern": "**/*.nova",
+                                    "kind": 7,
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            on_queued=own_registration,
+        )
 
     @staticmethod
     def _client_supports_file_create(params: Any) -> bool:
