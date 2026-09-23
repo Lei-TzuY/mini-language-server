@@ -166,12 +166,27 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             items = [self._diagnostic(source, item) for item in snapshot.diagnostics]
             result_id = self._diagnostic_result_id(document, snapshot)
             report = self._diagnostic_report(previous_result_id, result_id, items)
+            try:
+                (
+                    related_documents,
+                    related_snapshots,
+                    related_reports,
+                ) = self._pull_related_document_reports(snapshot)
+            except DiagnosticError:
+                return self._error(request_id, -32801, "Content modified")
+            if related_reports:
+                report["relatedDocuments"] = related_reports
+
             self.requests.checkpoint(context)
             try:
-                return self.diagnostics.commit_if_current(
-                    snapshot, lambda: self._result(request_id, report)
+                return self.documents.commit_subset_if_current(
+                    (document, *related_documents),
+                    lambda: self.diagnostics.commit_all_if_current(
+                        (snapshot, *related_snapshots),
+                        lambda: self._result(request_id, report),
+                    ),
                 )
-            except DiagnosticError:
+            except (DocumentError, DiagnosticError):
                 return self._error(request_id, -32801, "Content modified")
         except RequestCancelled:
             return self._error(request_id, -32800, "Request cancelled")
@@ -179,6 +194,50 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
+
+    def _pull_related_document_reports(
+        self,
+        snapshot: DiagnosticSnapshot,
+    ) -> tuple[
+        tuple[Document, ...],
+        tuple[DiagnosticSnapshot, ...],
+        dict[str, dict[str, Any]],
+    ]:
+        """Render direct cross-file diagnostic dependencies as exact full reports."""
+        documents: list[Document] = []
+        snapshots: list[DiagnosticSnapshot] = []
+        reports: dict[str, dict[str, Any]] = {}
+
+        for semantic in snapshot.related_semantics:
+            if semantic.uri == snapshot.uri:
+                continue
+            document = semantic.symbols.syntax.document
+            current = self.documents.get(semantic.uri)
+            if current is not document:
+                raise DiagnosticError(
+                    "related diagnostic document is not exact-current"
+                )
+
+            related_snapshot = self.diagnostics.get(semantic.uri)
+            if related_snapshot is not None:
+                if related_snapshot.semantic is not semantic:
+                    raise DiagnosticError(
+                        "related diagnostic snapshot does not match its semantic parent"
+                    )
+                source = self._source_text(document.text)
+                items = [
+                    self._diagnostic(source, diagnostic)
+                    for diagnostic in related_snapshot.diagnostics
+                ]
+                snapshots.append(related_snapshot)
+            else:
+                items = []
+
+            result_id = self._diagnostic_result_id(document, related_snapshot)
+            reports[semantic.uri] = self._diagnostic_report(None, result_id, items)
+            documents.append(document)
+
+        return tuple(documents), tuple(snapshots), reports
 
     def _handle_workspace_diagnostic(self, request_id: Any, params: Any) -> dict[str, Any]:
         if not isinstance(params, dict):
