@@ -1157,3 +1157,122 @@ def test_closed_uninitialized_read_lazy_resolve_rejects_disk_drift(
         "id": 75,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+def test_closed_immutable_assignment_changes_exact_declaration_keyword(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "immutable.nova"
+    text = "fn main() { let value = 1; value = 2; }\n"
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(tmp_path, document_changes=True)
+    uri = source.absolute().as_uri()
+    assignment = text.rindex("value")
+
+    action = closed_action(
+        server,
+        uri,
+        request_id=60,
+        start=assignment,
+        end=assignment + len("value"),
+    )["result"][0]
+
+    assert action["title"] == "Change immutable local declaration to var"
+    assert action["diagnostics"][0]["code"] == "nova.immutable-assignment"
+    let_start = text.index("let")
+    assert action["edit"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": None},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": let_start},
+                        "end": {"line": 0, "character": let_start + 3},
+                    },
+                    "newText": "var",
+                }
+            ],
+        }
+    ]
+    assert server.documents.get(uri) is None
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_assignment_type_repair_uses_captured_cross_file_type(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text("fn helper() -> Int { return 1; }\n", encoding="utf-8")
+    text = 'fn main() { var value = helper(); value = "bad"; }\n'
+    caller.write_text(text, encoding="utf-8")
+    server = initialized_server(
+        tmp_path,
+        document_changes=True,
+        resolve_edit=True,
+    )
+    uri = caller.absolute().as_uri()
+    bad = text.index('"bad"')
+
+    actions = closed_action(
+        server,
+        uri,
+        request_id=61,
+        start=bad,
+        end=bad + len('"bad"'),
+    )["result"]
+
+    assert [item["title"] for item in actions] == [
+        "Replace assignment value with Int literal"
+    ]
+    action = actions[0]
+    assert action["diagnostics"][0]["code"] == "nova.assignment-type"
+    assert "edit" not in action
+
+    resolved = server.handle(request("codeAction/resolve", 62, action))
+    assert resolved is not None
+    assert resolved["result"]["edit"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": None},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": bad},
+                        "end": {
+                            "line": 0,
+                            "character": bad + len('"bad"'),
+                        },
+                    },
+                    "newText": "0",
+                }
+            ],
+        }
+    ]
+
+
+def test_closed_immutable_assignment_repair_fails_closed_on_shadowed_name(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "shadowed.nova"
+    text = (
+        "fn main() { let value = 1; "
+        "if true { let value = 2; value = 3; } }\n"
+    )
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+    assignment = text.rindex("value")
+
+    response = closed_action(
+        server,
+        uri,
+        request_id=63,
+        start=assignment,
+        end=assignment + len("value"),
+    )
+
+    immutable = [
+        item
+        for item in response["result"]
+        if item["diagnostics"][0]["code"] == "nova.immutable-assignment"
+    ]
+    assert immutable == []
