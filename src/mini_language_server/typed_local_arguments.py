@@ -21,6 +21,135 @@ _LOCAL_INITIALIZER_SUFFIX = re.compile(
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product server with bounded local type propagation."""
 
+    def _closed_workspace_product_diagnostics(
+        self,
+        snapshot: Any,
+        functions: dict[str, list[tuple[Any, Any]]],
+    ) -> tuple[Any, ...]:
+        """Extend detached call typing with exact same-snapshot reference evidence."""
+        diagnostics = list(
+            super()._closed_workspace_product_diagnostics(snapshot, functions)
+        )
+        tree = snapshot.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return tuple(diagnostics)
+
+        text = snapshot.symbols.syntax.document.text
+        for name, span in tree.calls:
+            candidates = functions.get(name, [])
+            if len(candidates) != 1:
+                continue
+
+            candidate_snapshot, candidate_symbol = candidates[0]
+            expected_types = self._closed_function_parameter_types(
+                candidate_snapshot,
+                candidate_symbol.span,
+            )
+            parsed = self._call_argument_spans(text, span.end)
+            if parsed is None:
+                continue
+            arguments = parsed[2]
+            if len(arguments) != len(expected_types):
+                continue
+
+            for index, (expected_type, argument) in enumerate(
+                zip(expected_types, arguments, strict=True),
+                start=1,
+            ):
+                if expected_type is None:
+                    continue
+                actual_type = self._closed_reference_argument_type(
+                    snapshot,
+                    argument,
+                )
+                if actual_type is None or actual_type == expected_type:
+                    continue
+                diagnostics.append(
+                    self._argument_type_diagnostic(
+                        name,
+                        index,
+                        argument,
+                        actual_type,
+                        expected_type,
+                    )
+                )
+        return tuple(diagnostics)
+
+    def _closed_reference_argument_type(
+        self,
+        snapshot: Any,
+        argument: Span,
+    ) -> str | None:
+        """Infer one detached argument from an exact parameter/local reference only."""
+        text = snapshot.symbols.syntax.document.text
+        token = text[argument.start : argument.end].strip()
+        if _IDENTIFIER.fullmatch(token) is None:
+            return None
+        target = self._exact_reference_target(snapshot, argument)
+        if target is None:
+            return None
+
+        parameter_type = self._parameter_type(snapshot, target)
+        if parameter_type is not None:
+            return parameter_type
+        if target.kind != "variable":
+            return None
+        return self._closed_local_type(snapshot, target, frozenset())
+
+    def _closed_local_type(
+        self,
+        snapshot: Any,
+        target: Any,
+        seen: frozenset[tuple[int, int]],
+    ) -> str | None:
+        """Infer detached locals from literals and same-snapshot aliases only."""
+        identity = (target.span.start, target.span.end)
+        if identity in seen:
+            return None
+        seen = seen | {identity}
+
+        text = snapshot.symbols.syntax.document.text
+        match = _LOCAL_INITIALIZER_SUFFIX.match(text, target.span.end)
+        if match is None:
+            return None
+        value = match.group("value")
+        literal_type = self._literal_type(value)
+        if literal_type is not None:
+            return literal_type
+        if _IDENTIFIER.fullmatch(value) is None:
+            return None
+
+        value_span = Span(match.start("value"), match.end("value"))
+        alias_target = self._exact_reference_target(snapshot, value_span)
+        if alias_target is None:
+            return None
+        parameter_type = self._parameter_type(snapshot, alias_target)
+        if parameter_type is not None:
+            return parameter_type
+        if alias_target.kind != "variable":
+            return None
+        return self._closed_local_type(snapshot, alias_target, seen)
+
+    @staticmethod
+    def _argument_type_diagnostic(
+        name: str,
+        index: int,
+        argument: Span,
+        actual_type: str,
+        expected_type: str,
+    ):
+        from .diagnostics import Diagnostic
+
+        return Diagnostic(
+            argument,
+            (
+                f"argument {index} to '{name}' has type "
+                f"'{actual_type}'; expected '{expected_type}'"
+            ),
+            code="nova.argument-type",
+            source="nova",
+        )
+
     def _argument_type(self, snapshot: Any, argument: Span) -> str | None:
         """Return a bounded actual type from literals, parameters, or local aliases."""
         inherited_type = super()._argument_type(snapshot, argument)
