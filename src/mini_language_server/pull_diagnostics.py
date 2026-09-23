@@ -205,6 +205,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         except StaleRequest:
             return self._error(request_id, -32801, "Content modified")
         finally:
+            if work_done_registered and active_work_done_token is not None:
+                self._release_work_done_request(active_work_done_token, context)
             self.requests.finish(context)
 
     def _document_diagnostic_result(
@@ -295,6 +297,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             context = self.requests.start(request_id)
         except RequestError:
             return self._error(request_id, -32602, "Invalid params")
+
+        work_done_registered = False
+        if active_work_done_token is not None:
+            if not self._register_work_done_request(active_work_done_token, context):
+                self.requests.finish(context)
+                return self._error(request_id, -32602, "Invalid params")
+            work_done_registered = True
 
         work_done_started = False
         try:
