@@ -7,6 +7,7 @@ from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
+from .local_call_initializers import direct_local_call_initializer
 from .nova import NovaFunctionSyntax
 from .source import SourceText, Span
 from .typed_parameter_arguments import NovaProductLanguageServer as _NovaProductLanguageServer
@@ -14,9 +15,10 @@ from .workspace import WorkspaceIndexError
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _LOCAL_INITIALIZER_SUFFIX = re.compile(
-    r'\s*=\s*(?P<value>\d+|true\b|false\b|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z0-9_]*)'
-    r"\s*(?=\}|let\b|[A-Za-z_][A-Za-z0-9_]*(?:\s*\(|\b)|$)"
+    r'\s*=\s*(?P<value>\d+|true\b|false\b|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z0-9_]*\b)'
+    r"\s*;?\s*(?=\}|let\b|[A-Za-z_][A-Za-z0-9_]*(?:\s*\(|\b)|$)"
 )
+_CLOSED_CALL_RESULT_TYPES = frozenset({"Int", "String", "Bool", "Unit", "UInt"})
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -62,6 +64,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 actual_type = self._closed_reference_argument_type(
                     snapshot,
                     argument,
+                    functions,
                 )
                 if actual_type is None or actual_type == expected_type:
                     continue
@@ -80,6 +83,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         self,
         snapshot: Any,
         argument: Span,
+        functions: dict[str, list[tuple[Any, Any]]],
     ) -> str | None:
         """Infer one detached argument from an exact parameter/local reference only."""
         text = snapshot.symbols.syntax.document.text
@@ -95,15 +99,21 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return parameter_type
         if target.kind != "variable":
             return None
-        return self._closed_local_type(snapshot, target, frozenset())
+        return self._closed_local_type(
+            snapshot,
+            target,
+            frozenset(),
+            functions,
+        )
 
     def _closed_local_type(
         self,
         snapshot: Any,
         target: Any,
         seen: frozenset[tuple[int, int]],
+        functions: dict[str, list[tuple[Any, Any]]],
     ) -> str | None:
-        """Infer detached locals from literals and same-snapshot aliases only."""
+        """Infer detached locals from bounded captured-workspace evidence only."""
         identity = (target.span.start, target.span.end)
         if identity in seen:
             return None
@@ -111,25 +121,53 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         text = snapshot.symbols.syntax.document.text
         match = _LOCAL_INITIALIZER_SUFFIX.match(text, target.span.end)
-        if match is None:
-            return None
-        value = match.group("value")
-        literal_type = self._literal_type(value)
-        if literal_type is not None:
-            return literal_type
-        if _IDENTIFIER.fullmatch(value) is None:
-            return None
+        if match is not None:
+            value = match.group("value")
+            literal_type = self._literal_type(value)
+            if literal_type is not None:
+                return literal_type
+            if _IDENTIFIER.fullmatch(value) is None:
+                return None
 
-        value_span = Span(match.start("value"), match.end("value"))
-        alias_target = self._exact_reference_target(snapshot, value_span)
-        if alias_target is None:
+            value_span = Span(match.start("value"), match.end("value"))
+            alias_target = self._exact_reference_target(snapshot, value_span)
+            if alias_target is None:
+                return None
+            parameter_type = self._parameter_type(snapshot, alias_target)
+            if parameter_type is not None:
+                return parameter_type
+            if alias_target.kind != "variable":
+                return None
+            return self._closed_local_type(
+                snapshot,
+                alias_target,
+                seen,
+                functions,
+            )
+
+        call = direct_local_call_initializer(
+            text,
+            self.nova_adapter.code_view(text),
+            target.span.end,
+            self._call_argument_bounds,
+        )
+        if call is None:
             return None
-        parameter_type = self._parameter_type(snapshot, alias_target)
-        if parameter_type is not None:
-            return parameter_type
-        if alias_target.kind != "variable":
+        call_name, _ = call
+
+        candidates = functions.get(call_name, [])
+        if len(candidates) != 1:
             return None
-        return self._closed_local_type(snapshot, alias_target, seen)
+        candidate_snapshot, candidate_symbol = candidates[0]
+        result_type = self._closed_function_result_type(
+            candidate_snapshot,
+            candidate_symbol.span,
+        )
+        return (
+            result_type
+            if result_type in _CLOSED_CALL_RESULT_TYPES
+            else None
+        )
 
     @staticmethod
     def _argument_type_diagnostic(

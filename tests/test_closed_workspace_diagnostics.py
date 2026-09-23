@@ -686,3 +686,242 @@ def test_closed_cross_file_target_uses_caller_parameter_reference_type(
             "argument 1 to 'target' has type 'Int'; expected 'String'",
         )
     ]
+
+def test_closed_function_call_initialized_local_reports_argument_type(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn make() -> Int { return 1; } "
+        "fn target(value: String) {} "
+        "fn caller() { let local = make(); target(local); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+        if item["code"] == "nova.argument-type"
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'target' has type 'Int'; expected 'String'",
+        )
+    ]
+
+
+def test_closed_cross_file_function_call_local_uses_captured_result_type(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        "fn make() -> Bool { return true; }\n",
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn target(value: String) {} "
+        "fn caller() { let local = make(); target(local); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        caller.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+        if item["code"] == "nova.argument-type"
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'target' has type 'Bool'; expected 'String'",
+        )
+    ]
+
+
+def test_closed_local_alias_chain_can_root_in_function_call(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn make() -> Int { return 1; } "
+        "fn target(value: Bool) {} "
+        "fn caller() { "
+        "let first = make(); let second = first; target(second); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+        if item["code"] == "nova.argument-type"
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'target' has type 'Int'; expected 'Bool'",
+        )
+    ]
+
+
+def test_closed_explicit_local_annotation_wins_over_call_initializer(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn make() -> Int { return 1; } "
+        "fn target(value: Int) {} "
+        "fn caller() { let local: String = make(); target(local); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+        if item["code"] == "nova.argument-type"
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'target' has type 'String'; expected 'Int'",
+        )
+    ]
+
+
+def test_closed_ambiguous_call_initializer_does_not_guess_local_type(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.nova"
+    second = tmp_path / "second.nova"
+    caller = tmp_path / "caller.nova"
+    first.write_text("fn make() -> Int { return 1; }\n", encoding="utf-8")
+    second.write_text('fn make() -> String { return "x"; }\n', encoding="utf-8")
+    caller.write_text(
+        "fn target(value: Bool) {} "
+        "fn caller() { let local = make(); target(local); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        caller.absolute().as_uri()
+    ]
+
+    assert "nova.ambiguous-function" in [
+        item["code"] for item in report["items"]
+    ]
+    assert all(
+        item["code"] != "nova.argument-type"
+        for item in report["items"]
+    )
+
+
+def test_closed_unannotated_call_initializer_remains_conservative(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn make() { return 1; } "
+        "fn target(value: String) {} "
+        "fn caller() { let local = make(); target(local); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert all(
+        item["code"] != "nova.argument-type"
+        for item in report["items"]
+    )
+
+
+def test_closed_call_local_rebinds_after_result_annotation_change(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        "fn make() -> Int { return 1; }\n",
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn target(value: String) {} "
+        "fn caller() { let local = make(); target(local); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    caller_uri = caller.absolute().as_uri()
+
+    first = reports_by_uri(workspace_diagnostics(server))[caller_uri]
+    assert any(item["code"] == "nova.argument-type" for item in first["items"])
+
+    provider.write_text(
+        'fn make() -> String { return "x"; }\n',
+        encoding="utf-8",
+    )
+    assert server._sync_closed_workspace_files() is True
+
+    second = reports_by_uri(
+        workspace_diagnostics(server, request_id=3)
+    )[caller_uri]
+    assert all(
+        item["code"] != "nova.argument-type"
+        for item in second["items"]
+    )
+
+def test_closed_call_local_internal_inference_uses_captured_snapshot(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn make() -> Int { return 1; } "
+        "fn target(value: String) {} "
+        "fn caller() { let local = make(); target(local); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    snapshots = server.workspace_symbols.snapshots()
+    snapshot = next(item for item in snapshots if item.uri == source.absolute().as_uri())
+    functions: dict[str, list[tuple[Any, Any]]] = {}
+    for item in snapshots:
+        for symbol in item.symbols.symbols:
+            if symbol.kind == "function":
+                functions.setdefault(symbol.name, []).append((item, symbol))
+
+    make_snapshot, make_symbol = functions["make"][0]
+    assert server._closed_function_result_type(
+        make_snapshot,
+        make_symbol.span,
+    ) == "Int"
+
+    local = next(
+        symbol
+        for symbol in snapshot.symbols.symbols
+        if symbol.kind == "variable" and symbol.name == "local"
+    )
+    assert server._closed_local_type(
+        snapshot,
+        local,
+        frozenset(),
+        functions,
+    ) == "Int"
