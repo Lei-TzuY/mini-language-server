@@ -337,10 +337,13 @@ class LanguageServer:
             wakeup()
 
     def _queue_server_request(
-        self, method: str, params: dict[str, Any] | None = None
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        on_queued: Callable[[str], None] | None = None,
     ) -> str:
-        """Queue one tracked server-to-client JSON-RPC request."""
-        wakeup: Callable[[], None] | None = None
+        """Queue one tracked server-to-client request, then publish transport visibility."""
         with self._server_request_lock:
             outbox_was_empty = not self._server_requests
             request_id = f"server:{self._next_server_request_id}"
@@ -354,11 +357,25 @@ class LanguageServer:
                 request["params"] = params
             self._pending_server_requests[request_id] = method
             self._server_requests.append(request)
-            if outbox_was_empty:
+
+        if on_queued is not None:
+            on_queued(request_id)
+        self._server_request_queued(request_id, method, params)
+
+        if outbox_was_empty:
+            with self._server_request_lock:
                 wakeup = self._server_request_outbox_wakeup
-        if wakeup is not None:
-            wakeup()
+            if wakeup is not None:
+                wakeup()
         return request_id
+
+    def _server_request_queued(
+        self,
+        request_id: str,
+        method: str,
+        params: dict[str, Any] | None,
+    ) -> None:
+        """Extension point that runs before a newly visible outbox may wake transport."""
 
     def _has_pending_server_request(self, method: str) -> bool:
         with self._server_request_lock:
