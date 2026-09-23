@@ -286,3 +286,21 @@ def test_closed_workspace_pull_rejects_workspace_drift(
         "id": 2,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+def test_closed_pull_does_not_expose_unvalidated_unresolved_name_policy(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "literal.nova"
+    source.write_text(
+        "fn main() { let value = true; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert all(
+        item["code"] != "nova.unresolved-name"
+        for item in report["items"]
+    )
