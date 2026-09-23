@@ -45,10 +45,15 @@ class TrackingBytesIO(BytesIO):
     def __init__(self, value: bytes) -> None:
         super().__init__(value)
         self.payload_reads = 0
+        self.readline_sizes: list[int] = []
 
     def read(self, size: int = -1) -> bytes:
         self.payload_reads += 1
         return super().read(size)
+
+    def readline(self, size: int = -1) -> bytes:
+        self.readline_sizes.append(size)
+        return super().readline(size)
 
 
 @pytest.mark.parametrize(
@@ -107,3 +112,27 @@ def test_header_count_boundary_is_inclusive() -> None:
     )
 
     assert MessageReader(stream, max_header_count=2).read() == {}
+
+
+def test_single_header_line_read_is_bounded_before_allocation() -> None:
+    stream = TrackingBytesIO(
+        b"X-Large: " + (b"a" * 100_000) + b"\r\nContent-Length: 2\r\n\r\n{}"
+    )
+
+    with pytest.raises(FramingError, match="header line too long"):
+        MessageReader(stream).read()
+
+    assert stream.readline_sizes[0] == 8193
+    assert stream.payload_reads == 0
+
+
+def test_header_read_is_capped_by_remaining_total_budget() -> None:
+    stream = TrackingBytesIO(
+        b"X-Large: " + (b"a" * 1000) + b"\r\nContent-Length: 2\r\n\r\n{}"
+    )
+
+    with pytest.raises(FramingError, match="header section"):
+        MessageReader(stream, max_header_bytes=8).read()
+
+    assert stream.readline_sizes[0] == 9
+    assert stream.payload_reads == 0
