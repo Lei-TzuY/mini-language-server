@@ -86,12 +86,16 @@ def workspace_diagnostics(
     server: NovaProductLanguageServer,
     request_id: int = 20,
     previous_result_ids: list[dict[str, str]] | None = None,
+    partial_result_token: str | int | None = None,
 ) -> dict:
+    params: dict[str, Any] = {"previousResultIds": previous_result_ids or []}
+    if partial_result_token is not None:
+        params["partialResultToken"] = partial_result_token
     response = server.handle(
         request(
             "workspace/diagnostic",
             request_id=request_id,
-            params={"previousResultIds": previous_result_ids or []},
+            params=params,
         )
     )
     assert response is not None
