@@ -228,14 +228,14 @@ def test_related_information_model_rejects_invalid_values() -> None:
         )
 
 
-def test_diagnostic_store_rejects_cross_uri_related_information() -> None:
+def test_diagnostic_store_requires_exact_semantic_for_cross_uri_relation() -> None:
     server = initialized_server(related_information=True)
     uri = "file:///workspace/main.nova"
     open_nova(server, uri, "fn main() {}\n")
     semantic = server.semantics.get(uri)
     assert semantic is not None
 
-    with pytest.raises(DiagnosticError, match="same semantic URI"):
+    with pytest.raises(DiagnosticError, match="requires an exact semantic snapshot"):
         server.diagnostics.publish(
             semantic,
             [
@@ -251,4 +251,109 @@ def test_diagnostic_store_rejects_cross_uri_related_information() -> None:
                     ),
                 )
             ],
+        )
+
+
+def test_cross_uri_relation_uses_target_document_coordinates() -> None:
+    server = initialized_server(related_information=True)
+    main_uri = "file:///workspace/main.nova"
+    other_uri = "file:///workspace/other.nova"
+    open_nova(server, main_uri, "fn main() {}\n")
+    open_nova(server, other_uri, "😀\nfn helper() {}\n")
+
+    main = server.semantics.get(main_uri)
+    other = server.semantics.get(other_uri)
+    assert main is not None
+    assert other is not None
+
+    server.drain_notifications()
+    assert server.publish_diagnostics(
+        main,
+        [
+            Diagnostic(
+                Span(3, 7),
+                "example",
+                related_information=(
+                    DiagnosticRelatedInformation(
+                        other_uri,
+                        Span(5, 11),
+                        "candidate helper is here",
+                        semantic=other,
+                    ),
+                ),
+            )
+        ],
+    )
+    notification = server.drain_notifications()[-1]
+    related = notification["params"]["diagnostics"][0]["relatedInformation"][0]
+    assert related == {
+        "location": {
+            "uri": other_uri,
+            "range": {
+                "start": {"line": 1, "character": 3},
+                "end": {"line": 1, "character": 9},
+            },
+        },
+        "message": "candidate helper is here",
+    }
+
+
+def test_cross_uri_target_replacement_invalidates_diagnostic_snapshot() -> None:
+    server = initialized_server(related_information=True)
+    main_uri = "file:///workspace/main.nova"
+    other_uri = "file:///workspace/other.nova"
+    open_nova(server, main_uri, "fn main() {}\n")
+    open_nova(server, other_uri, "fn helper() {}\n")
+
+    main = server.semantics.get(main_uri)
+    other = server.semantics.get(other_uri)
+    assert main is not None
+    assert other is not None
+    snapshot = server.diagnostics.publish(
+        main,
+        [
+            Diagnostic(
+                Span(3, 7),
+                "example",
+                related_information=(
+                    DiagnosticRelatedInformation(
+                        other_uri,
+                        Span(3, 9),
+                        "candidate helper is here",
+                        semantic=other,
+                    ),
+                ),
+            )
+        ],
+    )
+    assert server.diagnostics.get(main_uri) is snapshot
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": other_uri, "version": 2},
+                "contentChanges": [{"text": "fn replacement() {}\n"}],
+            },
+        )
+    )
+
+    assert server.diagnostics.get(main_uri) is None
+    with pytest.raises(DiagnosticError, match="stale diagnostic snapshot"):
+        server.diagnostics.commit_if_current(snapshot, lambda: None)
+
+
+def test_related_information_rejects_semantic_uri_mismatch() -> None:
+    server = initialized_server(related_information=True)
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() {}\n")
+    semantic = server.semantics.get(uri)
+    assert semantic is not None
+
+    with pytest.raises(DiagnosticError, match="semantic URI"):
+        DiagnosticRelatedInformation(
+            "file:///workspace/other.nova",
+            Span(3, 7),
+            "other",
+            semantic=semantic,
         )
