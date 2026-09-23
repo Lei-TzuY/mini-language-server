@@ -90,6 +90,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return
         self._queue_server_request(method)
 
+    def _semantic_token_dependency_identity(
+        self, uri: str
+    ) -> tuple[int, tuple[tuple[str, int], ...]]:
+        """Bind token delta publication to the complete exact workspace."""
+        snapshots = self.workspace_symbols.snapshots()
+        return (
+            snapshots.generation,
+            tuple((snapshot.uri, id(snapshot)) for snapshot in snapshots),
+        )
     @staticmethod
     def _same_semantic_token_workspace_identity(
         left: tuple[Any, ...],
