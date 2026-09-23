@@ -70,36 +70,29 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def _nova_unreachable_code_diagnostics(
         self, semantic: SemanticSnapshot
     ) -> tuple[Diagnostic, ...]:
-        diagnostics = list(super()._nova_unreachable_code_diagnostics(semantic))
+        diagnostics = tuple(super()._nova_unreachable_code_diagnostics(semantic))
         document = semantic.symbols.syntax.document
         if document.language_id != self.nova_adapter.language_id:
-            return tuple(diagnostics)
-
-        for diagnostic in self._nova_constant_dead_branch_diagnostics(semantic):
-            if any(
-                existing.span.start <= diagnostic.span.start
-                and diagnostic.span.end <= existing.span.end
-                for existing in diagnostics
-            ):
-                continue
-            diagnostics = [
-                existing
-                for existing in diagnostics
-                if not (
-                    diagnostic.span.start <= existing.span.start
-                    and existing.span.end <= diagnostic.span.end
-                )
-            ]
-            diagnostics.append(diagnostic)
-
-        diagnostics.sort(key=lambda item: (item.span.start, item.span.end, item.message))
-        return tuple(diagnostics)
+            return diagnostics
+        text = document.text
+        code = self.nova_adapter.code_view(text)
+        return self._merge_unreachable_code_diagnostics(
+            diagnostics,
+            self._constant_dead_branch_diagnostics(text, code),
+        )
 
     def _nova_constant_dead_branch_diagnostics(
         self, semantic: SemanticSnapshot
     ) -> tuple[Diagnostic, ...]:
         text = semantic.symbols.syntax.document.text
         code = self.nova_adapter.code_view(text)
+        return self._constant_dead_branch_diagnostics(text, code)
+
+    def _constant_dead_branch_diagnostics(
+        self,
+        text: str,
+        code: str,
+    ) -> tuple[Diagnostic, ...]:
         diagnostics: list[Diagnostic] = []
 
         for match in _CONTROL_FLOW_CONDITION.finditer(code):
@@ -174,6 +167,31 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     )
                 )
 
+        return tuple(diagnostics)
+
+    @staticmethod
+    def _merge_unreachable_code_diagnostics(
+        structural: tuple[Diagnostic, ...],
+        constant: tuple[Diagnostic, ...],
+    ) -> tuple[Diagnostic, ...]:
+        diagnostics = list(structural)
+        for diagnostic in constant:
+            if any(
+                existing.span.start <= diagnostic.span.start
+                and diagnostic.span.end <= existing.span.end
+                for existing in diagnostics
+            ):
+                continue
+            diagnostics = [
+                existing
+                for existing in diagnostics
+                if not (
+                    diagnostic.span.start <= existing.span.start
+                    and existing.span.end <= diagnostic.span.end
+                )
+            ]
+            diagnostics.append(diagnostic)
+        diagnostics.sort(key=lambda item: (item.span.start, item.span.end, item.message))
         return tuple(diagnostics)
 
     @staticmethod
