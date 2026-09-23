@@ -484,3 +484,54 @@ def test_same_version_target_semantic_replacement_stales_cross_file_relation() -
     assert server.diagnostics.get(caller_uri) is None
     with pytest.raises(DiagnosticError, match="stale diagnostic snapshot"):
         server.diagnostics.commit_if_current(caller_snapshot, lambda: None)
+
+def test_commit_all_if_current_rejects_stale_cross_file_related_parent() -> None:
+    server = initialized_server(related_information=True)
+    caller_uri = "file:///workspace/main.nova"
+    target_uri = "file:///workspace/target.nova"
+    open_nova(server, caller_uri, "fn main() {}\n")
+    open_nova(server, target_uri, "fn target() {}\n")
+
+    caller = server.semantics.get(caller_uri)
+    target = server.semantics.get(target_uri)
+    assert caller is not None
+    assert target is not None
+
+    snapshot = server.diagnostics.publish(
+        caller,
+        [
+            Diagnostic(
+                Span(3, 7),
+                "example",
+                related_information=(
+                    DiagnosticRelatedInformation(
+                        target_uri,
+                        Span(3, 9),
+                        "target is here",
+                        semantic=target,
+                    ),
+                ),
+            )
+        ],
+    )
+
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": target_uri, "version": 2},
+                "contentChanges": [{"text": "fn replacement() {}\n"}],
+            },
+        )
+    )
+
+    committed = False
+
+    def commit() -> None:
+        nonlocal committed
+        committed = True
+
+    with pytest.raises(DiagnosticError, match="stale diagnostic snapshot set"):
+        server.diagnostics.commit_all_if_current((snapshot,), commit)
+
+    assert committed is False
