@@ -11,7 +11,7 @@ from .documents import Document, DocumentError
 from .folding_ranges import NovaProductLanguageServer as _NovaProductLanguageServer
 from .server import ServerState
 from .workspace import WorkspaceIndexError
-from .workspace_folders import WorkspaceFolderError
+from .workspace_folders import WorkspaceFolderError, WorkspaceFolderSet
 
 _DIAGNOSTIC_PARTIAL_CHUNK_SIZE = 16
 
@@ -131,8 +131,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         self._queue_server_request(method)
 
     def _handle_pull_diagnostic(self, request_id: Any, params: Any) -> dict[str, Any]:
+        if not isinstance(params, dict):
+            return self._error(request_id, -32602, "Invalid params")
+        uri = self._document_uri(params)
+        if uri is None:
+            return self._error(request_id, -32602, "Invalid params")
+        if self.documents.get(uri) is None:
+            return self._handle_closed_pull_diagnostic(request_id, params, uri)
+
         context = self._start_document_request(request_id, params)
-        if context is None or not isinstance(params, dict):
+        if context is None:
             return self._error(request_id, -32602, "Invalid params")
         previous_result_id = params.get("previousResultId")
         if previous_result_id is not None and not isinstance(previous_result_id, str):
@@ -200,6 +208,89 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     ),
                 )
             except (DocumentError, DiagnosticError):
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _handle_closed_pull_diagnostic(
+        self,
+        request_id: Any,
+        params: dict[str, Any],
+        requested_uri: str,
+    ) -> dict[str, Any]:
+        """Render one detached closed-file report from an exact workspace snapshot."""
+        previous_result_id = params.get("previousResultId")
+        if previous_result_id is not None and not isinstance(previous_result_id, str):
+            return self._error(request_id, -32602, "Invalid params")
+        valid_partial, partial_result_token = self._partial_result_token(params)
+        if not valid_partial:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            context = self.requests.start(request_id, uri=requested_uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            folder_scope = self.workspace_folders.snapshot()
+            workspace_snapshots = self.workspace_symbols.snapshots()
+            requested_identity = WorkspaceFolderSet.uri_identity(requested_uri)
+
+            target: DiagnosticSnapshot | None = None
+            for snapshot in self._closed_workspace_diagnostic_snapshots(
+                tuple(workspace_snapshots)
+            ):
+                if not folder_scope.contains(snapshot.uri):
+                    continue
+                if WorkspaceFolderSet.uri_identity(snapshot.uri) != requested_identity:
+                    continue
+                target = snapshot
+                break
+            if target is None:
+                return self._error(request_id, -32602, "Invalid params")
+
+            document = target.semantic.symbols.syntax.document
+            source = self._source_text(document.text)
+            items = [
+                self._diagnostic(source, diagnostic)
+                for diagnostic in target.diagnostics
+            ]
+            result_id = self._diagnostic_result_id_values(
+                uri=document.uri,
+                version=None,
+                text=document.text,
+                snapshot=target,
+            )
+            report = self._diagnostic_report(
+                previous_result_id,
+                result_id,
+                items,
+            )
+            self.requests.checkpoint(context)
+
+            def publish() -> dict[str, Any]:
+                self.requests.checkpoint(context)
+                return self._document_diagnostic_result(
+                    request_id,
+                    report,
+                    {},
+                    partial_result_token,
+                )
+
+            try:
+                return self.workspace_folders.commit_if_current(
+                    folder_scope.generation,
+                    lambda: self.workspace_symbols.commit_snapshots_if_current(
+                        workspace_snapshots,
+                        publish,
+                    ),
+                )
+            except (WorkspaceFolderError, WorkspaceIndexError):
                 return self._error(request_id, -32801, "Content modified")
         except RequestCancelled:
             return self._error(request_id, -32800, "Request cancelled")
