@@ -897,3 +897,164 @@ def test_eof_stages_abort_before_worker_registers_request_context() -> None:
         "context-cancelled",
     ]
     assert len(server.requests) == 0
+
+
+class LiveShutdownServer(LanguageServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.events: list[str] = []
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/wait-for-shutdown"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            context = self.requests.start(message["id"])
+            try:
+                self.events.append("request-started")
+                self.entered.set()
+                assert context._cancelled.wait(timeout=5)
+                self.events.append("request-cancelled")
+                self.requests.checkpoint(context)
+                raise AssertionError("shutdown-retired request passed checkpoint")
+            except RequestCancelled:
+                return self._error(message["id"], -32800, "Request cancelled")
+            finally:
+                self.requests.finish(context)
+
+        if (
+            message.get("method") == "test/queued-after"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            self.events.append("queued-executed")
+            return self._result(message["id"], {"ok": True})
+
+        return super().handle(message)
+
+
+def test_shutdown_interrupts_active_request_before_queued_client_request() -> None:
+    server = LiveShutdownServer()
+    first = framed(
+        initialize(),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/wait-for-shutdown",
+            "params": {},
+        },
+    )
+    tail = framed(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "test/queued-after",
+            "params": {},
+        },
+        shutdown(4),
+        exit_notification(),
+    )
+    input_stream = GatedBytesIO(
+        first + tail,
+        gate_offset=len(first),
+        gate=server.entered,
+    )
+    output_stream = BytesIO()
+
+    assert run_session(input_stream, output_stream, server=server) == 0
+
+    messages = decoded(output_stream.getvalue())
+    responses = [message for message in messages if "id" in message]
+    assert [message["id"] for message in responses] == [1, 2, 4, 3]
+    assert responses[1] == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
+    assert responses[2] == {"jsonrpc": "2.0", "id": 4, "result": None}
+    assert responses[3] == {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {"code": -32600, "message": "Server has shut down"},
+    }
+    assert server.events == ["request-started", "request-cancelled"]
+
+
+class PreStartShutdownServer(LanguageServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.before_start = Event()
+        self.release_start = Event()
+        self.events: list[str] = []
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/start-after-shutdown"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            self.events.append("worker-entered")
+            self.before_start.set()
+            assert self.release_start.wait(timeout=5)
+            context = self.requests.start(message["id"])
+            try:
+                self.events.append("context-started")
+                assert context._cancelled.wait(timeout=5)
+                self.requests.checkpoint(context)
+                raise AssertionError("live shutdown cancellation was not observed")
+            except RequestCancelled:
+                self.events.append("context-cancelled")
+                return self._error(message["id"], -32800, "Request cancelled")
+            finally:
+                self.requests.finish(context)
+
+        if message.get("method") == "shutdown":
+            response = super().handle(message)
+            self.events.append("shutdown-dispatched")
+            self.release_start.set()
+            return response
+
+        return super().handle(message)
+
+
+def test_shutdown_stages_cancel_when_worker_has_not_registered_context() -> None:
+    server = PreStartShutdownServer()
+    first = framed(
+        initialize(),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/start-after-shutdown",
+            "params": {},
+        },
+    )
+    tail = framed(shutdown(3), exit_notification())
+    input_stream = GatedBytesIO(
+        first + tail,
+        gate_offset=len(first),
+        gate=server.before_start,
+    )
+    output_stream = BytesIO()
+
+    assert run_session(input_stream, output_stream, server=server) == 0
+
+    responses = [
+        message
+        for message in decoded(output_stream.getvalue())
+        if "id" in message
+    ]
+    assert [message["id"] for message in responses] == [1, 2, 3]
+    assert responses[1] == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
+    assert responses[2] == {"jsonrpc": "2.0", "id": 3, "result": None}
+    assert server.events == [
+        "worker-entered",
+        "shutdown-dispatched",
+        "context-started",
+        "context-cancelled",
+    ]
