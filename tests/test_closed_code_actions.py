@@ -873,3 +873,122 @@ def test_closed_missing_return_action_rejects_disk_drift(
         "id": 52,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+
+def test_closed_unreachable_removal_uses_null_version(tmp_path: Path) -> None:
+    source = tmp_path / "dead.nova"
+    text = "fn value() -> Int { return 1; let dead: Int = 2; }\n"
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(tmp_path, document_changes=True)
+    uri = source.absolute().as_uri()
+    dead_start = text.index("let dead")
+    dead_end = dead_start + len("let dead: Int = 2;")
+
+    actions = closed_action(
+        server,
+        uri,
+        request_id=60,
+        start=dead_start,
+        end=dead_end,
+    )["result"]
+    action = next(
+        item
+        for item in actions
+        if item["diagnostics"][0]["code"] == "nova.unreachable-code"
+    )
+
+    assert action["title"] == "Remove unreachable code"
+    assert action["diagnostics"][0]["tags"] == [1]
+    assert action["edit"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": None},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": dead_start},
+                        "end": {"line": 0, "character": dead_end},
+                    },
+                    "newText": "",
+                }
+            ],
+        }
+    ]
+    assert server.documents.get(uri) is None
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_constant_dead_branch_gets_shared_unreachable_removal(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "constant_dead.nova"
+    text = "fn main() { if (false) { let dead: Int = 1; } let live: Int = 2; }\n"
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+    dead_start = text.index("let dead")
+    dead_end = dead_start + len("let dead: Int = 1;")
+
+    actions = closed_action(
+        server,
+        uri,
+        request_id=61,
+        start=dead_start,
+        end=dead_end,
+    )["result"]
+    action = next(
+        item
+        for item in actions
+        if item["diagnostics"][0]["code"] == "nova.unreachable-code"
+    )
+
+    assert action["title"] == "Remove unreachable code"
+    assert action["edit"]["changes"][uri] == [
+        {
+            "range": {
+                "start": {"line": 0, "character": dead_start},
+                "end": {"line": 0, "character": dead_end},
+            },
+            "newText": "",
+        }
+    ]
+
+
+def test_closed_unreachable_lazy_resolve_rejects_disk_drift(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "dead.nova"
+    text = "fn value() -> Int { return 1; let dead: Int = 2; }\n"
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(
+        tmp_path,
+        document_changes=True,
+        resolve_edit=True,
+    )
+    uri = source.absolute().as_uri()
+    dead_start = text.index("let dead")
+    dead_end = dead_start + len("let dead: Int = 2;")
+
+    actions = closed_action(
+        server,
+        uri,
+        request_id=62,
+        start=dead_start,
+        end=dead_end,
+    )["result"]
+    action = next(
+        item
+        for item in actions
+        if item["diagnostics"][0]["code"] == "nova.unreachable-code"
+    )
+    assert "edit" not in action
+
+    source.write_text(
+        "fn value() -> Int { return 1; let changed: Int = 3; }\n",
+        encoding="utf-8",
+    )
+
+    assert server.handle(request("codeAction/resolve", 63, action)) == {
+        "jsonrpc": "2.0",
+        "id": 63,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
