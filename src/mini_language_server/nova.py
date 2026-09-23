@@ -413,46 +413,23 @@ class NovaLanguageServer(LanguageServer):
             return self._error(request_id, -32602, "Invalid params")
 
         try:
-            source_range = params.get("range")
-            action_context = params.get("context")
-            if not isinstance(source_range, dict) or not isinstance(action_context, dict):
-                return self._error(request_id, -32602, "Invalid params")
-            start = source_range.get("start")
-            end = source_range.get("end")
-            if not isinstance(start, dict) or not isinstance(end, dict):
-                return self._error(request_id, -32602, "Invalid params")
-            only = action_context.get("only")
-            if only is not None:
-                valid_only = isinstance(only, list) and all(
-                    isinstance(item, str) for item in only
-                )
-                if not valid_only:
-                    return self._error(request_id, -32602, "Invalid params")
-                supports_quickfix = any(
-                    item == "quickfix" or item.startswith("quickfix.") for item in only
-                )
-                if not supports_quickfix:
-                    self.requests.checkpoint(context)
-                    return self._result(request_id, [])
-
             uri = self._document_uri(params)
             assert uri is not None
             document = self.documents.get(uri)
-            if document is None or document.language_id != self.nova_adapter.language_id:
+            if document is None:
                 self.requests.checkpoint(context)
                 return self._result(request_id, [])
-            source = self._source_text(document.text)
-            try:
-                start_offset = source.offset_at(
-                    Position(line=start.get("line"), character=start.get("character"))
-                )
-                end_offset = source.offset_at(
-                    Position(line=end.get("line"), character=end.get("character"))
-                )
-            except SourceError:
+
+            parsed = self._nova_code_action_scope(params, document.text)
+            if parsed is None:
                 return self._error(request_id, -32602, "Invalid params")
-            if end_offset < start_offset:
-                return self._error(request_id, -32602, "Invalid params")
+            source, start_offset, end_offset, supports_quickfix = parsed
+            if not supports_quickfix:
+                self.requests.checkpoint(context)
+                return self._result(request_id, [])
+            if document.language_id != self.nova_adapter.language_id:
+                self.requests.checkpoint(context)
+                return self._result(request_id, [])
 
             self.requests.checkpoint(context)
             snapshot = self.diagnostics.get(uri)
@@ -478,12 +455,66 @@ class NovaLanguageServer(LanguageServer):
         finally:
             self.requests.finish(context)
 
+    def _nova_code_action_scope(
+        self,
+        params: dict[str, Any],
+        text: str,
+    ) -> tuple[SourceText, int, int, bool] | None:
+        """Parse one code-action range and quick-fix filter against captured text."""
+        source_range = params.get("range")
+        action_context = params.get("context")
+        if not isinstance(source_range, dict) or not isinstance(action_context, dict):
+            return None
+        start = source_range.get("start")
+        end = source_range.get("end")
+        if not isinstance(start, dict) or not isinstance(end, dict):
+            return None
+
+        only = action_context.get("only")
+        supports_quickfix = True
+        if only is not None:
+            if not isinstance(only, list) or not all(
+                isinstance(item, str) for item in only
+            ):
+                return None
+            supports_quickfix = any(
+                item == "quickfix" or item.startswith("quickfix.") for item in only
+            )
+
+        source = self._source_text(text)
+        try:
+            start_offset = source.offset_at(
+                Position(line=start.get("line"), character=start.get("character"))
+            )
+            end_offset = source.offset_at(
+                Position(line=end.get("line"), character=end.get("character"))
+            )
+        except SourceError:
+            return None
+        if end_offset < start_offset:
+            return None
+        return source, start_offset, end_offset, supports_quickfix
+
     def _render_code_action_workspace_edits(
         self,
         actions: list[dict[str, Any]],
         document: Document,
     ) -> list[dict[str, Any]]:
-        """Bind eager code-action edits to the captured document snapshot version."""
+        """Bind eager code-action edits to the captured live document version."""
+        return self._render_code_action_workspace_edits_for_version(
+            actions,
+            uri=document.uri,
+            version=document.version,
+        )
+
+    def _render_code_action_workspace_edits_for_version(
+        self,
+        actions: list[dict[str, Any]],
+        *,
+        uri: str,
+        version: int | None,
+    ) -> list[dict[str, Any]]:
+        """Render document-scoped actions from one captured open/closed version state."""
         for action in actions:
             edit = action.get("edit")
             if not isinstance(edit, dict):
@@ -491,14 +522,14 @@ class NovaLanguageServer(LanguageServer):
             changes = edit.get("changes")
             if not isinstance(changes, dict):
                 continue
-            if any(uri != document.uri for uri in changes):
+            if any(changed_uri != uri for changed_uri in changes):
                 raise AssertionError(
                     "document-scoped code action escaped its captured document"
                 )
             title = action.get("title")
             rendered = self._workspace_edit(
                 changes,
-                versions={document.uri: document.version},
+                versions={uri: version},
                 annotation_label=title if isinstance(title, str) else None,
             )
             preserved = {key: value for key, value in edit.items() if key != "changes"}
@@ -514,6 +545,25 @@ class NovaLanguageServer(LanguageServer):
         start_offset: int,
         end_offset: int,
     ) -> list[dict[str, Any]]:
+        return self._nova_unresolved_function_actions(
+            uri,
+            document,
+            source,
+            diagnostics,
+            start_offset,
+            end_offset,
+        )
+
+    def _nova_unresolved_function_actions(
+        self,
+        uri: str,
+        document: Document,
+        source: SourceText,
+        diagnostics: tuple[Diagnostic, ...],
+        start_offset: int,
+        end_offset: int,
+    ) -> list[dict[str, Any]]:
+        """Build deterministic unresolved-function repairs for captured Nova text."""
         actions: list[dict[str, Any]] = []
         insertion = Span(len(document.text), len(document.text))
         insertion_range = self._range(source, insertion)
