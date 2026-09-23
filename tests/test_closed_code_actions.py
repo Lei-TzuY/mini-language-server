@@ -836,7 +836,7 @@ def test_closed_missing_return_gets_lazy_null_version_repair(
                         "start": {"line": 0, "character": text.index("}")},
                         "end": {"line": 0, "character": text.index("}")},
                     },
-                    "newText": "return 0; ",
+                    "newText": " return 0; ",
                 }
             ],
         }
