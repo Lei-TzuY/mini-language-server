@@ -661,7 +661,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 diagnostic
                 for diagnostic in base.diagnostics
                 if diagnostic.code
-                not in {"nova.unresolved-function", "nova.ambiguous-function"}
+                in {
+                    "nova.duplicate-function",
+                    "nova.duplicate-parameter",
+                    "nova.duplicate-variable",
+                }
             ]
             for name, span in tree.calls:
                 candidates = functions.get(name, [])
