@@ -12,6 +12,7 @@ from typing import Any
 from .semantic import SemanticError
 from .server import ServerState
 from .source import Span
+from .tracing import TraceLanguageServerMixin
 from .unary_plus import NovaProductLanguageServer as _ProductLanguageServer
 from .workspace import WorkspaceIndexError
 
@@ -20,7 +21,7 @@ _COMPLETION_KIND_VARIABLE = 6
 _COMPLETION_KIND_CONSTANT = 21
 
 
-class NovaProductLanguageServer(_ProductLanguageServer):
+class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer):
     """Nova product with one guarded completion presentation pipeline."""
 
     def __init__(self) -> None:
