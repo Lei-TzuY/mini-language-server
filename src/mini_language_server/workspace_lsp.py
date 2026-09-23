@@ -255,6 +255,75 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return
         self._publish_workspace_diagnostics()
 
+    @staticmethod
+    def _nova_file_operation_options() -> dict[str, Any]:
+        """Return the common local Nova file-operation registration filter."""
+        return {
+            "filters": [
+                {
+                    "scheme": "file",
+                    "pattern": {"glob": "**/*.nova"},
+                }
+            ]
+        }
+
+    def _workspace_file_event_uris(self, params: Any) -> tuple[str, ...]:
+        """Validate and RFC-deduplicate one didCreateFiles/didDeleteFiles batch."""
+        if not isinstance(params, dict):
+            raise DocumentError("file operation params must be an object")
+        files = params.get("files")
+        if not isinstance(files, list):
+            raise DocumentError("file operation params must contain files")
+
+        by_identity: dict[WorkspaceUriIdentity, str] = {}
+        for item in files:
+            if not isinstance(item, dict):
+                raise DocumentError("file operation entries must be objects")
+            uri = item.get("uri")
+            if not isinstance(uri, str) or not uri:
+                raise DocumentError("file operation entries require uri")
+            if not is_local_nova_file_uri(uri):
+                continue
+            identity = WorkspaceFolderSet.uri_identity(uri)
+            by_identity.setdefault(identity, uri)
+        return tuple(by_identity[identity] for identity in sorted(by_identity))
+
+    def _handle_workspace_file_creates(self, params: Any) -> None:
+        """Index newly created closed Nova files after the client commits creation."""
+        try:
+            uris = self._workspace_file_event_uris(params)
+        except DocumentError:
+            return
+        before = self.workspace_symbols.snapshots()
+        changed = False
+        for uri in uris:
+            if not self.workspace_folders.contains(uri):
+                continue
+            changed = self._restore_closed_workspace_file(uri) or changed
+        if not changed:
+            return
+        self._publish_workspace_diagnostics()
+        after = self.workspace_symbols.snapshots()
+        if before.generation != after.generation:
+            self._workspace_scope_changed(before, after)
+
+    def _handle_workspace_file_deletes(self, params: Any) -> None:
+        """Remove deleted detached Nova files without displacing open buffers."""
+        try:
+            uris = self._workspace_file_event_uris(params)
+        except DocumentError:
+            return
+        before = self.workspace_symbols.snapshots()
+        changed = False
+        for uri in uris:
+            changed = self._drop_closed_workspace_identity(uri) or changed
+        if not changed:
+            return
+        self._publish_workspace_diagnostics()
+        after = self.workspace_symbols.snapshots()
+        if before.generation != after.generation:
+            self._workspace_scope_changed(before, after)
+
     def _handle_workspace_will_rename(
         self, request_id: Any, params: Any
     ) -> dict[str, Any]:
@@ -521,8 +590,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return False
 
     def _restore_closed_workspace_file(self, uri: str) -> bool:
-        """Restore disk content after the last open buffer relinquishes one URI."""
-        if not self.workspace_folders.scoped:
+        """Restore or add one bounded disk snapshot when no editor buffer owns it."""
+        if (
+            not self.workspace_folders.scoped
+            or not is_local_nova_file_uri(uri)
+            or not self.workspace_folders.contains(uri)
+        ):
             return False
         identity = WorkspaceFolderSet.uri_identity(uri)
         if any(
@@ -530,12 +603,31 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for document in self.documents.snapshots()
         ):
             return False
-        if not self.workspace_folders.contains(uri):
-            return False
 
         item = read_closed_workspace_file(uri)
         if item is None or not self.workspace_folders.contains(item.uri):
             return False
+
+        tracked_uri = self._closed_workspace_uris.get(identity)
+        tracked = (
+            self.workspace_symbols.get(tracked_uri)
+            if tracked_uri is not None
+            else None
+        )
+        if (
+            tracked is not None
+            and tracked.symbols.syntax.document.text == item.text
+        ):
+            return False
+        if tracked_uri is None and len(self._closed_workspace_uris) >= MAX_CLOSED_WORKSPACE_FILES:
+            return False
+
+        if tracked is not None and tracked_uri != item.uri:
+            try:
+                self.workspace_symbols.remove(tracked_uri, expected=tracked)
+            except WorkspaceIndexError:
+                return False
+
         current = self.workspace_symbols.get(item.uri)
         semantic = self._detached_nova_semantic(item)
         try:
