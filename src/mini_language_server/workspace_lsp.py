@@ -9,12 +9,18 @@ from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
 from .documents import Document, DocumentError
 from .nova import NovaFunctionSyntax, NovaLanguageServer
-from .semantic import SemanticError
-from .server import ServerState
+from .semantic import SemanticError, SemanticSnapshot
+from .server import LanguageServer, ServerState
 from .source import Span
 from .symbols import SymbolError
 from .syntax import SyntaxError
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
+from .workspace_files import (
+    ClosedWorkspaceFile,
+    WorkspaceUriIdentity,
+    read_closed_workspace_file,
+    scan_closed_workspace_files,
+)
 from .workspace_folders import (
     WorkspaceFolderError,
     WorkspaceFolderSet,
@@ -41,6 +47,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self._file_rename_support = False
         self._file_will_rename_support = False
         self._moniker_support = False
+        self._closed_workspace_index_initialized = False
+        self._closed_workspace_uris: dict[WorkspaceUriIdentity, str] = {}
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -132,6 +140,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     return workspace_result
 
         result = super().handle(message)
+        if (
+            method == "initialized"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+            and not self._closed_workspace_index_initialized
+        ):
+            self._closed_workspace_index_initialized = True
+            self._refresh_closed_workspace_files()
         if method == "initialize" and result is not None and "result" in result:
             params = message.get("params")
             capabilities = result["result"].get("capabilities")
