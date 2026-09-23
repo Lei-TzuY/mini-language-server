@@ -69,12 +69,13 @@ class MessageReader:
                     return None
                 raise FramingError("unexpected EOF while reading headers")
             saw_anything = True
-            if raw in (b"\r\n", b"\n"):
-                break
 
             header_bytes += len(raw)
             if header_bytes > self._max_header_bytes:
                 raise FramingError("header section exceeds configured size limit")
+
+            if raw in (b"\r\n", b"\n"):
+                break
 
             header_count += 1
             if header_count > self._max_header_count:
