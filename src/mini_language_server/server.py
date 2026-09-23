@@ -47,6 +47,7 @@ class LanguageServer:
         self._workspace_edit_change_annotations = False
         self._publish_diagnostic_version_support = False
         self._diagnostic_tag_values: frozenset[int] = frozenset()
+        self._diagnostic_related_information_support = False
         self.documents = DocumentStore(position_encoding=self.position_encoding)
         self.syntax = SyntaxStore(self.documents)
         self.symbols = SymbolIndex(self.syntax)
@@ -103,6 +104,9 @@ class LanguageServer:
                 self._client_supports_publish_diagnostic_version(params)
             )
             self._diagnostic_tag_values = self._client_diagnostic_tag_values(params)
+            self._diagnostic_related_information_support = (
+                self._client_supports_diagnostic_related_information(params)
+            )
             self.documents.set_position_encoding(self.position_encoding)
             self.state = ServerState.RUNNING
             capabilities: dict[str, Any] = {
@@ -696,6 +700,13 @@ class LanguageServer:
         return publish if isinstance(publish, dict) else None
 
     @classmethod
+    def _client_supports_diagnostic_related_information(
+        cls, params: Any
+    ) -> bool:
+        publish = cls._publish_diagnostics_capabilities(params)
+        return publish is not None and publish.get("relatedInformation") is True
+
+    @classmethod
     def _client_supports_publish_diagnostic_version(cls, params: Any) -> bool:
         publish = cls._publish_diagnostics_capabilities(params)
         return publish is not None and publish.get("versionSupport") is True
@@ -838,6 +849,17 @@ class LanguageServer:
         ]
         if tags:
             rendered["tags"] = tags
+        if (
+            self._diagnostic_related_information_support
+            and diagnostic.related_information
+        ):
+            rendered["relatedInformation"] = [
+                {
+                    "location": self._location(related.uri, source, related.span),
+                    "message": related.message,
+                }
+                for related in diagnostic.related_information
+            ]
         return rendered
 
     def _queue_publish_diagnostics(

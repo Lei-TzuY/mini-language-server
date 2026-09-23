@@ -13,13 +13,24 @@ def notify(method: str, params: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialized_server() -> NovaProductLanguageServer:
+def initialized_server(
+    *, related_information: bool = False
+) -> NovaProductLanguageServer:
     server = NovaProductLanguageServer()
     result = server.handle(
         request(
             "initialize",
             1,
-            {"capabilities": {"textDocument": {"codeAction": {}}}},
+            {
+                "capabilities": {
+                    "textDocument": {
+                        "codeAction": {},
+                        "publishDiagnostics": {
+                            "relatedInformation": related_information,
+                        },
+                    }
+                }
+            },
         )
     )
     assert result is not None
@@ -221,3 +232,38 @@ def test_duplicate_quick_fix_honors_cancellation_checkpoint() -> None:
         "id": 2,
         "error": {"code": -32800, "message": "Request cancelled"},
     }
+
+def test_duplicate_quick_fix_copies_negotiated_related_information() -> None:
+    server = initialized_server(related_information=True)
+    uri = "file:///workspace/functions.nova"
+    text = "fn ping() {} fn ping() {}\n"
+    open_nova(server, uri, text)
+    start = nth_offset(text, "ping", 2)
+
+    result = code_action(server, uri, 20, start, start + len("ping"))
+    assert len(result["result"]) == 1
+    diagnostic = result["result"][0]["diagnostics"][0]
+    assert diagnostic["relatedInformation"] == [
+        {
+            "location": {
+                "uri": uri,
+                "range": {
+                    "start": {"line": 0, "character": 3},
+                    "end": {"line": 0, "character": 7},
+                },
+            },
+            "message": "conflicting function declaration 'ping' is here",
+        }
+    ]
+
+
+def test_duplicate_quick_fix_omits_unnegotiated_related_information() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/functions.nova"
+    text = "fn ping() {} fn ping() {}\n"
+    open_nova(server, uri, text)
+    start = nth_offset(text, "ping", 2)
+
+    result = code_action(server, uri, 21, start, start + len("ping"))
+    assert len(result["result"]) == 1
+    assert "relatedInformation" not in result["result"][0]["diagnostics"][0]

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .cancellation import RequestCancelled, StaleRequest
-from .diagnostics import Diagnostic, DiagnosticError
+from .diagnostics import Diagnostic, DiagnosticError, DiagnosticRelatedInformation
 from .documents import Document
 from .semantic import Reference, SemanticError, SemanticSnapshot
 from .server import LanguageServer, ServerState
@@ -237,6 +237,23 @@ class NovaFunctionAdapter:
         references: list[Reference] = []
         diagnostics: list[Diagnostic] = []
 
+        def duplicate_related_information(
+            candidate: Symbol,
+            candidates: list[Symbol],
+            *,
+            kind: str,
+            name: str,
+        ) -> tuple[DiagnosticRelatedInformation, ...]:
+            return tuple(
+                DiagnosticRelatedInformation(
+                    document.uri,
+                    other.span,
+                    f"conflicting {kind} declaration '{name}' is here",
+                )
+                for other in candidates
+                if other is not candidate
+            )
+
         for name, candidates in sorted(functions_by_name.items()):
             if len(candidates) <= 1:
                 continue
@@ -247,6 +264,12 @@ class NovaFunctionAdapter:
                         f"duplicate function declaration '{name}'",
                         code="nova.duplicate-function",
                         source="nova",
+                        related_information=duplicate_related_information(
+                            candidate,
+                            candidates,
+                            kind="function",
+                            name=name,
+                        ),
                     )
                 )
 
@@ -260,6 +283,12 @@ class NovaFunctionAdapter:
                         f"duplicate parameter '{name}'",
                         code="nova.duplicate-parameter",
                         source="nova",
+                        related_information=duplicate_related_information(
+                            candidate,
+                            candidates,
+                            kind="parameter",
+                            name=name,
+                        ),
                     )
                 )
 
@@ -273,6 +302,12 @@ class NovaFunctionAdapter:
                         f"duplicate local variable '{name}'",
                         code="nova.duplicate-variable",
                         source="nova",
+                        related_information=duplicate_related_information(
+                            candidate,
+                            candidates,
+                            kind="local",
+                            name=name,
+                        ),
                     )
                 )
 

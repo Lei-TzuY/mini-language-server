@@ -281,4 +281,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 ):
                     digest.update(b"\0")
                     digest.update(value.encode("utf-8"))
+                for related in diagnostic.related_information:
+                    digest.update(b"\0related\0")
+                    digest.update(related.uri.encode("utf-8"))
+                    digest.update(b":")
+                    digest.update(str(related.span.start).encode("ascii"))
+                    digest.update(b":")
+                    digest.update(str(related.span.end).encode("ascii"))
+                    digest.update(b"\0")
+                    digest.update(related.message.encode("utf-8"))
         return f"{document.version}:{digest.hexdigest()[:24]}"
