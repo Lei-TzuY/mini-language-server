@@ -84,9 +84,9 @@ class RequestTracker:
         """Cancel and detach every active request at a terminal lifecycle boundary."""
         with self._lock:
             contexts = tuple(self._active.values())
-            self._active.clear()
             for context in contexts:
                 context._cancelled.set()
+            self._active.clear()
             return contexts
 
     def finish(self, context: RequestContext) -> bool:
