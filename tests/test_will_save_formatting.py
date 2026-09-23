@@ -18,20 +18,21 @@ def initialize(
     *,
     supported: bool = True,
     configuration: bool = False,
+    workspace_folders: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     synchronization = {"willSaveWaitUntil": True} if supported else {}
-    result = server.handle(
-        request(
-            "initialize",
-            1,
-            {
-                "capabilities": {
-                    "textDocument": {"synchronization": synchronization},
-                    "workspace": {"configuration": configuration},
-                }
-            },
-        )
-    )
+    workspace: dict[str, Any] = {"configuration": configuration}
+    if workspace_folders is not None:
+        workspace["workspaceFolders"] = True
+    params: dict[str, Any] = {
+        "capabilities": {
+            "textDocument": {"synchronization": synchronization},
+            "workspace": workspace,
+        }
+    }
+    if workspace_folders is not None:
+        params["workspaceFolders"] = workspace_folders
+    result = server.handle(request("initialize", 1, params))
     assert result is not None
     return result
 
@@ -352,3 +353,233 @@ def test_no_workspace_configuration_capability_sends_no_configuration_request() 
     server.handle(notify("workspace/didChangeConfiguration", {"settings": {}}))
 
     assert server.drain_server_requests() == []
+
+def test_workspace_configuration_requests_global_and_folder_scopes() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        configuration=True,
+        workspace_folders=[
+            {"uri": "file:///workspace/b", "name": "b"},
+            {"uri": "file:///workspace/a", "name": "a"},
+        ],
+    )
+    server.handle(notify("initialized", {}))
+
+    assert server.drain_server_requests() == [
+        {
+            "jsonrpc": "2.0",
+            "id": "server:1",
+            "method": "workspace/configuration",
+            "params": {
+                "items": [
+                    {"section": "mini-language-server.formatting"},
+                    {
+                        "section": "mini-language-server.formatting",
+                        "scopeUri": "file:///workspace/a",
+                    },
+                    {
+                        "section": "mini-language-server.formatting",
+                        "scopeUri": "file:///workspace/b",
+                    },
+                ]
+            },
+        }
+    ]
+
+
+def test_workspace_folder_specific_formatting_settings_drive_save_edits() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        configuration=True,
+        workspace_folders=[
+            {"uri": "file:///workspace/a", "name": "a"},
+            {"uri": "file:///workspace/b", "name": "b"},
+        ],
+    )
+    server.handle(notify("initialized", {}))
+    config_request = server.drain_server_requests()[0]
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": config_request["id"],
+            "result": [
+                {"tabSize": 3, "insertSpaces": True},
+                {"tabSize": 2, "insertSpaces": True},
+                {"tabSize": 8, "insertSpaces": False},
+            ],
+        }
+    ) is None
+
+    source = "fn main() {\nreturn 1\n}\n"
+    a_uri = "file:///workspace/a/main.nova"
+    b_uri = "file:///workspace/b/main.nova"
+    outside_uri = "file:///outside/main.nova"
+    open_nova(server, a_uri, source)
+    open_nova(server, b_uri, source)
+    open_nova(server, outside_uri, source)
+
+    assert will_save(server, a_uri, 20)["result"][0]["newText"] == (
+        "fn main() {\n  return 1\n}\n"
+    )
+    assert will_save(server, b_uri, 21)["result"][0]["newText"] == (
+        "fn main() {\n\treturn 1\n}\n"
+    )
+    assert will_save(server, outside_uri, 22)["result"][0]["newText"] == (
+        "fn main() {\n   return 1\n}\n"
+    )
+
+
+def test_nested_workspace_folder_uses_most_specific_formatting_scope() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        configuration=True,
+        workspace_folders=[
+            {"uri": "file:///workspace/app", "name": "app"},
+            {"uri": "file:///workspace/app/core", "name": "core"},
+        ],
+    )
+    server.handle(notify("initialized", {}))
+    config_request = server.drain_server_requests()[0]
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": config_request["id"],
+            "result": [
+                {"tabSize": 4, "insertSpaces": True},
+                {"tabSize": 2, "insertSpaces": True},
+                {"tabSize": 8, "insertSpaces": False},
+            ],
+        }
+    ) is None
+
+    uri = "file:///workspace/app/core/main.nova"
+    open_nova(server, uri, "fn main() {\nreturn 1\n}\n")
+
+    assert will_save(server, uri, 23)["result"][0]["newText"] == (
+        "fn main() {\n\treturn 1\n}\n"
+    )
+
+
+def test_workspace_folder_change_invalidates_pending_configuration_scope_set() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        configuration=True,
+        workspace_folders=[{"uri": "file:///workspace/a", "name": "a"}],
+    )
+    server.handle(notify("initialized", {}))
+    first = server.drain_server_requests()[0]
+
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [{"uri": "file:///workspace/b", "name": "b"}],
+                    "removed": [],
+                }
+            },
+        )
+    )
+    assert server.drain_server_requests() == []
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": first["id"],
+            "result": [
+                {"tabSize": 3, "insertSpaces": True},
+                {"tabSize": 2, "insertSpaces": True},
+            ],
+        }
+    ) is None
+
+    second = server.drain_server_requests()
+    assert len(second) == 1
+    assert second[0]["method"] == "workspace/configuration"
+    assert second[0]["params"]["items"] == [
+        {"section": "mini-language-server.formatting"},
+        {
+            "section": "mini-language-server.formatting",
+            "scopeUri": "file:///workspace/a",
+        },
+        {
+            "section": "mini-language-server.formatting",
+            "scopeUri": "file:///workspace/b",
+        },
+    ]
+
+    # The stale first response was retired, not applied.
+    a_uri = "file:///workspace/a/main.nova"
+    open_nova(server, a_uri, "fn main() {\nreturn 1\n}\n")
+    assert will_save(server, a_uri, 24)["result"][0]["newText"] == (
+        "fn main() {\n    return 1\n}\n"
+    )
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": second[0]["id"],
+            "result": [
+                {"tabSize": 3, "insertSpaces": True},
+                {"tabSize": 2, "insertSpaces": True},
+                {"tabSize": 8, "insertSpaces": False},
+            ],
+        }
+    ) is None
+    assert will_save(server, a_uri, 25)["result"][0]["newText"] == (
+        "fn main() {\n  return 1\n}\n"
+    )
+
+
+def test_removed_workspace_folder_falls_back_to_global_configuration() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        configuration=True,
+        workspace_folders=[
+            {"uri": "file:///workspace/a", "name": "a"},
+            {"uri": "file:///workspace/b", "name": "b"},
+        ],
+    )
+    server.handle(notify("initialized", {}))
+    first = server.drain_server_requests()[0]
+    server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": first["id"],
+            "result": [
+                {"tabSize": 3, "insertSpaces": True},
+                {"tabSize": 2, "insertSpaces": True},
+                {"tabSize": 8, "insertSpaces": False},
+            ],
+        }
+    )
+
+    b_uri = "file:///workspace/b/main.nova"
+    source = "fn main() {\nreturn 1\n}\n"
+    open_nova(server, b_uri, source)
+    assert will_save(server, b_uri, 26)["result"][0]["newText"] == (
+        "fn main() {\n\treturn 1\n}\n"
+    )
+
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [],
+                    "removed": [{"uri": "file:///workspace/b", "name": "b"}],
+                }
+            },
+        )
+    )
+
+    # Scope changes immediately; until the refreshed configuration arrives,
+    # the open document falls back to the last valid global setting.
+    assert will_save(server, b_uri, 27)["result"][0]["newText"] == (
+        "fn main() {\n   return 1\n}\n"
+    )

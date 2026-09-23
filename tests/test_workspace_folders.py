@@ -84,3 +84,28 @@ def test_malformed_workspace_folder_change_is_rejected() -> None:
 
     with pytest.raises(WorkspaceFolderError):
         folders.apply_change({"event": {"added": [], "removed": "bad"}})
+
+def test_scope_uri_for_returns_most_specific_nested_folder() -> None:
+    folders = WorkspaceFolderSet()
+    folders.configure(
+        {
+            "workspaceFolders": [
+                {"uri": "file:///work/app", "name": "app"},
+                {"uri": "file:///work/app/packages/core", "name": "core"},
+            ]
+        }
+    )
+
+    assert folders.scope_uri_for("file:///work/app/main.nova") == "file:///work/app"
+    assert (
+        folders.scope_uri_for("file:///work/app/packages/core/lib.nova")
+        == "file:///work/app/packages/core"
+    )
+    assert folders.scope_uri_for("file:///outside/main.nova") is None
+
+
+def test_scope_uri_for_is_none_in_legacy_unscoped_mode() -> None:
+    folders = WorkspaceFolderSet()
+
+    assert folders.contains("file:///anywhere/main.nova")
+    assert folders.scope_uri_for("file:///anywhere/main.nova") is None

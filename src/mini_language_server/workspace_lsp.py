@@ -150,6 +150,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def _handle_workspace_folder_change(self, params: Any) -> None:
         before = self.workspace_symbols.snapshots()
+        before_folders = self.workspace_folders.folders()
         try:
             changed = self.workspace_folders.apply_change(params)
         except WorkspaceFolderError:
@@ -187,6 +188,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
         self._publish_workspace_diagnostics()
         after = self.workspace_symbols.snapshots()
+        self._workspace_folder_scope_changed(
+            before_folders,
+            self.workspace_folders.folders(),
+        )
         if before.generation != after.generation:
             self._workspace_scope_changed(before, after)
 
@@ -196,6 +201,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for document in self.documents.snapshots()
             if self.workspace_folders.contains(document.uri)
         )
+
+    def _workspace_folder_scope_changed(self, before: Any, after: Any) -> None:
+        """Extension point for capabilities keyed directly by folder membership."""
 
     def _workspace_scope_changed(self, before: Any, after: Any) -> None:
         """Extension point for capabilities that cache workspace-wide results."""

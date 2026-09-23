@@ -1,26 +1,46 @@
 # Workspace formatting configuration
 
-The final Nova product can obtain save-time formatting settings through the standard LSP `workspace/configuration` request when the client advertises `workspace.configuration = true`.
+The final Nova product obtains save-time formatting settings through the standard LSP `workspace/configuration` request when the client advertises `workspace.configuration = true`.
 
-The server requests one configuration item:
+## Configuration scopes
+
+Each request contains one global fallback item followed by one item for every active workspace folder. Folder items use the standard `scopeUri` field:
 
 ```json
-{"section":"mini-language-server.formatting"}
+{
+  "items": [
+    {"section":"mini-language-server.formatting"},
+    {"section":"mini-language-server.formatting","scopeUri":"file:///workspace/app"},
+    {"section":"mini-language-server.formatting","scopeUri":"file:///workspace/lib"}
+  ]
+}
 ```
+
+The global item is always first. Folder items are ordered deterministically by URI. In legacy sessions with no configured workspace-folder scope, the request therefore remains the historical single global item.
 
 The bounded section accepts:
 
 - `tabSize`: a positive integer
 - `insertSpaces`: a boolean
 
-Missing properties use the built-in defaults of four spaces. A `null` configuration item resets both values to those defaults. Invalid response shapes or invalid property values do not replace the last valid configuration.
+A `null` item resets that scope to the built-in default of four spaces. Missing properties use the same defaults. An invalid item preserves the last valid value for that scope; a newly introduced invalid scope starts from the default. A client error preserves the complete last valid configuration cache.
 
-The request is first queued after the client sends `initialized`, so the server does not issue client requests during the initialize handshake. `workspace/didChangeConfiguration` does not trust or parse the notification's arbitrary settings payload; it invalidates the cached generation and requests the standard configuration section again.
+## Save-time lookup
 
-Formatting configuration has its own generation identity. If a configuration change arrives while an older `workspace/configuration` request is pending, the old response is retired but not applied. The server immediately queues one request for the newest generation. A client error response leaves the last valid formatting settings intact; a later configuration-change notification can request again.
+`textDocument/willSaveWaitUntil` selects formatting settings from the most specific workspace folder containing the document URI. Nested folders can therefore override a parent folder. An open document outside every configured folder uses the global fallback. Sessions without workspace-folder scoping also use the global fallback.
 
-The cached values are consumed by `textDocument/willSaveWaitUntil`. Manual document/range/on-type formatting continues to use the per-request LSP FormattingOptions supplied by the editor. This removes the previous hard-coded four-space save behavior while preserving the exact document/semantic snapshot guards around the returned save edit.
+Manual document/range/on-type formatting continues to use the per-request LSP `FormattingOptions` supplied by the editor; workspace configuration only controls save-time formatting.
 
-Clients that do not advertise `workspace.configuration` receive no configuration request and keep the existing four-space save-formatting default.
+## Generation and folder lifecycle
 
-The generic server-to-client request substrate validates and retires the JSON-RPC response before exposing the payload to a consumer hook. Unknown IDs, mixed result/error responses, and malformed error responses never reach configuration logic.
+Formatting configuration has its own generation identity. The first request is queued after the client sends `initialized`, so the server does not issue client requests during the initialize handshake.
+
+`workspace/didChangeConfiguration` never trusts the notification's arbitrary settings payload. It advances the configuration generation and requests the standard section again.
+
+Workspace-folder membership changes do the same. Adding or removing a folder changes the requested `scopeUri` set, advances the generation, and invalidates any pending response for the previous scope set. The old response is retired but never applied; once it arrives, one request for the newest generation is queued. Removing a folder changes URI lookup immediately, so documents from that folder fall back to the last valid global setting while the refreshed configuration is pending.
+
+A valid response is applied only when both its generation and its captured ordered scope list still correspond to the current request generation. This prevents a response for an old folder universe from installing settings into a newer workspace scope.
+
+Clients that do not advertise `workspace.configuration` receive no configuration request and keep deterministic four-space save formatting.
+
+The generic server-to-client request substrate validates and retires the JSON-RPC response before exposing its payload to this consumer. Unknown IDs, mixed result/error responses, and malformed error responses never reach configuration logic.

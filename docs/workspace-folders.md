@@ -25,6 +25,10 @@ Workspace-folder scope has its own generation guard. Workspace diagnostics captu
 
 Workspace-wide symbol search uses the complete workspace snapshot guard rather than only the declarations present in the result, so adding a previously unseen document invalidates an in-flight search even when existing result objects are still current.
 
+## Configuration scope integration
+
+Workspace-folder URIs also define the standard `scopeUri` universe for save-time formatting configuration. When multiple configured folders contain a document, the most specific folder wins. Documents outside the active folders use the global configuration fallback. Dynamic folder changes advance the formatting-configuration generation so a pending response for the old scope set cannot overwrite the new one.
+
 ## Refresh integration
 
 When folder membership changes the workspace identity, already-negotiated workspace refresh channels are reused. Pull-diagnostic clients receive `workspace/diagnostic/refresh`, reference-CodeLens clients receive `workspace/codeLens/refresh`, and supporting inlay-hint clients receive `workspace/inlayHint/refresh`. Existing request coalescing and response retirement continue to apply.

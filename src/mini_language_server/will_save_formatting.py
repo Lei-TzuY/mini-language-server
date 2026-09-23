@@ -20,10 +20,18 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
     def __init__(self) -> None:
         super().__init__()
         self._workspace_configuration_support = False
-        self._formatting_tab_size = _DEFAULT_FORMATTING_TAB_SIZE
-        self._formatting_insert_spaces = _DEFAULT_FORMATTING_INSERT_SPACES
+        self._formatting_configurations: dict[
+            str | None, tuple[int, bool]
+        ] = {
+            None: (
+                _DEFAULT_FORMATTING_TAB_SIZE,
+                _DEFAULT_FORMATTING_INSERT_SPACES,
+            )
+        }
         self._formatting_configuration_generation = 0
-        self._formatting_configuration_requests: dict[str, int] = {}
+        self._formatting_configuration_requests: dict[
+            str, tuple[int, tuple[str | None, ...]]
+        ] = {}
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -83,9 +91,20 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
             and workspace.get("configuration") is True
         )
 
+    def _workspace_folder_scope_changed(self, before: Any, after: Any) -> None:
+        super()._workspace_folder_scope_changed(before, after)
+        if self._workspace_configuration_support:
+            self._invalidate_formatting_configuration()
+
     def _invalidate_formatting_configuration(self) -> None:
         self._formatting_configuration_generation += 1
         self._queue_formatting_configuration()
+
+    def _formatting_configuration_scopes(self) -> tuple[str | None, ...]:
+        return (
+            None,
+            *(folder.uri for folder in self.workspace_folders.folders()),
+        )
 
     def _queue_formatting_configuration(self) -> None:
         if (
@@ -93,16 +112,22 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
             or self._has_pending_server_request("workspace/configuration")
         ):
             return
+        scopes = self._formatting_configuration_scopes()
+        items = []
+        for scope in scopes:
+            item: dict[str, Any] = {
+                "section": _FORMATTING_CONFIGURATION_SECTION
+            }
+            if scope is not None:
+                item["scopeUri"] = scope
+            items.append(item)
         request_id = self._queue_server_request(
             "workspace/configuration",
-            {
-                "items": [
-                    {"section": _FORMATTING_CONFIGURATION_SECTION}
-                ]
-            },
+            {"items": items},
         )
         self._formatting_configuration_requests[request_id] = (
-            self._formatting_configuration_generation
+            self._formatting_configuration_generation,
+            scopes,
         )
 
     def _server_request_completed(
@@ -121,24 +146,34 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
         )
         if method != "workspace/configuration":
             return
-        generation = self._formatting_configuration_requests.pop(request_id, None)
-        if generation is None:
+        record = self._formatting_configuration_requests.pop(request_id, None)
+        if record is None:
             return
+        generation, scopes = record
         if generation != self._formatting_configuration_generation:
             self._queue_formatting_configuration()
             return
         if error is not None:
             return
-        parsed = self._parse_formatting_configuration(result)
-        if parsed is None:
+        if not isinstance(result, list) or len(result) != len(scopes):
             return
-        self._formatting_tab_size, self._formatting_insert_spaces = parsed
+
+        updated: dict[str | None, tuple[int, bool]] = {}
+        default = (
+            _DEFAULT_FORMATTING_TAB_SIZE,
+            _DEFAULT_FORMATTING_INSERT_SPACES,
+        )
+        for scope, value in zip(scopes, result, strict=True):
+            parsed = self._parse_formatting_configuration_value(value)
+            if parsed is None:
+                parsed = self._formatting_configurations.get(scope, default)
+            updated[scope] = parsed
+        self._formatting_configurations = updated
 
     @staticmethod
-    def _parse_formatting_configuration(result: Any) -> tuple[int, bool] | None:
-        if not isinstance(result, list) or len(result) != 1:
-            return None
-        value = result[0]
+    def _parse_formatting_configuration_value(
+        value: Any,
+    ) -> tuple[int, bool] | None:
         if value is None:
             return (
                 _DEFAULT_FORMATTING_TAB_SIZE,
@@ -159,6 +194,16 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
         ):
             return None
         return tab_size, insert_spaces
+
+    def _formatting_settings_for_uri(self, uri: str) -> tuple[int, bool]:
+        default = (
+            _DEFAULT_FORMATTING_TAB_SIZE,
+            _DEFAULT_FORMATTING_INSERT_SPACES,
+        )
+        scope = self.workspace_folders.scope_uri_for(uri)
+        if scope is not None and scope in self._formatting_configurations:
+            return self._formatting_configurations[scope]
+        return self._formatting_configurations.get(None, default)
 
     @staticmethod
     def _client_supports_will_save_wait_until(params: Any) -> bool:
@@ -193,10 +238,11 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
                 self.requests.checkpoint(context)
                 return self._result(request_id, [])
 
+            tab_size, insert_spaces = self._formatting_settings_for_uri(uri)
             formatted = self._format_nova_document(
                 document.text,
-                tab_size=self._formatting_tab_size,
-                insert_spaces=self._formatting_insert_spaces,
+                tab_size=tab_size,
+                insert_spaces=insert_spaces,
             )
             self.requests.checkpoint(context)
             if formatted == document.text:
