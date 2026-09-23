@@ -6,7 +6,7 @@ import sys
 from collections import deque
 from dataclasses import dataclass
 from queue import Empty, Queue
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from typing import Any, BinaryIO
 
 from .cancellation import RequestCancelled
@@ -15,6 +15,7 @@ from .protocol import FramingError, MessageReader, encode_message
 from .server import LanguageServer, ServerState
 
 _TRANSPORT_FAILURE = object()
+_OUTBOUND_READY = object()
 
 
 def _write_batch(
@@ -149,9 +150,11 @@ def run_session(
     A live shutdown retires the worker generation immediately but delays its own
     response until that worker has cooperatively produced a cancellation completion.
     Live snapshot/configuration mutations and delivered server-request responses may
-    overtake queued ordinary requests while the active request runs, so exact document,
-    workspace, save-formatting, and bidirectional request dependencies can observe
-    transport-time changes without introducing parallel client-request execution.
+    overtake queued ordinary requests while the active request runs. A server request
+    queued by that worker also emits one coalesced transport wakeup so its outbound
+    request can be flushed without waiting for worker completion. Together these lanes
+    allow bounded bidirectional request dependencies without introducing parallel
+    ordinary client-request execution or polling.
     """
     active_server = server if server is not None else NovaProductLanguageServer()
     reader = MessageReader(input_stream)
@@ -166,6 +169,7 @@ def run_session(
     pending_shutdown_prefix: tuple[dict[str, object], ...] = ()
     pending_shutdown_response: dict[str, object] | None = None
     active_request_saw_live_mutation = False
+    outbound_wakeup_pending = Event()
 
     def read_inbound() -> None:
         while True:
@@ -232,6 +236,13 @@ def run_session(
             if request_id is not None:
                 finish_transport_request(request_id)
 
+    def wake_outbound() -> None:
+        if outbound_wakeup_pending.is_set():
+            return
+        outbound_wakeup_pending.set()
+        events.put(_OUTBOUND_READY)
+
+    active_server._set_runtime_outbound_wakeup(wake_outbound)
     reader_thread = Thread(target=read_inbound, name="lsp-stdio-reader", daemon=True)
     reader_thread.start()
 
@@ -288,6 +299,15 @@ def run_session(
                 output_stream,
                 _drain_after_dispatch(active_server, item.response),
             )
+            continue
+
+        if item is _OUTBOUND_READY:
+            outbound_wakeup_pending.clear()
+            if not transport_failed and active_server.state is ServerState.RUNNING:
+                _write_batch(
+                    output_stream,
+                    _drain_after_dispatch(active_server, None),
+                )
             continue
 
         if item is _TRANSPORT_FAILURE:
