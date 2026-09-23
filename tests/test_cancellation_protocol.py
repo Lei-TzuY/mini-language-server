@@ -169,3 +169,44 @@ def test_cancel_after_completion_does_not_poison_reused_id() -> None:
 
     assert second == first
     assert len(server.requests) == 0
+
+def test_shutdown_cancels_inflight_semantic_request(monkeypatch) -> None:
+    server, uri = prepared_server()
+    _, release, responses, thread = run_blocked_definition(server, uri, monkeypatch)
+
+    assert server.handle(request("shutdown", request_id=99)) == {
+        "jsonrpc": "2.0",
+        "id": 99,
+        "result": None,
+    }
+    release.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert responses == [
+        {
+            "jsonrpc": "2.0",
+            "id": 41,
+            "error": {"code": -32800, "message": "Request cancelled"},
+        }
+    ]
+    assert len(server.requests) == 0
+
+
+def test_exit_cancels_inflight_semantic_request(monkeypatch) -> None:
+    server, uri = prepared_server()
+    _, release, responses, thread = run_blocked_definition(server, uri, monkeypatch)
+
+    assert server.handle(notification("exit")) is None
+    release.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert responses == [
+        {
+            "jsonrpc": "2.0",
+            "id": 41,
+            "error": {"code": -32800, "message": "Request cancelled"},
+        }
+    ]
+    assert len(server.requests) == 0
