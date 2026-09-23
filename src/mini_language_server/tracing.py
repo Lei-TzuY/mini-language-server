@@ -54,10 +54,12 @@ class TraceLanguageServerMixin:
         )
         return queued
 
-    def _queue_server_request(
-        self, method: str, params: dict[str, Any] | None = None
-    ) -> str:
-        request_id = super()._queue_server_request(method, params)
+    def _server_request_queued(
+        self,
+        request_id: str,
+        method: str,
+        params: dict[str, Any] | None,
+    ) -> None:
         if self._trace_value != "off":
             self._emit_trace(
                 f"server -> client request {method} id={request_id}",
@@ -73,7 +75,7 @@ class TraceLanguageServerMixin:
                     else None
                 ),
             )
-        return request_id
+        super()._server_request_queued(request_id, method, params)
 
     @staticmethod
     def _is_set_trace_notification(message: Any) -> bool:
