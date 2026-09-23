@@ -938,6 +938,7 @@ def test_cancel_unknown_server_request_is_noop() -> None:
     assert server.drain_server_requests() == []
     assert server.drain_notifications() == []
 
+
 def test_shutdown_retires_sent_and_unsent_server_requests() -> None:
     class RecordingServer(LanguageServer):
         def __init__(self) -> None:
@@ -951,7 +952,7 @@ def test_shutdown_retires_sent_and_unsent_server_requests() -> None:
             method: str,
             *,
             result: object,
-            error: dict | None,
+            error: dict[str, object] | None,
         ) -> None:
             self.completed.append(request_id)
 
@@ -1002,7 +1003,7 @@ def test_exit_retires_server_requests_without_new_protocol_traffic() -> None:
             method: str,
             *,
             result: object,
-            error: dict | None,
+            error: dict[str, object] | None,
         ) -> None:
             self.completed.append(request_id)
 
