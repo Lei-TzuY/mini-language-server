@@ -868,6 +868,7 @@ def test_push_diagnostics_render_ranges_in_negotiated_utf32_units() -> None:
         }
     ]
 
+
 def test_cancel_unsent_server_request_retracts_local_outbox_only() -> None:
     server = LanguageServer()
     request_id = server._queue_server_request("workspace/configuration")
