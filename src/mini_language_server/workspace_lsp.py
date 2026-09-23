@@ -532,6 +532,22 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         )
         return self.nova_adapter.publish(detached, document)
 
+    def _closed_workspace_snapshots_current(
+        self, snapshots: tuple[SemanticSnapshot, ...]
+    ) -> bool:
+        """Revalidate detached filesystem inputs before publishing source mutations."""
+        for snapshot in snapshots:
+            document = self.documents.get(snapshot.uri)
+            if document is snapshot.symbols.syntax.document:
+                continue
+            identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
+            if self._closed_workspace_uris.get(identity) != snapshot.uri:
+                return False
+            item = read_closed_workspace_file(snapshot.uri)
+            if item is None or item.text != snapshot.symbols.syntax.document.text:
+                return False
+        return True
+
     def _workspace_edit_versions(
         self, snapshots: tuple[SemanticSnapshot, ...]
     ) -> dict[str, int | None]:
@@ -1266,6 +1282,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 annotation_label=f"Rename '{name}' to '{new_name}'",
             )
             self.requests.checkpoint(context)
+            if not self._closed_workspace_snapshots_current(snapshots):
+                self._refresh_closed_workspace_files()
+                return self._error(request_id, -32801, "Content modified")
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
                     snapshots,
