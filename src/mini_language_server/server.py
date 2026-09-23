@@ -64,13 +64,17 @@ class LanguageServer:
         request_id = message.get("id")
         is_request = "id" in message
 
+        if self.state is ServerState.EXITED:
+            return None
+
         if (
             message.get("jsonrpc") == "2.0"
             and "method" not in message
             and is_request
             and ("result" in message or "error" in message)
         ):
-            self._handle_server_response(message)
+            if self.state is not ServerState.SHUTDOWN:
+                self._handle_server_response(message)
             return None
 
         if message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
@@ -79,11 +83,9 @@ class LanguageServer:
         method = message["method"]
 
         if method == "exit":
+            self._retire_all_server_requests(notify_client=False)
             self.exit_code = 0 if self.state is ServerState.SHUTDOWN else 1
             self.state = ServerState.EXITED
-            return None
-
-        if self.state is ServerState.EXITED:
             return None
 
         if self.state is ServerState.PRE_INITIALIZE:
@@ -152,6 +154,7 @@ class LanguageServer:
                 return None
             if self.state is ServerState.SHUTDOWN:
                 return self._error(request_id, -32600, "Shutdown already requested")
+            self._retire_all_server_requests(notify_client=True)
             self.state = ServerState.SHUTDOWN
             return self._result(request_id, None)
 
@@ -273,8 +276,13 @@ class LanguageServer:
     def _has_pending_server_request(self, method: str) -> bool:
         return method in self._pending_server_requests.values()
 
-    def _cancel_server_request(self, request_id: str) -> bool:
-        """Retire one pending server request and cancel it remotely if already sent."""
+    def _retire_server_request(
+        self,
+        request_id: str,
+        *,
+        notify_client: bool,
+    ) -> bool:
+        """Retire one pending server request, optionally cancelling a delivered request."""
         method = self._pending_server_requests.pop(request_id, None)
         if method is None:
             return False
@@ -288,11 +296,26 @@ class LanguageServer:
             remaining.append(request)
         self._server_requests = remaining
 
-        if not queued:
+        if notify_client and not queued:
             self._queue_notification("$/cancelRequest", {"id": request_id})
 
         self._server_request_cancelled(request_id, method)
         return True
+
+    def _cancel_server_request(self, request_id: str) -> bool:
+        """Retire one pending server request and cancel it remotely if already sent."""
+        return self._retire_server_request(request_id, notify_client=True)
+
+    def _retire_all_server_requests(
+        self,
+        *,
+        notify_client: bool,
+    ) -> tuple[str, ...]:
+        """Retire every pending server request at a terminal lifecycle boundary."""
+        request_ids = tuple(self._pending_server_requests)
+        for request_id in request_ids:
+            self._retire_server_request(request_id, notify_client=notify_client)
+        return request_ids
 
     def _cancel_pending_server_requests(self, method: str) -> tuple[str, ...]:
         """Cancel every currently pending server request for one method."""
