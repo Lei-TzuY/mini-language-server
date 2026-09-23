@@ -13,14 +13,35 @@ from .source import Position, SourceError
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product with conservative range-scoped indentation formatting."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._multiple_range_formatting = False
+
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
+        if method == "initialize" and self.state is ServerState.PRE_INITIALIZE:
+            self._multiple_range_formatting = (
+                self._client_supports_multiple_range_formatting(message.get("params"))
+            )
+
         if (
             method == "textDocument/rangeFormatting"
             and "id" in message
             and self.state is ServerState.RUNNING
         ):
-            return self._handle_range_formatting(message.get("id"), message.get("params"))
+            return self._handle_range_formatting(
+                message.get("id"), message.get("params")
+            )
+
+        if (
+            method == "textDocument/rangesFormatting"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+            and self._multiple_range_formatting
+        ):
+            return self._handle_ranges_formatting(
+                message.get("id"), message.get("params")
+            )
 
         result = super().handle(message)
         if (
@@ -31,7 +52,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         ):
             capabilities = result["result"].get("capabilities")
             if isinstance(capabilities, dict):
-                capabilities["documentRangeFormattingProvider"] = True
+                capabilities["documentRangeFormattingProvider"] = (
+                    {"rangesSupport": True}
+                    if self._multiple_range_formatting
+                    else True
+                )
         return result
 
     @staticmethod
@@ -46,25 +71,33 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return False
         return isinstance(text_document.get("rangeFormatting"), dict)
 
+    @staticmethod
+    def _client_supports_multiple_range_formatting(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        text_document = capabilities.get("textDocument")
+        if not isinstance(text_document, dict):
+            return False
+        range_formatting = text_document.get("rangeFormatting")
+        return (
+            isinstance(range_formatting, dict)
+            and range_formatting.get("rangesSupport") is True
+        )
+
     def _handle_range_formatting(self, request_id: Any, params: Any) -> dict[str, Any]:
         context = self._start_document_request(request_id, params)
         if context is None or not isinstance(params, dict):
             return self._error(request_id, -32602, "Invalid params")
 
         try:
-            options = params.get("options")
+            options = self._range_formatting_options(params)
             requested_range = params.get("range")
-            if not isinstance(options, dict) or not isinstance(requested_range, dict):
+            if options is None or not isinstance(requested_range, dict):
                 return self._error(request_id, -32602, "Invalid params")
-            tab_size = options.get("tabSize")
-            insert_spaces = options.get("insertSpaces")
-            if (
-                isinstance(tab_size, bool)
-                or not isinstance(tab_size, int)
-                or tab_size <= 0
-                or not isinstance(insert_spaces, bool)
-            ):
-                return self._error(request_id, -32602, "Invalid params")
+            tab_size, insert_spaces = options
 
             uri = self._document_uri(params)
             assert uri is not None
@@ -98,7 +131,76 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         finally:
             self.requests.finish(context)
 
-    def _parse_range(self, text: str, value: dict[str, Any]) -> tuple[Position, Position] | None:
+    def _handle_ranges_formatting(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any]:
+        context = self._start_document_request(request_id, params)
+        if context is None or not isinstance(params, dict):
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            options = self._range_formatting_options(params)
+            requested_ranges = params.get("ranges")
+            if options is None or not isinstance(requested_ranges, list):
+                return self._error(request_id, -32602, "Invalid params")
+            tab_size, insert_spaces = options
+
+            uri = self._document_uri(params)
+            assert uri is not None
+            self.requests.checkpoint(context)
+            document = self.documents.get(uri)
+            if document is None or document.language_id != self.nova_adapter.language_id:
+                self.requests.checkpoint(context)
+                return self._result(request_id, [])
+            semantics = self.semantics.get(uri)
+            if semantics is None or semantics.symbols.syntax.document is not document:
+                self.requests.checkpoint(context)
+                return self._result(request_id, [])
+
+            parsed_ranges: list[tuple[Position, Position]] = []
+            for requested_range in requested_ranges:
+                self.requests.checkpoint(context)
+                if not isinstance(requested_range, dict):
+                    return self._error(request_id, -32602, "Invalid params")
+                parsed_range = self._parse_range(document.text, requested_range)
+                if parsed_range is None:
+                    return self._error(request_id, -32602, "Invalid params")
+                parsed_ranges.append(parsed_range)
+
+            edits = self._nova_ranges_indent_edits(
+                document.text,
+                ranges=tuple(parsed_ranges),
+                tab_size=tab_size,
+                insert_spaces=insert_spaces,
+            )
+            self.requests.checkpoint(context)
+            return self._current_semantic_result(semantics, request_id, edits)
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    @staticmethod
+    def _range_formatting_options(params: dict[str, Any]) -> tuple[int, bool] | None:
+        options = params.get("options")
+        if not isinstance(options, dict):
+            return None
+        tab_size = options.get("tabSize")
+        insert_spaces = options.get("insertSpaces")
+        if (
+            isinstance(tab_size, bool)
+            or not isinstance(tab_size, int)
+            or tab_size <= 0
+            or not isinstance(insert_spaces, bool)
+        ):
+            return None
+        return tab_size, insert_spaces
+
+    def _parse_range(
+        self, text: str, value: dict[str, Any]
+    ) -> tuple[Position, Position] | None:
         start_value = value.get("start")
         end_value = value.get("end")
         if not isinstance(start_value, dict) or not isinstance(end_value, dict):
@@ -139,7 +241,23 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         tab_size: int,
         insert_spaces: bool,
     ) -> list[dict[str, Any]]:
-        """Reindent only leading whitespace spans fully contained in the range."""
+        """Reindent leading whitespace spans contained in one requested range."""
+        return self._nova_ranges_indent_edits(
+            text,
+            ranges=((start, end),),
+            tab_size=tab_size,
+            insert_spaces=insert_spaces,
+        )
+
+    def _nova_ranges_indent_edits(
+        self,
+        text: str,
+        *,
+        ranges: tuple[tuple[Position, Position], ...],
+        tab_size: int,
+        insert_spaces: bool,
+    ) -> list[dict[str, Any]]:
+        """Reindent each eligible line once when any requested range contains it."""
         code = self.nova_adapter.code_view(text)
         source_lines = text.splitlines(keepends=True)
         code_lines = code.splitlines(keepends=True)
@@ -164,8 +282,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 edit_end = Position(line=line, character=len(current))
                 if (
                     desired != current
-                    and self._position_at_or_after(edit_start, start)
-                    and self._position_at_or_before(edit_end, end)
+                    and self._edit_is_in_requested_ranges(
+                        edit_start, edit_end, ranges
+                    )
                 ):
                     edits.append(
                         {
@@ -180,6 +299,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             depth = max(0, depth + code_body.count("{") - code_body.count("}"))
 
         return edits
+
+    @classmethod
+    def _edit_is_in_requested_ranges(
+        cls,
+        edit_start: Position,
+        edit_end: Position,
+        ranges: tuple[tuple[Position, Position], ...],
+    ) -> bool:
+        return any(
+            cls._position_at_or_after(edit_start, start)
+            and cls._position_at_or_before(edit_end, end)
+            for start, end in ranges
+        )
 
     @staticmethod
     def _position_at_or_after(position: Position, boundary: Position) -> bool:
