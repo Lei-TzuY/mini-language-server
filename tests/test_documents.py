@@ -440,3 +440,119 @@ def test_incremental_positions_can_use_utf32_code_point_units() -> None:
     )
 
     assert updated.text == "aXb\n"
+
+def test_rename_many_rekeys_open_snapshots_without_changing_content_or_version() -> None:
+    store = DocumentStore()
+    first = store.open(
+        uri="file:///workspace/a.nova",
+        language_id="nova",
+        version=7,
+        text="fn a() {}\n",
+    )
+    second = store.open(
+        uri="file:///workspace/b.nova",
+        language_id="nova",
+        version=3,
+        text="fn b() {}\n",
+    )
+
+    moved = store.rename_many(
+        (
+            ("file:///workspace/a.nova", "file:///workspace/c.nova"),
+            ("file:///workspace/b.nova", "file:///workspace/d.nova"),
+        )
+    )
+
+    assert tuple(previous for previous, _ in moved) == (first, second)
+    assert store.get(first.uri) is None
+    assert store.get(second.uri) is None
+    current_c = store.get("file:///workspace/c.nova")
+    current_d = store.get("file:///workspace/d.nova")
+    assert current_c is not None
+    assert current_d is not None
+    assert (current_c.version, current_c.text) == (7, "fn a() {}\n")
+    assert (current_d.version, current_d.text) == (3, "fn b() {}\n")
+    assert current_c is not first
+    assert current_d is not second
+
+
+def test_rename_many_supports_atomic_uri_swaps() -> None:
+    store = DocumentStore()
+    first = store.open(
+        uri="file:///workspace/a.nova",
+        language_id="nova",
+        version=1,
+        text="A",
+    )
+    second = store.open(
+        uri="file:///workspace/b.nova",
+        language_id="nova",
+        version=2,
+        text="B",
+    )
+
+    store.rename_many(
+        (
+            ("file:///workspace/a.nova", "file:///workspace/b.nova"),
+            ("file:///workspace/b.nova", "file:///workspace/a.nova"),
+        )
+    )
+
+    swapped_a = store.get("file:///workspace/a.nova")
+    swapped_b = store.get("file:///workspace/b.nova")
+    assert swapped_a is not None and swapped_a.text == second.text
+    assert swapped_b is not None and swapped_b.text == first.text
+    assert swapped_a.version == second.version
+    assert swapped_b.version == first.version
+
+
+def test_rename_many_destination_collision_is_atomic() -> None:
+    store = DocumentStore()
+    first = store.open(
+        uri="file:///workspace/a.nova",
+        language_id="nova",
+        version=1,
+        text="A",
+    )
+    occupied = store.open(
+        uri="file:///workspace/occupied.nova",
+        language_id="nova",
+        version=9,
+        text="occupied",
+    )
+
+    with pytest.raises(DocumentError, match="destination already open"):
+        store.rename_many(
+            (("file:///workspace/a.nova", "file:///workspace/occupied.nova"),)
+        )
+
+    assert store.get(first.uri) is first
+    assert store.get(occupied.uri) is occupied
+
+
+def test_rename_many_duplicate_target_is_atomic() -> None:
+    store = DocumentStore()
+    first = store.open(
+        uri="file:///workspace/a.nova",
+        language_id="nova",
+        version=1,
+        text="A",
+    )
+    second = store.open(
+        uri="file:///workspace/b.nova",
+        language_id="nova",
+        version=1,
+        text="B",
+    )
+
+    with pytest.raises(DocumentError, match="destinations must be unique"):
+        store.rename_many(
+            (
+                (first.uri, "file:///workspace/c.nova"),
+                (second.uri, "file:///workspace/c.nova"),
+            )
+        )
+
+    assert store.get(first.uri) is first
+    assert store.get(second.uri) is second
+    assert store.get("file:///workspace/c.nova") is None
