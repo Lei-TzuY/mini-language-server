@@ -246,6 +246,22 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             decoded.append((*identity, token_type, modifiers))
             by_identity[identity] = len(decoded) - 1
 
+        parsed = self.nova_adapter.parse(text)
+        function_token_type = _TOKEN_TYPE_INDEX["function"]
+        for name, span in parsed.calls:
+            identity = self._token_identity(source, span, requested_span)
+            if identity is None or identity in by_identity:
+                continue
+            declarations = tuple(
+                declaration
+                for declaration in self.workspace_symbols.declarations(name)
+                if declaration.symbol.kind == "function"
+            )
+            if len(declarations) != 1:
+                continue
+            decoded.append((*identity, function_token_type, 0))
+            by_identity[identity] = len(decoded) - 1
+
         decoded.sort(key=lambda token: (token[0], token[1], token[2], token[3]))
         return self._encode_absolute_semantic_tokens(decoded)
 
