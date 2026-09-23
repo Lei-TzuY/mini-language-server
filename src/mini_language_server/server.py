@@ -230,6 +230,18 @@ class LanguageServer:
         self._notifications = []
         return notifications
 
+    @staticmethod
+    def _progress_token(
+        params: dict[str, Any], key: str
+    ) -> tuple[bool, str | int | None]:
+        """Validate one standard LSP progress token field."""
+        if key not in params:
+            return True, None
+        token = params[key]
+        if isinstance(token, bool) or not isinstance(token, str | int):
+            return False, None
+        return True, token
+
     def _queue_progress(self, token: str | int, value: Any) -> None:
         """Queue one standard LSP progress notification."""
         self._notifications.append(
