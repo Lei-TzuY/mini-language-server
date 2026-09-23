@@ -15,6 +15,7 @@ from .workspace import WorkspaceIndexError
 _INTEGER_LITERAL = re.compile(r"[+-]?\d+")
 _STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"', re.DOTALL)
 _BOOLEAN_LITERALS = frozenset({"true", "false"})
+_RETURN_TYPE_SUFFIX = re.compile(r"->\s*(?P<type>[A-Za-z_][A-Za-z0-9_]*|!)\s*$")
 
 
 class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageServer):
@@ -93,6 +94,22 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
             _, separator, type_name = parameter.partition(":")
             result.append(type_name.strip() if separator else None)
         return tuple(result)
+
+    @classmethod
+    def _closed_function_result_type(
+        cls,
+        snapshot: Any,
+        owner: Span,
+    ) -> str | None:
+        """Parse one explicit result type from a captured function declaration."""
+        text = snapshot.symbols.syntax.document.text
+        start = text.rfind("fn", 0, owner.start)
+        opening = text.find("{", owner.end)
+        if start < 0 or opening < 0 or text[start + 2 : owner.start].strip():
+            return None
+        signature = text[start:opening].strip()
+        match = _RETURN_TYPE_SUFFIX.search(signature)
+        return None if match is None else match.group("type")
 
     def _publish_workspace_diagnostics(self) -> bool:
         """Publish exact-workspace diagnostics and report whether the exact commit won."""
