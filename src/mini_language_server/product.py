@@ -315,7 +315,7 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
                 self.requests.checkpoint(context)
                 return self._result(request_id, [])
 
-            actions = self._nova_unresolved_function_actions(
+            actions = self._closed_nova_code_actions(
                 document.uri,
                 document,
                 source,
@@ -388,6 +388,25 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
         folder_generation: int,
     ) -> None:
         """Extension hook for later lazy-resolve ownership without live stores."""
+
+    def _closed_nova_code_actions(
+        self,
+        uri: str,
+        document: Any,
+        source: Any,
+        diagnostics: tuple[Diagnostic, ...],
+        start_offset: int,
+        end_offset: int,
+    ) -> list[dict[str, Any]]:
+        """Build detached repairs that do not require live-store ownership."""
+        return self._nova_unresolved_function_actions(
+            uri,
+            document,
+            source,
+            diagnostics,
+            start_offset,
+            end_offset,
+        )
 
     def _nova_code_actions(
         self,
