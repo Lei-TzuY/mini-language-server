@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from enum import Enum, auto
 from threading import RLock
 from typing import Any
@@ -63,6 +63,7 @@ class LanguageServer:
         self._server_requests: list[dict[str, Any]] = []
         self._pending_server_requests: dict[str, str] = {}
         self._next_server_request_id = 1
+        self._runtime_outbound_wakeup: Callable[[], None] | None = None
 
     def abort_transport(
         self, *, active_request_id: str | int | None = None
@@ -318,6 +319,13 @@ class LanguageServer:
             self._server_requests = []
             return requests
 
+    def _set_runtime_outbound_wakeup(
+        self, wakeup: Callable[[], None] | None
+    ) -> None:
+        """Bind one session transport wakeup for newly queued server requests."""
+        with self._server_request_lock:
+            self._runtime_outbound_wakeup = wakeup
+
     def _queue_server_request(
         self, method: str, params: dict[str, Any] | None = None
     ) -> str:
@@ -334,7 +342,14 @@ class LanguageServer:
                 request["params"] = params
             self._pending_server_requests[request_id] = method
             self._server_requests.append(request)
-            return request_id
+            wakeup = (
+                self._runtime_outbound_wakeup
+                if self.state is ServerState.RUNNING
+                else None
+            )
+        if wakeup is not None:
+            wakeup()
+        return request_id
 
     def _has_pending_server_request(self, method: str) -> bool:
         with self._server_request_lock:
