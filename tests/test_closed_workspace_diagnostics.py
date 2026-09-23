@@ -2108,9 +2108,11 @@ def test_closed_uninitialized_read_tracks_direct_assignment(tmp_path: Path) -> N
     invalid_items = reports[invalid.absolute().as_uri()]["items"]
     valid_items = reports[valid.absolute().as_uri()]["items"]
 
-    assert [item["code"] for item in invalid_items if item["code"] == "nova.uninitialized-read"] == [
-        "nova.uninitialized-read"
-    ]
+    assert [
+        item["code"]
+        for item in invalid_items
+        if item["code"] == "nova.uninitialized-read"
+    ] == ["nova.uninitialized-read"]
     assert all(item["code"] != "nova.uninitialized-read" for item in valid_items)
 
 
