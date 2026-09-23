@@ -307,23 +307,54 @@ def test_watched_file_transition_requests_diagnostic_refresh(
     assert server.drain_server_requests() == []
 
     source = tmp_path / "created.nova"
-    source.write_text("fn main() { missing(); }\n", encoding="utf-8")
+    source.write_text("fn main() {}\n", encoding="utf-8")
     uri = source.absolute().as_uri()
     server.handle(watched_change(uri, 1))
 
-    queued = server.drain_server_requests()
-    assert len(queued) == 1
-    assert queued[0]["method"] == "workspace/diagnostic/refresh"
+    first_refresh = server.drain_server_requests()
+    assert len(first_refresh) == 1
+    assert first_refresh[0]["method"] == "workspace/diagnostic/refresh"
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": first_refresh[0]["id"],
+            "result": None,
+        }
+    ) is None
 
-    response = server.handle(
+    first = server.handle(
         request(
             "workspace/diagnostic",
             9,
             {"previousResultIds": []},
         )
     )
-    assert response is not None
-    reports = {item["uri"]: item for item in response["result"]["items"]}
+    assert first is not None
+    first_reports = {
+        item["uri"]: item
+        for item in first["result"]["items"]
+    }
+    assert first_reports[uri]["items"] == []
+
+    source.write_text(
+        "fn main() { missing(); }\n",
+        encoding="utf-8",
+    )
+    server.handle(watched_change(uri, 2))
+
+    second_refresh = server.drain_server_requests()
+    assert len(second_refresh) == 1
+    assert second_refresh[0]["method"] == "workspace/diagnostic/refresh"
+
+    second = server.handle(
+        request(
+            "workspace/diagnostic",
+            10,
+            {"previousResultIds": []},
+        )
+    )
+    assert second is not None
+    reports = {item["uri"]: item for item in second["result"]["items"]}
     assert [item["code"] for item in reports[uri]["items"]] == [
         "nova.unresolved-function"
     ]
@@ -371,3 +402,79 @@ def test_shutdown_retracts_pending_watcher_registration(
         }
     ) is None
     assert server._watched_files_registration_active is False
+
+def test_watcher_and_formatting_dynamic_registrations_are_isolated(
+    tmp_path: Path,
+) -> None:
+    server = NovaProductLanguageServer()
+    response = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "workspace": {
+                        "workspaceFolders": True,
+                        "configuration": True,
+                        "didChangeConfiguration": {
+                            "dynamicRegistration": True,
+                        },
+                        "didChangeWatchedFiles": {
+                            "dynamicRegistration": True,
+                        },
+                    }
+                },
+                "workspaceFolders": [
+                    {"uri": tmp_path.as_uri(), "name": "workspace"}
+                ],
+            },
+        )
+    )
+    assert response is not None
+    server.handle(notify("initialized", {}))
+
+    queued = server.drain_server_requests()
+    registrations = [
+        item
+        for item in queued
+        if item["method"] == "client/registerCapability"
+    ]
+    configuration = next(
+        item
+        for item in queued
+        if item["method"] == "workspace/configuration"
+    )
+    assert len(registrations) == 2
+
+    watcher = next(
+        item
+        for item in registrations
+        if item["params"]["registrations"][0]["method"]
+        == "workspace/didChangeWatchedFiles"
+    )
+    formatting = next(
+        item
+        for item in registrations
+        if item["params"]["registrations"][0]["method"]
+        == "workspace/didChangeConfiguration"
+    )
+
+    assert server.handle(
+        {"jsonrpc": "2.0", "id": watcher["id"], "result": None}
+    ) is None
+    assert server._watched_files_registration_active is True
+    assert server._formatting_configuration_registration_active is False
+
+    assert server.handle(
+        {"jsonrpc": "2.0", "id": formatting["id"], "result": None}
+    ) is None
+    assert server._formatting_configuration_registration_active is True
+    assert server._watched_files_registration_active is True
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": configuration["id"],
+            "result": [{"tabSize": 4, "insertSpaces": True}],
+        }
+    ) is None
