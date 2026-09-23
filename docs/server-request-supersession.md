@@ -33,4 +33,12 @@ The last valid formatting settings remain usable until a current-generation resp
 
 Tracing observes real outbound cancellation notifications through the generic notification queue. Local retraction of a request that never left the server produces no fake outbound cancellation trace.
 
-This capability does not cancel dynamic registration requests or workspace refresh requests. Supersession is used only where the consumer can prove the original server-request payload itself has become invalid.
+## Lifecycle retirement
+
+A successful client `shutdown` request is also a hard ownership boundary for server-initiated requests. Before the server enters the shutdown state, every pending server request is retired through the same cancellation hook used by supersession. Requests that already left the local outbox receive standard `$/cancelRequest`; requests still queued locally are retracted without fake protocol traffic. Consumer-owned per-request metadata is discarded at the same boundary.
+
+After shutdown, response-shaped JSON-RPC messages are ignored even though response dispatch normally precedes method routing. A late result or error therefore cannot re-enter a consumer completion hook or mutate configuration/registration state after the server has acknowledged shutdown.
+
+An `exit` notification performs final local retirement without emitting new cancellation traffic because no further protocol exchange is expected. This also covers abnormal exit without a preceding shutdown.
+
+This capability does not otherwise change refresh coalescing or generation supersession. Supersession is used when a payload becomes stale during normal operation; lifecycle retirement closes all remaining request ownership when the session itself ends.
