@@ -9,6 +9,7 @@ from typing import Any, BinaryIO
 MAX_CONTENT_LENGTH = 8 * 1024 * 1024
 MAX_HEADER_BYTES = 64 * 1024
 MAX_HEADER_COUNT = 64
+MAX_HEADER_LINE_LENGTH = 8192
 
 
 class FramingError(ValueError):
@@ -57,7 +58,12 @@ class MessageReader:
         header_count = 0
 
         while True:
-            raw = self._stream.readline()
+            remaining_header_bytes = self._max_header_bytes - header_bytes
+            read_limit = min(
+                MAX_HEADER_LINE_LENGTH,
+                remaining_header_bytes,
+            ) + 1
+            raw = self._stream.readline(read_limit)
             if raw == b"":
                 if not saw_anything:
                     return None
@@ -74,7 +80,7 @@ class MessageReader:
             if header_count > self._max_header_count:
                 raise FramingError("header count exceeds configured limit")
 
-            if len(raw) > 8192:
+            if len(raw) > MAX_HEADER_LINE_LENGTH:
                 raise FramingError("header line too long")
             try:
                 line = raw.decode("ascii").rstrip("\r\n")
