@@ -230,14 +230,21 @@ class LanguageServer:
         self._notifications = []
         return notifications
 
+    def _queue_notification(self, method: str, params: Any = None) -> None:
+        """Queue one server-to-client JSON-RPC notification."""
+        notification: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "method": method,
+        }
+        if params is not None:
+            notification["params"] = params
+        self._notifications.append(notification)
+
     def _queue_progress(self, token: str | int, value: Any) -> None:
         """Queue one standard LSP progress notification."""
-        self._notifications.append(
-            {
-                "jsonrpc": "2.0",
-                "method": "$/progress",
-                "params": {"token": token, "value": value},
-            }
+        self._queue_notification(
+            "$/progress",
+            {"token": token, "value": value},
         )
 
     def drain_server_requests(self) -> list[dict[str, Any]]:
@@ -905,13 +912,7 @@ class LanguageServer:
         params: dict[str, Any] = {"uri": uri, "diagnostics": diagnostics}
         if version is not None and self._publish_diagnostic_version_support:
             params["version"] = version
-        self._notifications.append(
-            {
-                "jsonrpc": "2.0",
-                "method": "textDocument/publishDiagnostics",
-                "params": params,
-            }
-        )
+        self._queue_notification("textDocument/publishDiagnostics", params)
 
     @staticmethod
     def _range(source: SourceText, span: Span) -> dict[str, Any]:
