@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
+from .diagnostics import Diagnostic
 from .nova import NovaFunctionSyntax
 from .source import SourceText, Span
 from .typed_parameter_arguments import NovaProductLanguageServer as _NovaProductLanguageServer
@@ -137,9 +138,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         argument: Span,
         actual_type: str,
         expected_type: str,
-    ):
-        from .diagnostics import Diagnostic
-
+    ) -> Diagnostic:
         return Diagnostic(
             argument,
             (
