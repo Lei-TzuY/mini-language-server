@@ -29,6 +29,9 @@ from .symbols import SymbolIndex
 from .syntax import SyntaxStore
 
 
+_REFERENCE_PARTIAL_CHUNK_SIZE = 16
+
+
 class ServerState(Enum):
     PRE_INITIALIZE = auto()
     RUNNING = auto()
@@ -242,6 +245,31 @@ class LanguageServer:
             return False, None
         return True, token
 
+    def _active_work_done_token(
+        self, params: dict[str, Any]
+    ) -> tuple[bool, str | int | None]:
+        """Validate workDoneToken and activate it only for supporting clients."""
+        valid, token = self._progress_token(params, "workDoneToken")
+        if not valid:
+            return False, None
+        return True, token if self._work_done_progress_support else None
+
+    def _reference_result(
+        self,
+        request_id: Any,
+        locations: list[dict[str, Any]],
+        partial_result_token: str | int | None,
+    ) -> dict[str, Any]:
+        """Publish reference locations either in the final result or progress chunks."""
+        if partial_result_token is None:
+            return self._result(request_id, locations)
+        for start in range(0, len(locations), _REFERENCE_PARTIAL_CHUNK_SIZE):
+            self._queue_progress(
+                partial_result_token,
+                locations[start : start + _REFERENCE_PARTIAL_CHUNK_SIZE],
+            )
+        return self._result(request_id, [])
+
     def _queue_progress(self, token: str | int, value: Any) -> None:
         """Queue one standard LSP progress notification."""
         self._notifications.append(
@@ -368,7 +396,21 @@ class LanguageServer:
         if context is None:
             return self._error(request_id, -32602, "Invalid params")
 
+        partial_result_token: str | int | None = None
+        active_work_done_token: str | int | None = None
+        work_done_started = False
         try:
+            if method == "textDocument/references":
+                assert isinstance(params, dict)
+                valid_partial, partial_result_token = self._progress_token(
+                    params, "partialResultToken"
+                )
+                valid_work_done, active_work_done_token = (
+                    self._active_work_done_token(params)
+                )
+                if not valid_partial or not valid_work_done:
+                    return self._error(request_id, -32602, "Invalid params")
+
             parsed = self._semantic_query(params)
             if parsed is None:
                 return self._error(request_id, -32602, "Invalid params")
@@ -399,11 +441,38 @@ class LanguageServer:
                 self.requests.checkpoint(context)
                 return self._current_semantic_result(semantics, request_id, items)
 
+            if method == "textDocument/references" and active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {
+                        "kind": "begin",
+                        "title": "References",
+                        "cancellable": True,
+                        "percentage": 0,
+                    },
+                )
+                work_done_started = True
+
             target = semantics.definition_at(offset)
             self.requests.checkpoint(context)
             if target is None:
-                empty_result = [] if method == "textDocument/references" else None
-                return self._current_semantic_result(semantics, request_id, empty_result)
+                if method != "textDocument/references":
+                    return self._current_semantic_result(semantics, request_id, None)
+                try:
+                    response = self.semantics.commit_if_current(
+                        semantics,
+                        lambda: self._reference_result(
+                            request_id, [], partial_result_token
+                        ),
+                    )
+                except SemanticError as exc:
+                    raise StaleRequest("reference inputs changed") from exc
+                if active_work_done_token is not None:
+                    self._queue_progress(
+                        active_work_done_token,
+                        {"kind": "end", "message": "Reference search complete"},
+                    )
+                return response
 
             if method == "textDocument/definition":
                 result = self._location(semantics.uri, source, target.span)
@@ -438,11 +507,44 @@ class LanguageServer:
             locations = [
                 self._location(semantics.uri, source, span) for span in spans
             ]
+            if active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {
+                        "kind": "report",
+                        "message": f"Resolved {len(locations)} references",
+                        "percentage": 100,
+                    },
+                )
             self.requests.checkpoint(context)
-            return self._current_semantic_result(semantics, request_id, locations)
+            try:
+                response = self.semantics.commit_if_current(
+                    semantics,
+                    lambda: self._reference_result(
+                        request_id, locations, partial_result_token
+                    ),
+                )
+            except SemanticError as exc:
+                raise StaleRequest("reference inputs changed") from exc
+            if active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {"kind": "end", "message": "Reference search complete"},
+                )
+            return response
         except RequestCancelled:
+            if work_done_started and active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {"kind": "end", "message": "Reference search cancelled"},
+                )
             return self._error(request_id, -32800, "Request cancelled")
         except StaleRequest:
+            if work_done_started and active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {"kind": "end", "message": "Reference search changed"},
+                )
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
