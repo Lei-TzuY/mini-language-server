@@ -6,8 +6,8 @@ import re
 
 from .condition_diagnostics import _FUNCTION, _UNREACHABLE_CODE_DIAGNOSTIC
 from .diagnostics import Diagnostic
-from .semantic import SemanticSnapshot
 from .return_types import _NeverReturnsResolver
+from .semantic import SemanticSnapshot
 from .source import Span
 from .unreachable_actions import NovaProductLanguageServer as _NovaProductLanguageServer
 
