@@ -1086,3 +1086,149 @@ def test_closed_mixed_expression_local_remains_conservative(tmp_path: Path) -> N
     ]
 
     assert all(item["code"] != "nova.argument-type" for item in report["items"])
+
+def test_closed_return_literal_type_mismatch_is_reported(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        'fn value() -> Int { return "bad"; }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+        if item["code"] == "nova.return-type"
+    ] == [
+        (
+            "nova.return-type",
+            "return type mismatch: expected 'Int', got 'String'",
+        )
+    ]
+
+
+def test_closed_return_reference_type_mismatch_is_reported(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn value(input: Bool) -> String { return input; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert any(
+        item["code"] == "nova.return-type"
+        and item["message"]
+        == "return type mismatch: expected 'String', got 'Bool'"
+        for item in report["items"]
+    )
+
+
+def test_closed_return_local_expression_type_mismatch_is_reported(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn value() -> String { let local = 1 + 2; return local; }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert any(
+        item["code"] == "nova.return-type"
+        and item["message"]
+        == "return type mismatch: expected 'String', got 'Int'"
+        for item in report["items"]
+    )
+
+
+def test_closed_return_cross_file_call_uses_captured_result_type(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        'fn make() -> String { return "x"; }\n',
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn value() -> Int { return make(); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        caller.absolute().as_uri()
+    ]
+
+    assert any(
+        item["code"] == "nova.return-type"
+        and item["message"]
+        == "return type mismatch: expected 'Int', got 'String'"
+        for item in report["items"]
+    )
+
+
+def test_closed_return_call_rebinds_after_provider_result_change(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        'fn make() -> String { return "x"; }\n',
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn value() -> Int { return make(); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    caller_uri = caller.absolute().as_uri()
+
+    first = reports_by_uri(workspace_diagnostics(server))[caller_uri]
+    assert any(item["code"] == "nova.return-type" for item in first["items"])
+
+    provider.write_text(
+        "fn make() -> Int { return 1; }\n",
+        encoding="utf-8",
+    )
+    assert server._sync_closed_workspace_files() is True
+
+    second = reports_by_uri(
+        workspace_diagnostics(server, request_id=3)
+    )[caller_uri]
+    assert all(item["code"] != "nova.return-type" for item in second["items"])
+
+
+def test_closed_return_ambiguous_call_remains_conservative(tmp_path: Path) -> None:
+    first = tmp_path / "first.nova"
+    second = tmp_path / "second.nova"
+    caller = tmp_path / "caller.nova"
+    first.write_text("fn make() -> Int { return 1; }\n", encoding="utf-8")
+    second.write_text(
+        'fn make() -> String { return "x"; }\n',
+        encoding="utf-8",
+    )
+    caller.write_text(
+        "fn value() -> Bool { return make(); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        caller.absolute().as_uri()
+    ]
+
+    assert all(item["code"] != "nova.return-type" for item in report["items"])
+    assert any(item["code"] == "nova.ambiguous-function" for item in report["items"])
