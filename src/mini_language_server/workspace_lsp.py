@@ -9,12 +9,17 @@ from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
 from .documents import Document
 from .nova import NovaFunctionSyntax, NovaLanguageServer
-from .semantic import SemanticError
-from .server import ServerState
+from .semantic import SemanticError, SemanticSnapshot
+from .server import LanguageServer, ServerState
 from .source import Span
 from .symbols import SymbolError
 from .syntax import SyntaxError
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
+from .workspace_files import (
+    ClosedWorkspaceFile,
+    read_closed_workspace_file,
+    scan_closed_workspace_files,
+)
 from .workspace_folders import (
     WorkspaceFolderError,
     WorkspaceFolderSet,
@@ -38,6 +43,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self.workspace_symbols = WorkspaceSymbolIndex()
         self.workspace_folders = WorkspaceFolderSet()
         self._workspace_folder_change_support = False
+        self._closed_workspace_index_initialized = False
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -107,6 +113,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     return workspace_result
 
         result = super().handle(message)
+        if (
+            method == "initialized"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+            and not self._closed_workspace_index_initialized
+        ):
+            self._closed_workspace_index_initialized = True
+            self._refresh_closed_workspace_files()
         if method == "initialize" and result is not None and "result" in result:
             params = message.get("params")
             capabilities = result["result"].get("capabilities")
@@ -134,6 +148,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if previous is not None:
                 with suppress(WorkspaceIndexError):
                     self.workspace_symbols.remove(uri, expected=previous)
+            self._restore_closed_workspace_file(uri)
             self._publish_workspace_diagnostics()
             return
         if method not in {"textDocument/didOpen", "textDocument/didChange"}:
@@ -191,6 +206,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             with suppress(WorkspaceIndexError):
                 self.workspace_symbols.replace(semantic, expected=current)
 
+        self._sync_closed_workspace_files()
         self._publish_workspace_diagnostics()
         after = self.workspace_symbols.snapshots()
         self._workspace_folder_scope_changed(
@@ -199,6 +215,88 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         )
         if before.generation != after.generation:
             self._workspace_scope_changed(before, after)
+
+    def _refresh_closed_workspace_files(self) -> None:
+        """Rescan closed local Nova files and publish one workspace generation change."""
+        before = self.workspace_symbols.snapshots()
+        if not self._sync_closed_workspace_files():
+            return
+        self._publish_workspace_diagnostics()
+        after = self.workspace_symbols.snapshots()
+        if before.generation != after.generation:
+            self._workspace_scope_changed(before, after)
+
+    def _sync_closed_workspace_files(self) -> bool:
+        """Reconcile bounded local closed files without displacing open buffers."""
+        open_uris = frozenset(
+            document.uri
+            for document in self.documents.snapshots()
+            if document.language_id == self.nova_adapter.language_id
+        )
+        folder_uris = tuple(folder.uri for folder in self.workspace_folders.folders())
+        files = scan_closed_workspace_files(
+            folder_uris,
+            exclude_uris=open_uris,
+        )
+        by_uri = {item.uri: item for item in files}
+        changed = False
+
+        for snapshot in tuple(self.workspace_symbols.snapshots()):
+            if snapshot.uri in open_uris:
+                continue
+            if snapshot.uri in by_uri:
+                continue
+            with suppress(WorkspaceIndexError):
+                removed = self.workspace_symbols.remove(
+                    snapshot.uri,
+                    expected=snapshot,
+                )
+                changed = changed or removed is not None
+
+        for uri in sorted(by_uri):
+            item = by_uri[uri]
+            current = self.workspace_symbols.get(uri)
+            if (
+                current is not None
+                and self.documents.get(uri) is None
+                and current.symbols.syntax.document.text == item.text
+            ):
+                continue
+            semantic = self._detached_nova_semantic(item)
+            try:
+                self.workspace_symbols.replace(semantic, expected=current)
+            except WorkspaceIndexError:
+                continue
+            changed = True
+        return changed
+
+    def _restore_closed_workspace_file(self, uri: str) -> bool:
+        """Restore current disk content after an editor buffer relinquishes one URI."""
+        if self.documents.get(uri) is not None or not self.workspace_folders.contains(uri):
+            return False
+        item = read_closed_workspace_file(uri)
+        if item is None or not self.workspace_folders.contains(item.uri):
+            return False
+        current = self.workspace_symbols.get(item.uri)
+        semantic = self._detached_nova_semantic(item)
+        try:
+            self.workspace_symbols.replace(semantic, expected=current)
+        except WorkspaceIndexError:
+            return False
+        return True
+
+    def _detached_nova_semantic(
+        self, item: ClosedWorkspaceFile
+    ) -> SemanticSnapshot:
+        """Build one read-only semantic snapshot outside the open-document stores."""
+        detached = LanguageServer()
+        document = detached.documents.open(
+            uri=item.uri,
+            language_id=self.nova_adapter.language_id,
+            version=0,
+            text=item.text,
+        )
+        return self.nova_adapter.publish(detached, document)
 
     def _workspace_documents(
         self, scope: WorkspaceFolderSnapshot | None = None
