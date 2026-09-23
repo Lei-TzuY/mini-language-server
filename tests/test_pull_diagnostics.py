@@ -600,3 +600,135 @@ def test_workspace_diagnostics_reject_workspace_folder_generation_change(
         "id": 20,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+def test_document_pull_includes_direct_cross_file_related_documents() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    first_uri = "file:///workspace/a.nova"
+    second_uri = "file:///workspace/b.nova"
+    caller_uri = "file:///workspace/main.nova"
+
+    open_document(server, first_uri, "fn target() {}\n")
+    open_document(server, second_uri, "fn target() {}\n")
+    open_document(server, caller_uri, "fn main() { target() }\n")
+
+    report = pull_diagnostics(server, caller_uri)["result"]
+    assert report["kind"] == "full"
+    assert report["items"][0]["code"] == "nova.ambiguous-function"
+    assert list(report["relatedDocuments"]) == [first_uri, second_uri]
+
+    first = report["relatedDocuments"][first_uri]
+    second = report["relatedDocuments"][second_uri]
+    assert first["kind"] == "full"
+    assert first["items"] == []
+    assert first["resultId"].startswith("1:")
+    assert second["kind"] == "full"
+    assert second["items"] == []
+    assert second["resultId"].startswith("1:")
+
+
+def test_unchanged_primary_pull_can_return_changed_related_document_report() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    first_uri = "file:///workspace/a.nova"
+    second_uri = "file:///workspace/b.nova"
+    caller_uri = "file:///workspace/main.nova"
+
+    open_document(server, first_uri, "fn target() { missing() }\n")
+    open_document(server, second_uri, "fn target() {}\n")
+    open_document(server, caller_uri, "fn main() { target() }\n")
+
+    first = pull_diagnostics(server, caller_uri)["result"]
+    primary_result_id = first["resultId"]
+    first_related = first["relatedDocuments"][first_uri]
+    assert first_related["items"][0]["code"] == "nova.unresolved-function"
+
+    server.handle(
+        notification(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": first_uri, "version": 2},
+                "contentChanges": [{"text": "fn target() {}\n"}],
+            },
+        )
+    )
+
+    second = pull_diagnostics(
+        server,
+        caller_uri,
+        request_id=3,
+        previous_result_id=primary_result_id,
+    )["result"]
+
+    assert second["kind"] == "unchanged"
+    assert second["resultId"] == primary_result_id
+    assert list(second["relatedDocuments"]) == [first_uri, second_uri]
+    changed_related = second["relatedDocuments"][first_uri]
+    assert changed_related["kind"] == "full"
+    assert changed_related["items"] == []
+    assert changed_related["resultId"] != first_related["resultId"]
+
+
+def test_document_pull_rejects_related_document_change_before_commit(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    first_uri = "file:///workspace/a.nova"
+    second_uri = "file:///workspace/b.nova"
+    caller_uri = "file:///workspace/main.nova"
+
+    open_document(server, first_uri, "fn target() {}\n")
+    open_document(server, second_uri, "fn target() {}\n")
+    open_document(server, caller_uri, "fn main() { target() }\n")
+
+    real_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def replace_dependency_before_commit(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        real_checkpoint(context)
+        if calls == 2:
+            server.handle(
+                notification(
+                    "textDocument/didChange",
+                    {
+                        "textDocument": {"uri": first_uri, "version": 2},
+                        "contentChanges": [{"text": "fn target(value: Int) {}\n"}],
+                    },
+                )
+            )
+
+    monkeypatch.setattr(
+        server.requests,
+        "checkpoint",
+        replace_dependency_before_commit,
+    )
+
+    assert pull_diagnostics(server, caller_uri) == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+
+def test_related_documents_are_direct_and_do_not_nest_dependency_reports() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    a_uri = "file:///workspace/a.nova"
+    b_uri = "file:///workspace/b.nova"
+    c_uri = "file:///workspace/c.nova"
+    caller_uri = "file:///workspace/main.nova"
+
+    open_document(server, a_uri, "fn target() { helper() }\n")
+    open_document(server, b_uri, "fn target() {}\n")
+    open_document(server, c_uri, "fn helper() {}\n")
+    open_document(server, caller_uri, "fn main() { target() }\n")
+
+    report = pull_diagnostics(server, caller_uri)["result"]
+    assert list(report["relatedDocuments"]) == [a_uri, b_uri]
+    assert all(
+        "relatedDocuments" not in related
+        for related in report["relatedDocuments"].values()
+    )
