@@ -499,27 +499,45 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             )
             if declaration is None:
                 continue
-            default_literal = _DEFAULT_LITERAL_BY_TYPE.get(declaration.group("type") or "")
-            if default_literal is None:
-                continue
-            insert_offset = declaration.end() - 1
-            actions.append(
-                {
-                    "title": f"Initialize '{target.name}' at declaration",
-                    "kind": "quickfix",
-                    "diagnostics": [self._diagnostic(source, diagnostic)],
-                    "edit": {
-                        "changes": {
-                            uri: [
-                                {
-                                    "range": self._range(
-                                        source, Span(insert_offset, insert_offset)
-                                    ),
-                                    "newText": f" = {default_literal}",
-                                }
-                            ]
-                        }
-                    },
-                }
+            action = self._uninitialized_read_action(
+                uri,
+                source,
+                diagnostic,
+                target.name,
+                declaration,
             )
+            if action is not None:
+                actions.append(action)
         return actions
+
+    def _uninitialized_read_action(
+        self,
+        uri: str,
+        source: Any,
+        diagnostic: Diagnostic,
+        name: str,
+        declaration: re.Match[str],
+    ) -> dict[str, Any] | None:
+        """Render one exact typed-var initialization repair."""
+        default_literal = _DEFAULT_LITERAL_BY_TYPE.get(declaration.group("type") or "")
+        if default_literal is None:
+            return None
+        insert_offset = declaration.end() - 1
+        return {
+            "title": f"Initialize '{name}' at declaration",
+            "kind": "quickfix",
+            "diagnostics": [self._diagnostic(source, diagnostic)],
+            "edit": {
+                "changes": {
+                    uri: [
+                        {
+                            "range": self._range(
+                                source,
+                                Span(insert_offset, insert_offset),
+                            ),
+                            "newText": f" = {default_literal}",
+                        }
+                    ]
+                }
+            },
+        }
