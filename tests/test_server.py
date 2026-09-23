@@ -561,6 +561,9 @@ def test_push_diagnostics_render_ranges_in_negotiated_utf8_units() -> None:
             params={
                 "capabilities": {
                     "general": {"positionEncodings": ["utf-8"]},
+                    "textDocument": {
+                        "publishDiagnostics": {"versionSupport": True}
+                    },
                 }
             },
         )

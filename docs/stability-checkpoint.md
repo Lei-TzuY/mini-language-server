@@ -12,7 +12,7 @@ The checkpoint covers:
 4. syntax snapshot publication
 5. symbol snapshot publication
 6. semantic reference publication
-7. diagnostic publication and notification emission
+7. diagnostic publication and notification emission with negotiated push version/tag metadata
 8. definition/reference/rename queries
 9. request cancellation
 10. tracked server-to-client JSON-RPC requests, response retirement, and validated consumer response delivery
@@ -25,7 +25,7 @@ The core invariant is generational identity: a derived result is valid only whil
 
 | Layer | Owns | Must not silently own |
 | --- | --- | --- |
-| protocol/server | JSON-RPC lifecycle, bidirectional request routing, server-request tracking/response delivery, session position-encoding negotiation, workspace-folder lifecycle, LSP result rendering | language parsing/type rules |
+| protocol/server | JSON-RPC lifecycle, bidirectional request routing, server-request tracking/response delivery, session position-encoding negotiation, workspace-folder lifecycle, negotiated diagnostic metadata, LSP result rendering | language parsing/type rules |
 | document store | current text snapshot, version/generation transitions | syntax or semantic interpretation |
 | syntax store | current parsed result for one exact document | symbol resolution |
 | symbol index | deterministic symbols for one exact syntax snapshot | reference semantics |

@@ -12,9 +12,24 @@ def notification(method: str, params: object | None = None) -> dict:
     return message
 
 
-def initialized_server() -> LanguageServer:
+def initialized_server(*, version_support: bool = True) -> LanguageServer:
     server = LanguageServer()
-    server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+    server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {
+                    "textDocument": {
+                        "publishDiagnostics": {
+                            "versionSupport": version_support,
+                        }
+                    }
+                }
+            },
+        }
+    )
     return server
 
 
@@ -165,3 +180,55 @@ def test_close_clears_client_diagnostics_without_reviving_old_snapshot() -> None
     assert server.diagnostics.get(uri) is None
     assert not server.publish_diagnostics(semantic, [Diagnostic(Span(5, 8), "late")])
     assert server.drain_notifications() == []
+
+def test_push_diagnostics_omit_version_without_client_support() -> None:
+    server = initialized_server(version_support=False)
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "let foo = 1\nfoo\n")
+    semantic = publish_semantics(server, uri)
+
+    assert server.publish_diagnostics(
+        semantic, [Diagnostic(Span(5, 8), "current")]
+    )
+    published = server.drain_notifications()
+    assert len(published) == 1
+    assert published[0]["params"] == {
+        "uri": uri,
+        "diagnostics": [
+            {
+                "range": {
+                    "start": {"line": 0, "character": 5},
+                    "end": {"line": 0, "character": 8},
+                },
+                "severity": 1,
+                "message": "current",
+            }
+        ],
+    }
+
+
+def test_change_clear_omits_version_without_client_support() -> None:
+    server = initialized_server(version_support=False)
+    uri = "file:///workspace/main.nova"
+    open_document(server, uri, "let foo = 1\nfoo\n")
+    semantic = publish_semantics(server, uri)
+    assert server.publish_diagnostics(semantic, [Diagnostic(Span(5, 8), "old")])
+    server.drain_notifications()
+
+    server.handle(
+        notification(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": "let bar = 1\nbar\n"}],
+            },
+        )
+    )
+
+    assert server.drain_notifications() == [
+        {
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {"uri": uri, "diagnostics": []},
+        }
+    ]

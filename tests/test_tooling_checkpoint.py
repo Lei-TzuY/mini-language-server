@@ -21,7 +21,19 @@ def position_params(uri: str, character: int) -> dict:
 
 def test_document_to_semantic_navigation_checkpoint() -> None:
     server = LanguageServer()
-    initialize = server.handle(request("initialize", 1, {"capabilities": {}}))
+    initialize = server.handle(
+        request(
+            "initialize",
+            1,
+            {
+                "capabilities": {
+                    "textDocument": {
+                        "publishDiagnostics": {"versionSupport": True}
+                    }
+                }
+            },
+        )
+    )
     assert initialize is not None
 
     uri = "file:///workspace/main.nova"
