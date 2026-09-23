@@ -424,3 +424,44 @@ def test_closed_quick_fix_honors_cancellation(
         "id": 8,
         "error": {"code": -32800, "message": "Request cancelled"},
     }
+
+def test_closed_lazy_action_rejects_open_takeover_during_planning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "main.nova"
+    text = "fn main() { missing() }\n"
+    source.write_bytes(text.encode("utf-8"))
+    server = initialized_server(tmp_path, resolve_edit=True)
+    uri = source.absolute().as_uri()
+    original = server._nova_unresolved_function_actions
+
+    def open_after_plan(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        actions = original(*args, **kwargs)
+        server.handle(
+            notify(
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "nova",
+                        "version": 11,
+                        "text": text,
+                    }
+                },
+            )
+        )
+        return actions
+
+    monkeypatch.setattr(
+        server,
+        "_nova_unresolved_function_actions",
+        open_after_plan,
+    )
+
+    assert closed_action(server, uri, request_id=20) == {
+        "jsonrpc": "2.0",
+        "id": 20,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert server.documents.get(uri) is not None
