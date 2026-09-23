@@ -168,7 +168,7 @@ def test_closed_quick_fix_uses_null_version_and_annotation_when_negotiated(
     ]
 
 
-def test_closed_quick_fix_remains_eager_when_resolve_is_negotiated(
+def test_closed_quick_fix_resolves_lazily_when_negotiated(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "main.nova"
@@ -182,12 +182,119 @@ def test_closed_quick_fix_remains_eager_when_resolve_is_negotiated(
 
     action = closed_action(server, uri)["result"][0]
 
-    assert "edit" in action
-    assert action["edit"]["documentChanges"][0]["textDocument"] == {
+    assert "edit" not in action
+    assert action["data"]["novaCodeActionResolve"] >= 1
+
+    resolved = server.handle(request("codeAction/resolve", 3, action))
+    assert resolved is not None
+    assert resolved["result"]["edit"]["documentChanges"][0]["textDocument"] == {
         "uri": uri,
         "version": None,
     }
-    assert "data" not in action or "novaCodeActionResolve" not in action["data"]
+
+
+def test_closed_code_action_resolve_rejects_disk_drift_and_refreshes_index(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "main.nova"
+    source.write_text("fn main() { missing() }\n", encoding="utf-8")
+    server = initialized_server(
+        tmp_path,
+        document_changes=True,
+        resolve_edit=True,
+    )
+    uri = source.absolute().as_uri()
+    action = closed_action(server, uri)["result"][0]
+    replacement = "fn missing() {}\nfn main() { missing() }\n"
+    source.write_bytes(replacement.encode("utf-8"))
+
+    assert server.handle(request("codeAction/resolve", 3, action)) == {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    refreshed = server.workspace_symbols.get(uri)
+    assert refreshed is not None
+    assert refreshed.symbols.syntax.document.text == replacement
+
+
+def test_closed_code_action_resolve_rejects_workspace_generation_drift(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "main.nova"
+    source.write_text("fn main() { missing() }\n", encoding="utf-8")
+    server = initialized_server(tmp_path, resolve_edit=True)
+    uri = source.absolute().as_uri()
+    action = closed_action(server, uri)["result"][0]
+
+    provider = tmp_path / "provider.nova"
+    provider.write_bytes(b"fn missing() {}\n")
+    assert server._sync_closed_workspace_files() is True
+
+    assert server.handle(request("codeAction/resolve", 3, action)) == {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+
+def test_closed_code_action_resolve_rejects_open_buffer_takeover(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "main.nova"
+    text = "fn main() { missing() }\n"
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(tmp_path, resolve_edit=True)
+    uri = source.absolute().as_uri()
+    action = closed_action(server, uri)["result"][0]
+
+    server.handle(
+        notify(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "nova",
+                    "version": 9,
+                    "text": text,
+                }
+            },
+        )
+    )
+
+    assert server.handle(request("codeAction/resolve", 3, action)) == {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+
+def test_closed_code_action_resolve_honors_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "main.nova"
+    source.write_text("fn main() { missing() }\n", encoding="utf-8")
+    server = initialized_server(tmp_path, resolve_edit=True)
+    uri = source.absolute().as_uri()
+    action = closed_action(server, uri)["result"][0]
+    original_checkpoint = server.requests.checkpoint
+
+    def cancel_before_checkpoint(context: Any) -> None:
+        server.requests.cancel(context.request_id)
+        original_checkpoint(context)
+
+    monkeypatch.setattr(
+        server.requests,
+        "checkpoint",
+        cancel_before_checkpoint,
+    )
+
+    assert server.handle(request("codeAction/resolve", 3, action)) == {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {"code": -32800, "message": "Request cancelled"},
+    }
 
 
 def test_closed_quick_fix_rejects_disk_drift_and_refreshes_index(
@@ -317,3 +424,44 @@ def test_closed_quick_fix_honors_cancellation(
         "id": 8,
         "error": {"code": -32800, "message": "Request cancelled"},
     }
+
+def test_closed_lazy_action_rejects_open_takeover_during_planning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "main.nova"
+    text = "fn main() { missing() }\n"
+    source.write_bytes(text.encode("utf-8"))
+    server = initialized_server(tmp_path, resolve_edit=True)
+    uri = source.absolute().as_uri()
+    original = server._nova_unresolved_function_actions
+
+    def open_after_plan(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        actions = original(*args, **kwargs)
+        server.handle(
+            notify(
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "nova",
+                        "version": 11,
+                        "text": text,
+                    }
+                },
+            )
+        )
+        return actions
+
+    monkeypatch.setattr(
+        server,
+        "_nova_unresolved_function_actions",
+        open_after_plan,
+    )
+
+    assert closed_action(server, uri, request_id=20) == {
+        "jsonrpc": "2.0",
+        "id": 20,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert server.documents.get(uri) is not None
