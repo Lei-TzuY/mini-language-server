@@ -4,7 +4,7 @@ The Nova workspace layer supports one bounded LSP file-operation workflow: negot
 
 ## Contract
 
-Clients opt in through `workspace.fileOperations.didRename`. The server advertises one `workspace.fileOperations.didRename` registration filter for `file:**/*.nova` operations.
+Clients negotiate `workspace.fileOperations.willRename` and `didRename` independently. The server advertises matching `file:**/*.nova` filters only for the operations the client supports. `workspace/willRenameFiles` is a pure preflight request: it validates the exact current set of affected open Nova source/destination identities, rejects duplicate destinations or unrelated open-document collisions with `RequestFailed`, honors cancellation, and returns `Content modified` if any affected document identity changes before publication. A valid preflight returns `null` because Nova currently has no import/module path edits to apply. `workspace/didRenameFiles` remains the commit notification.
 
 A rename notification is treated as a live snapshot mutation. While an ordinary request is running, the runtime may dispatch the notification on the foreground mutation lane so requests captured from the old document/workspace identity fail their existing exact-snapshot guards instead of publishing against a renamed file.
 
@@ -18,4 +18,4 @@ The server explicitly clears push diagnostics for the old URI. New diagnostics a
 
 ## Deliberate boundary
 
-This milestone does not implement `workspace/willRenameFiles`, file creation/deletion operations, unopened-file indexing, filesystem I/O, or speculative source edits for module/import paths. Those require a concrete Nova module/file semantic model rather than empty protocol handlers.
+This milestone does not implement file creation/deletion operations, unopened-file indexing, filesystem I/O, or speculative source edits for module/import paths. `willRenameFiles` deliberately validates only server-owned open-document identity; it does not pretend to validate filesystem permissions or paths the server does not index. Those require a concrete Nova module/file semantic model rather than empty protocol handlers.

@@ -224,58 +224,30 @@ class DocumentStore:
             self._documents[uri] = document
             return document
 
+    def validate_renames(
+        self, renames: Iterable[tuple[str, str]]
+    ) -> tuple[Document, ...]:
+        """Validate one rename batch and return exact moving source snapshots."""
+        materialized = self._validate_rename_pairs(renames)
+        with self._lock:
+            moving = self._rename_plan_locked(materialized)
+            return tuple(document for _, _, document in moving)
+
     def rename_many(
         self, renames: Iterable[tuple[str, str]]
     ) -> tuple[tuple[Document, Document], ...]:
         """Atomically rekey open documents while preserving version/text snapshots."""
-        materialized = tuple(renames)
-        if not materialized:
-            return ()
-
-        old_uris: list[str] = []
-        new_uris: list[str] = []
-        for old_uri, new_uri in materialized:
-            if (
-                not isinstance(old_uri, str)
-                or not old_uri
-                or not isinstance(new_uri, str)
-                or not new_uri
-            ):
-                raise DocumentError("rename URIs must be non-empty strings")
-            if old_uri == new_uri:
-                raise DocumentError("rename source and destination must differ")
-            old_uris.append(old_uri)
-            new_uris.append(new_uri)
-
-        if len(set(old_uris)) != len(old_uris):
-            raise DocumentError("rename sources must be unique")
-        if len(set(new_uris)) != len(new_uris):
-            raise DocumentError("rename destinations must be unique")
-
+        materialized = self._validate_rename_pairs(renames)
         with self._lock:
-            current = [
-                (old_uri, new_uri, self._documents.get(old_uri))
-                for old_uri, new_uri in materialized
-            ]
-            moving = [
-                (old_uri, new_uri, document)
-                for old_uri, new_uri, document in current
-                if document is not None
-            ]
+            moving = self._rename_plan_locked(materialized)
             if not moving:
                 return ()
-
-            moving_sources = {old_uri for old_uri, _, _ in moving}
-            for _, new_uri, _ in moving:
-                if new_uri in self._documents and new_uri not in moving_sources:
-                    raise DocumentError(f"rename destination already open: {new_uri}")
 
             for old_uri, _, _ in moving:
                 self._documents.pop(old_uri)
 
             renamed: list[tuple[Document, Document]] = []
             for _, new_uri, previous in moving:
-                assert previous is not None
                 replacement = Document(
                     new_uri,
                     previous.language_id,
@@ -285,6 +257,58 @@ class DocumentStore:
                 self._documents[new_uri] = replacement
                 renamed.append((previous, replacement))
             return tuple(renamed)
+
+    @staticmethod
+    def _validate_rename_pairs(
+        renames: Iterable[tuple[str, str]],
+    ) -> tuple[tuple[str, str], ...]:
+        materialized = tuple(renames)
+        if not materialized:
+            return ()
+
+        old_uris: list[str] = []
+        new_uris: list[str] = []
+        for pair in materialized:
+            if (
+                not isinstance(pair, tuple)
+                or len(pair) != 2
+                or not isinstance(pair[0], str)
+                or not pair[0]
+                or not isinstance(pair[1], str)
+                or not pair[1]
+            ):
+                raise DocumentError(
+                    "rename entries must contain non-empty source and destination URIs"
+                )
+            old_uri, new_uri = pair
+            if old_uri == new_uri:
+                raise DocumentError("rename source and destination must differ")
+            old_uris.append(old_uri)
+            new_uris.append(new_uri)
+
+        if len(set(old_uris)) != len(old_uris):
+            raise DocumentError("rename sources must be unique")
+        if len(set(new_uris)) != len(new_uris):
+            raise DocumentError("rename destinations must be unique")
+        return materialized
+
+    def _rename_plan_locked(
+        self,
+        renames: tuple[tuple[str, str], ...],
+    ) -> tuple[tuple[str, str, Document], ...]:
+        moving = tuple(
+            (old_uri, new_uri, document)
+            for old_uri, new_uri in renames
+            if (document := self._documents.get(old_uri)) is not None
+        )
+        if not moving:
+            return ()
+
+        moving_sources = {old_uri for old_uri, _, _ in moving}
+        for _, new_uri, _ in moving:
+            if new_uri in self._documents and new_uri not in moving_sources:
+                raise DocumentError(f"rename destination already open: {new_uri}")
+        return moving
 
     def close(self, uri: str) -> Document:
         with self._lock:
