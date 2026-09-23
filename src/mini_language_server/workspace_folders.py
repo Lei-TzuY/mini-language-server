@@ -273,7 +273,7 @@ class WorkspaceFolderSet:
     @staticmethod
     def _normalized_path(uri: str) -> str:
         try:
-            parsed = parse.urlsplit(uri)
+            parsed = urlsplit(uri)
         except ValueError:
             return uri
         return WorkspaceFolderSet._normalize_percent_encoding(parsed.path)
