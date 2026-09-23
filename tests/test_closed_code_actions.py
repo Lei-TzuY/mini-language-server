@@ -795,3 +795,81 @@ def test_closed_call_site_repairs_respect_range_and_lazy_resolve(
             ],
         }
     ]
+
+def test_closed_missing_return_gets_lazy_null_version_repair(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "missing-return.nova"
+    text = "fn value() -> Int {}\n"
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(
+        tmp_path,
+        document_changes=True,
+        resolve_edit=True,
+    )
+    uri = source.absolute().as_uri()
+    start = text.index("Int")
+
+    action = closed_action(
+        server,
+        uri,
+        request_id=50,
+        start=start,
+        end=start + len("Int"),
+    )["result"][0]
+
+    assert action["title"] == "Add Int return"
+    assert action["diagnostics"][0]["code"] == "nova.missing-return"
+    assert "edit" not in action
+    assert action["data"]["novaCodeActionResolve"] >= 1
+    assert server.documents.get(uri) is None
+    assert server.diagnostics.get(uri) is None
+
+    resolved = server.handle(request("codeAction/resolve", 51, action))
+    assert resolved is not None
+    assert resolved["result"]["edit"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": None},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": text.index("}")},
+                        "end": {"line": 0, "character": text.index("}")},
+                    },
+                    "newText": "return 0; ",
+                }
+            ],
+        }
+    ]
+
+
+def test_closed_missing_return_action_rejects_disk_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "missing-return.nova"
+    text = "fn value() -> Int {}\n"
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+    start = text.index("Int")
+    original = server._missing_return_quick_fix
+
+    def drift_after_plan(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        action = original(*args, **kwargs)
+        source.write_text("fn value() -> Int { return 1; }\n", encoding="utf-8")
+        return action
+
+    monkeypatch.setattr(server, "_missing_return_quick_fix", drift_after_plan)
+
+    assert closed_action(
+        server,
+        uri,
+        request_id=52,
+        start=start,
+        end=start + len("Int"),
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 52,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
