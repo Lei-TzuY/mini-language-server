@@ -764,6 +764,7 @@ def test_legacy_configuration_client_keeps_configuration_only_request() -> None:
     assert len(requests) == 1
     assert requests[0]["method"] == "workspace/configuration"
 
+
 def test_shutdown_retires_configuration_request_and_ignores_late_response() -> None:
     server = NovaProductLanguageServer()
     initialize(server, configuration=True)
