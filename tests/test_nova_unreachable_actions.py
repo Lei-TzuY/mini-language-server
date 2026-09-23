@@ -11,9 +11,20 @@ def notify(method: str, params: dict) -> dict:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def initialized_server() -> NovaProductLanguageServer:
+def initialized_server(*, tag_values: list[int] | None = None) -> NovaProductLanguageServer:
     server = NovaProductLanguageServer()
-    assert server.handle(request("initialize", 1, {"capabilities": {}})) is not None
+    text_document: dict = {}
+    if tag_values is not None:
+        text_document["publishDiagnostics"] = {
+            "tagSupport": {"valueSet": tag_values}
+        }
+    assert server.handle(
+        request(
+            "initialize",
+            1,
+            {"capabilities": {"textDocument": text_document}},
+        )
+    ) is not None
     return server
 
 
@@ -191,3 +202,42 @@ def test_unreachable_quick_fix_rejects_superseded_same_version_diagnostic() -> N
         for action in actions
         if action.get("title") == "Remove unreachable code"
     ] == []
+
+def test_unreachable_quick_fix_omits_unnegotiated_diagnostic_tag() -> None:
+    server = initialized_server()
+    uri = "file:///workspace/main.nova"
+    text = "fn main() { return; let value = 1; }\n"
+    suffix = "let value = 1;"
+    start = text.index(suffix)
+    open_nova(server, uri, text)
+
+    action = remove_actions(
+        server,
+        uri,
+        line=0,
+        start=start,
+        end=start + len(suffix),
+        request_id=20,
+    )[0]
+
+    assert "tags" not in action["diagnostics"][0]
+
+
+def test_unreachable_quick_fix_includes_negotiated_diagnostic_tag() -> None:
+    server = initialized_server(tag_values=[1])
+    uri = "file:///workspace/main.nova"
+    text = "fn main() { return; let value = 1; }\n"
+    suffix = "let value = 1;"
+    start = text.index(suffix)
+    open_nova(server, uri, text)
+
+    action = remove_actions(
+        server,
+        uri,
+        line=0,
+        start=start,
+        end=start + len(suffix),
+        request_id=21,
+    )[0]
+
+    assert action["diagnostics"][0]["tags"] == [1]
