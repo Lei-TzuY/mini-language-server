@@ -422,3 +422,124 @@ def test_closed_argument_count_uses_literal_aware_call_boundaries(
         item["code"] != "nova.argument-count"
         for item in report["items"]
     )
+
+
+def test_closed_same_file_literal_argument_type_diagnostic(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        'fn target(value: Int) {} fn caller() { target("wrong"); }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+
+    report = reports_by_uri(workspace_diagnostics(server))[uri]
+
+    assert report["version"] is None
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'target' has type 'String'; expected 'Int'",
+        )
+    ]
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_cross_file_literal_argument_type_uses_captured_signature(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text(
+        "fn target(flag: Bool, label: String) {}\n",
+        encoding="utf-8",
+    )
+    caller.write_text(
+        'fn caller() { target(1, "ok"); }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    reports = reports_by_uri(workspace_diagnostics(server))
+    caller_report = reports[caller.absolute().as_uri()]
+
+    assert [
+        (item["code"], item["message"])
+        for item in caller_report["items"]
+    ] == [
+        (
+            "nova.argument-type",
+            "argument 1 to 'target' has type 'Int'; expected 'Bool'",
+        )
+    ]
+
+
+def test_closed_matching_literal_argument_type_stays_clean(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        'fn target(value: String) {} fn caller() { target("a,b"); }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert all(item["code"] != "nova.argument-type" for item in report["items"])
+    assert all(item["code"] != "nova.argument-count" for item in report["items"])
+
+
+def test_closed_unknown_argument_expression_does_not_guess_type(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        "fn target(value: String) {} "
+        "fn caller() { let local = 1; target(local); }\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert all(item["code"] != "nova.argument-type" for item in report["items"])
+
+
+def test_closed_ambiguous_target_does_not_emit_argument_type(tmp_path: Path) -> None:
+    first = tmp_path / "first.nova"
+    second = tmp_path / "second.nova"
+    caller = tmp_path / "caller.nova"
+    first.write_text("fn target(value: Int) {}\n", encoding="utf-8")
+    second.write_text("fn target(value: String) {}\n", encoding="utf-8")
+    caller.write_text('fn caller() { target(true); }\n', encoding="utf-8")
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        caller.absolute().as_uri()
+    ]
+
+    assert [item["code"] for item in report["items"]] == [
+        "nova.ambiguous-function"
+    ]
+
+
+def test_closed_count_mismatch_does_not_stack_argument_type(tmp_path: Path) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text(
+        'fn target(value: Int, other: Int) {} '
+        'fn caller() { target("wrong"); }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        source.absolute().as_uri()
+    ]
+
+    assert [item["code"] for item in report["items"]] == [
+        "nova.argument-count"
+    ]
