@@ -12,13 +12,17 @@ def notify(method: str, params: dict) -> dict:
 
 
 def initialize(
-    server: NovaProductLanguageServer, *, document_changes: bool = False
+    server: NovaProductLanguageServer,
+    *,
+    document_changes: bool = False,
+    change_annotations: bool = False,
 ) -> None:
-    workspace = (
-        {"workspaceEdit": {"documentChanges": True}}
-        if document_changes
-        else {}
-    )
+    workspace_edit: dict = {}
+    if document_changes:
+        workspace_edit["documentChanges"] = True
+    if change_annotations:
+        workspace_edit["changeAnnotationSupport"] = {}
+    workspace = {"workspaceEdit": workspace_edit} if workspace_edit else {}
     result = server.handle(
         request("initialize", 1, {"capabilities": {"workspace": workspace}})
     )
@@ -181,6 +185,38 @@ def test_product_workspace_rename_returns_versioned_edits_when_negotiated() -> N
 def test_product_same_name_rename_returns_empty_document_changes_when_negotiated() -> None:
     server = NovaProductLanguageServer()
     initialize(server, document_changes=True)
+    caller_uri = "file:///workspace/main.nova"
+    open_nova(server, "file:///workspace/target.nova", "fn target() {}\n")
+    open_nova(server, caller_uri, "fn caller() { target() }\n")
+
+    assert rename(server, caller_uri, "target")["result"] == {
+        "documentChanges": []
+    }
+
+
+def test_product_workspace_rename_uses_change_annotations_when_negotiated() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, document_changes=True, change_annotations=True)
+    declaration_uri = "file:///workspace/target.nova"
+    caller_uri = "file:///workspace/main.nova"
+    open_nova(server, declaration_uri, "fn target() {}\n", version=2)
+    open_nova(server, caller_uri, "fn caller() { target() }\n", version=4)
+
+    result = rename(server, caller_uri, "renamed")["result"]
+
+    assert result["changeAnnotations"] == {
+        "edit:1": {"label": "Rename 'target' to 'renamed'"}
+    }
+    assert all(
+        edit["annotationId"] == "edit:1"
+        for item in result["documentChanges"]
+        for edit in item["edits"]
+    )
+
+
+def test_product_same_name_rename_does_not_create_empty_annotation() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, document_changes=True, change_annotations=True)
     caller_uri = "file:///workspace/main.nova"
     open_nova(server, "file:///workspace/target.nova", "fn target() {}\n")
     open_nova(server, caller_uri, "fn caller() { target() }\n")
