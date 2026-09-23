@@ -351,6 +351,7 @@ def test_workspace_symbol_partial_results_stream_after_exact_commit() -> None:
     initialize(server)
     uri = "file:///workspace/many.nova"
     open_nova(server, uri, workspace_symbol_source(20))
+    server.drain_notifications()
 
     response = server.handle(
         request(
@@ -382,6 +383,7 @@ def test_workspace_symbol_without_partial_token_keeps_full_result() -> None:
         "file:///workspace/main.nova",
         "fn alpha() {}\nfn beta() {}\n",
     )
+    server.drain_notifications()
 
     response = server.handle(request("workspace/symbol", 2, {"query": ""}))
 
@@ -422,6 +424,7 @@ def test_workspace_symbol_reports_work_done_progress_when_negotiated() -> None:
         "file:///workspace/main.nova",
         "fn alpha() {}\nfn beta() {}\n",
     )
+    server.drain_notifications()
 
     response = server.handle(
         request(
@@ -466,6 +469,7 @@ def test_workspace_symbol_ignores_work_done_output_without_client_support() -> N
     server = WorkspaceNovaLanguageServer()
     initialize(server)
     open_nova(server, "file:///workspace/main.nova", "fn alpha() {}\n")
+    server.drain_notifications()
 
     response = server.handle(
         request(
@@ -486,6 +490,7 @@ def test_workspace_symbol_cancellation_ends_work_done_without_partial_data(
     server = WorkspaceNovaLanguageServer()
     initialize_with_work_done(server)
     open_nova(server, "file:///workspace/main.nova", workspace_symbol_source(4))
+    server.drain_notifications()
     entered = Event()
     release = Event()
     responses: list[dict[str, Any] | None] = []
@@ -547,18 +552,19 @@ def test_workspace_symbol_stale_commit_emits_no_partial_symbol_data(
     initialize(server)
     uri = "file:///workspace/main.nova"
     open_nova(server, uri, "fn alpha() {}\n")
+    server.drain_notifications()
+    original = server.workspace_symbols.get(uri)
+    document = server.documents.get(uri)
+    assert original is not None and document is not None
     real_commit = server.workspace_symbols.commit_snapshots_if_current
+    injected = False
 
     def replace_then_commit(snapshots, callback):
-        server.handle(
-            notify(
-                "textDocument/didChange",
-                {
-                    "textDocument": {"uri": uri, "version": 2},
-                    "contentChanges": [{"text": "fn beta() {}\n"}],
-                },
-            )
-        )
+        nonlocal injected
+        if not injected:
+            injected = True
+            replacement = server.nova_adapter.publish(server, document)
+            server.workspace_symbols.replace(replacement, expected=original)
         return real_commit(snapshots, callback)
 
     monkeypatch.setattr(
