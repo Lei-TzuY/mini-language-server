@@ -7,6 +7,11 @@ import urllib.parse
 from dataclasses import dataclass
 
 
+_UNRESERVED = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+)
+
+
 class WorkspaceFolderError(ValueError):
     """Raised when workspace-folder lifecycle data is malformed."""
 
@@ -136,21 +141,25 @@ class WorkspaceFolderSet:
         removals = self._parse_folders(removed)
         with self._lock:
             current = {} if self._folders is None else dict(self._folders)
-            before = tuple(sorted(current))
-            before_names = {uri: folder.name for uri, folder in current.items()}
+            before = tuple(
+                sorted(
+                    (identity, folder.uri, folder.name)
+                    for identity, folder in current.items()
+                )
+            )
 
             for folder in removals:
-                current.pop(folder.uri, None)
+                current.pop(self._folder_identity(folder.uri), None)
             for folder in additions:
-                current[folder.uri] = folder
+                current[self._folder_identity(folder.uri)] = folder
 
-            after = tuple(sorted(current))
-            renamed = any(
-                before_names.get(folder.uri) != folder.name
-                for folder in additions
-                if folder.uri in before_names
+            after = tuple(
+                sorted(
+                    (identity, folder.uri, folder.name)
+                    for identity, folder in current.items()
+                )
             )
-            if self._folders is None or before != after or renamed:
+            if self._folders is None or before != after:
                 self._folders = current
                 self._generation += 1
                 return True
@@ -173,7 +182,7 @@ class WorkspaceFolderSet:
         return max(
             matches,
             key=lambda folder_uri: len(
-                urllib.parse.urlsplit(folder_uri).path.rstrip("/")
+                self._normalized_path(folder_uri).rstrip("/")
             ),
         )
 
@@ -187,7 +196,10 @@ class WorkspaceFolderSet:
             return callback()
 
     def _replace(self, folders: tuple[WorkspaceFolder, ...]) -> None:
-        replacement = {folder.uri: folder for folder in folders}
+        replacement = {
+            self._folder_identity(folder.uri): folder
+            for folder in folders
+        }
         with self._lock:
             if self._folders == replacement:
                 return
@@ -197,14 +209,15 @@ class WorkspaceFolderSet:
     @staticmethod
     def _parse_folders(values: list[object]) -> tuple[WorkspaceFolder, ...]:
         parsed: list[WorkspaceFolder] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, str, str, str, str]] = set()
         for value in values:
             if not isinstance(value, dict):
                 raise WorkspaceFolderError("workspace folder entries must be objects")
             folder = WorkspaceFolder(value.get("uri"), value.get("name"))
-            if folder.uri in seen:
+            identity = WorkspaceFolderSet._folder_identity(folder.uri)
+            if identity in seen:
                 raise WorkspaceFolderError("workspace folder URIs must be unique")
-            seen.add(folder.uri)
+            seen.add(identity)
             parsed.append(folder)
         return tuple(parsed)
 
@@ -216,14 +229,105 @@ class WorkspaceFolderSet:
         except ValueError:
             return False
         if (
-            folder.scheme != document.scheme
-            or folder.netloc != document.netloc
-            or folder.query
+            folder.query
             or folder.fragment
+            or folder.scheme.lower() != document.scheme.lower()
+            or WorkspaceFolderSet._normalize_authority(folder.netloc)
+            != WorkspaceFolderSet._normalize_authority(document.netloc)
         ):
             return False
-        folder_path = folder.path.rstrip("/")
-        document_path = document.path
+        folder_path = WorkspaceFolderSet._normalize_percent_encoding(
+            folder.path
+        ).rstrip("/")
+        document_path = WorkspaceFolderSet._normalize_percent_encoding(
+            document.path
+        )
         if not folder_path:
             return document_path.startswith("/")
-        return document_path == folder_path or document_path.startswith(folder_path + "/")
+        return document_path == folder_path or document_path.startswith(
+            folder_path + "/"
+        )
+
+    @staticmethod
+    def _folder_identity(uri: str) -> tuple[str, str, str, str, str]:
+        """Return one RFC-safe identity key while preserving the original URI."""
+        try:
+            parsed = urllib.parse.urlsplit(uri)
+        except ValueError:
+            return ("__invalid__", uri, "", "", "")
+        normalized_path = WorkspaceFolderSet._normalize_percent_encoding(
+            parsed.path
+        )
+        if normalized_path != "/":
+            normalized_path = normalized_path.rstrip("/")
+        return (
+            parsed.scheme.lower(),
+            WorkspaceFolderSet._normalize_authority(parsed.netloc),
+            normalized_path,
+            WorkspaceFolderSet._normalize_percent_encoding(parsed.query),
+            WorkspaceFolderSet._normalize_percent_encoding(parsed.fragment),
+        )
+
+    @staticmethod
+    def _normalized_path(uri: str) -> str:
+        try:
+            parsed = urllib.parse.urlsplit(uri)
+        except ValueError:
+            return uri
+        return WorkspaceFolderSet._normalize_percent_encoding(parsed.path)
+
+    @staticmethod
+    def _normalize_authority(authority: str) -> str:
+        userinfo, separator, hostport = authority.rpartition("@")
+        prefix = (
+            WorkspaceFolderSet._normalize_percent_encoding(userinfo) + "@"
+            if separator
+            else ""
+        )
+
+        if hostport.startswith("["):
+            closing = hostport.find("]")
+            if closing < 0:
+                return WorkspaceFolderSet._normalize_percent_encoding(
+                    authority
+                )
+            host = hostport[: closing + 1]
+            suffix = hostport[closing + 1 :]
+        else:
+            host, colon, port = hostport.rpartition(":")
+            if colon:
+                suffix = ":" + port
+            else:
+                host = hostport
+                suffix = ""
+
+        normalized_host = WorkspaceFolderSet._normalize_percent_encoding(
+            host
+        ).lower()
+        return prefix + normalized_host + suffix
+
+    @staticmethod
+    def _normalize_percent_encoding(value: str) -> str:
+        """Normalize percent triplets without decoding reserved delimiters."""
+        normalized: list[str] = []
+        index = 0
+        while index < len(value):
+            if (
+                value[index] == "%"
+                and index + 2 < len(value)
+                and all(
+                    character in "0123456789abcdefABCDEF"
+                    for character in value[index + 1 : index + 3]
+                )
+            ):
+                byte = int(value[index + 1 : index + 3], 16)
+                character = chr(byte)
+                if character in _UNRESERVED:
+                    normalized.append(character)
+                else:
+                    normalized.append(f"%{byte:02X}")
+                index += 3
+                continue
+            normalized.append(value[index])
+            index += 1
+        return "".join(normalized)
