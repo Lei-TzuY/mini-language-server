@@ -334,11 +334,10 @@ class LanguageServer:
                     continue
                 remaining.append(request)
             self._server_requests = remaining
+            self._server_request_cancelled(request_id, method)
 
         if not queued:
             self._queue_notification("$/cancelRequest", {"id": request_id})
-
-        self._server_request_cancelled(request_id, method)
         return True
 
     def _cancel_pending_server_requests(self, method: str) -> tuple[str, ...]:
@@ -361,17 +360,18 @@ class LanguageServer:
             self._server_requests_open = False
             records = tuple(self._pending_server_requests.items())
             queued_ids = frozenset(
-                request_id
+                request["id"]
                 for request in self._server_requests
-                if isinstance((request_id := request.get("id")), str)
+                if isinstance(request.get("id"), str)
             )
             self._pending_server_requests.clear()
             self._server_requests = []
+            for request_id, method in records:
+                self._server_request_cancelled(request_id, method)
 
-        for request_id, method in records:
+        for request_id, _ in records:
             if cancel_remote and request_id not in queued_ids:
                 self._queue_notification("$/cancelRequest", {"id": request_id})
-            self._server_request_cancelled(request_id, method)
         return tuple(request_id for request_id, _ in records)
 
     def _server_request_cancelled(self, request_id: str, method: str) -> None:
@@ -392,14 +392,14 @@ class LanguageServer:
             return
         with self._server_request_lock:
             method = self._pending_server_requests.pop(key, None)
-        if method is None:
-            return
-        self._server_request_completed(
-            key,
-            method,
-            result=message.get("result") if has_result else None,
-            error=error,
-        )
+            if method is None:
+                return
+            self._server_request_completed(
+                key,
+                method,
+                result=message.get("result") if has_result else None,
+                error=error,
+            )
 
     def _server_request_completed(
         self,
