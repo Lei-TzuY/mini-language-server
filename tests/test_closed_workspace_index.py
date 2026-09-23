@@ -320,3 +320,41 @@ def test_product_versioned_rename_uses_null_version_for_closed_file(
         caller_uri: 7,
         library.absolute().as_uri(): None,
     }
+
+def test_product_rename_rejects_stale_closed_file_then_refreshes_index(
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "library.nova"
+    library.write_text("fn target() {}\n", encoding="utf-8")
+    server = NovaProductLanguageServer()
+    initialize_workspace(server, tmp_path, document_changes=True)
+
+    caller_uri = (tmp_path / "main.nova").absolute().as_uri()
+    caller_text = "fn caller() { target() }\n"
+    open_nova(server, caller_uri, caller_text, version=3)
+
+    library.write_text("// changed\nfn target() {}\n", encoding="utf-8")
+    params = {
+        "textDocument": {"uri": caller_uri},
+        "position": call_position(caller_text, "target"),
+        "newName": "renamed",
+    }
+
+    assert server.handle(request("textDocument/rename", 10, params)) == {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+    library_uri = library.absolute().as_uri()
+    refreshed = server.workspace_symbols.get(library_uri)
+    assert refreshed is not None
+    assert refreshed.symbols.syntax.document.text == "// changed\nfn target() {}\n"
+
+    retry = server.handle(request("textDocument/rename", 11, params))
+    assert retry is not None
+    versions = {
+        item["textDocument"]["uri"]: item["textDocument"]["version"]
+        for item in retry["result"]["documentChanges"]
+    }
+    assert versions == {caller_uri: 3, library_uri: None}
