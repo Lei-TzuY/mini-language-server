@@ -28,6 +28,7 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
         super().__init__()
         self._function_completion_snippets = False
         self._completion_insert_replace = False
+        self._completion_list_edit_range = False
 
     def handle(self, message: Any) -> dict[str, Any] | None:
         if (
@@ -41,6 +42,9 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             )
             self._completion_insert_replace = (
                 self._client_supports_completion_insert_replace(params)
+            )
+            self._completion_list_edit_range = (
+                "editRange" in self._client_completion_list_item_defaults(params)
             )
         return super().handle(message)
 
@@ -60,7 +64,7 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
         insert_range = None
         replace_range = None
         if (
-            self._completion_insert_replace
+            (self._completion_insert_replace or self._completion_list_edit_range)
             and semantics is not None
             and offset is not None
             and source is not None
@@ -94,7 +98,27 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
                     item["insertText"] = snippet
                     item["insertTextFormat"] = 2
 
-            if insert_range is not None and replace_range is not None:
+            shared_edit_range: dict[str, Any] | None = None
+            if (
+                self._completion_list_edit_range
+                and insert_range is not None
+                and replace_range is not None
+            ):
+                shared_edit_range = (
+                    {"insert": insert_range, "replace": replace_range}
+                    if self._completion_insert_replace
+                    else replace_range
+                )
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    label = item.get("label")
+                    if not isinstance(label, str):
+                        continue
+                    new_text = item.pop("insertText", None)
+                    if isinstance(new_text, str) and new_text != label:
+                        item["textEditText"] = new_text
+            elif insert_range is not None and replace_range is not None:
                 for item in items:
                     if not isinstance(item, dict):
                         continue
@@ -126,13 +150,22 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
                 item["sortText"] = f"{rank}:{label}"
 
             if prefix:
-                response["result"] = [
+                items = [
                     item
                     for item in items
                     if isinstance(item, dict)
                     and isinstance(item.get("label"), str)
                     and item["label"].startswith(prefix)
                 ]
+
+            if shared_edit_range is not None:
+                response["result"] = {
+                    "isIncomplete": False,
+                    "itemDefaults": {"editRange": shared_edit_range},
+                    "items": items,
+                }
+            else:
+                response["result"] = items
             return response
 
         if semantics is None:
@@ -231,6 +264,33 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
         if detail == "function" or detail.startswith("fn "):
             return _COMPLETION_KIND_FUNCTION, 2
         return None
+
+    @staticmethod
+    def _client_completion_list_item_defaults(params: Any) -> frozenset[str]:
+        """Return CompletionList defaults explicitly supported by the client."""
+        if not isinstance(params, dict):
+            return frozenset()
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return frozenset()
+        text_document = capabilities.get("textDocument")
+        if not isinstance(text_document, dict):
+            return frozenset()
+        completion = text_document.get("completion")
+        if not isinstance(completion, dict):
+            return frozenset()
+        completion_list = completion.get("completionList")
+        if not isinstance(completion_list, dict):
+            return frozenset()
+        defaults = completion_list.get("itemDefaults")
+        if not isinstance(defaults, list):
+            return frozenset()
+        supported = {"editRange"}
+        return frozenset(
+            value
+            for value in defaults
+            if isinstance(value, str) and value in supported
+        )
 
     @staticmethod
     def _client_supports_completion_insert_replace(params: Any) -> bool:
