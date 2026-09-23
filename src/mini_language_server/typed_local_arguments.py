@@ -7,6 +7,7 @@ from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .diagnostics import Diagnostic
+from .local_call_initializers import direct_local_call_initializer
 from .nova import NovaFunctionSyntax
 from .source import SourceText, Span
 from .typed_parameter_arguments import NovaProductLanguageServer as _NovaProductLanguageServer
@@ -16,9 +17,6 @@ _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _LOCAL_INITIALIZER_SUFFIX = re.compile(
     r'\s*=\s*(?P<value>\d+|true\b|false\b|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z0-9_]*)'
     r"\s*(?=\}|let\b|[A-Za-z_][A-Za-z0-9_]*(?:\s*\(|\b)|$)"
-)
-_LOCAL_CALL_INITIALIZER_PREFIX = re.compile(
-    r"\s*=\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\("
 )
 _CLOSED_CALL_RESULT_TYPES = frozenset({"Int", "String", "Bool", "Unit", "UInt"})
 
@@ -147,17 +145,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 functions,
             )
 
-        call = _LOCAL_CALL_INITIALIZER_PREFIX.match(text, target.span.end)
+        call = direct_local_call_initializer(
+            text,
+            self.nova_adapter.code_view(text),
+            target.span.end,
+            self._call_argument_bounds,
+        )
         if call is None:
             return None
-        parsed = self._call_argument_bounds(text, call.end("name"))
-        if parsed is None:
-            return None
-        closing = parsed[1]
-        if not self._closed_initializer_ends_after(text, closing + 1):
-            return None
+        call_name, _ = call
 
-        candidates = functions.get(call.group("name"), [])
+        candidates = functions.get(call_name, [])
         if len(candidates) != 1:
             return None
         candidate_snapshot, candidate_symbol = candidates[0]
@@ -170,32 +168,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if result_type in _CLOSED_CALL_RESULT_TYPES
             else None
         )
-
-    @staticmethod
-    def _closed_initializer_ends_after(text: str, offset: int) -> bool:
-        """Accept only one direct call as the complete detached local initializer."""
-        tail = text[offset:]
-        index = 0
-        while index < len(tail) and tail[index].isspace():
-            index += 1
-        if index >= len(tail):
-            return True
-        if tail[index] == ";":
-            return True
-        if tail[index] == "}":
-            return True
-        if tail.startswith("let", index):
-            after = index + 3
-            return after == len(tail) or not (
-                tail[after].isalnum() or tail[after] == "_"
-            )
-        identifier = _IDENTIFIER.match(tail, index)
-        if identifier is None:
-            return False
-        cursor = identifier.end()
-        while cursor < len(tail) and tail[cursor].isspace():
-            cursor += 1
-        return cursor < len(tail) and tail[cursor] == "("
 
     @staticmethod
     def _argument_type_diagnostic(
