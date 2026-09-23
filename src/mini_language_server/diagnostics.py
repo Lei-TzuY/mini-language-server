@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import RLock
 from typing import TypeVar
 
@@ -25,6 +25,11 @@ class DiagnosticRelatedInformation:
     uri: str
     span: Span
     message: str
+    semantic: SemanticSnapshot | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.uri, str) or not self.uri:
@@ -39,6 +44,16 @@ class DiagnosticRelatedInformation:
             raise DiagnosticError(
                 "diagnostic related-information message must be a non-empty string"
             )
+        if self.semantic is not None:
+            if not isinstance(self.semantic, SemanticSnapshot):
+                raise DiagnosticError(
+                    "diagnostic related-information semantic must be "
+                    "a SemanticSnapshot or None"
+                )
+            if self.semantic.uri != self.uri:
+                raise DiagnosticError(
+                    "diagnostic related-information semantic URI must match its URI"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +120,23 @@ class DiagnosticSnapshot:
     def version(self) -> int:
         return self.semantic.version
 
+    @property
+    def related_semantics(self) -> tuple[SemanticSnapshot, ...]:
+        """Return exact cross-location semantic parents in deterministic URI order."""
+        by_uri: dict[str, SemanticSnapshot] = {}
+        for diagnostic in self.diagnostics:
+            for related in diagnostic.related_information:
+                if related.semantic is None:
+                    continue
+                previous = by_uri.get(related.uri)
+                if previous is not None and previous is not related.semantic:
+                    raise DiagnosticError(
+                        "diagnostic snapshot contains conflicting related semantics"
+                    )
+                by_uri[related.uri] = related.semantic
+        return tuple(by_uri[uri] for uri in sorted(by_uri))
+
+
 
 _T = TypeVar("_T")
 
@@ -118,13 +150,16 @@ class DiagnosticStore:
         self._lock = RLock()
 
     def get(self, uri: str) -> DiagnosticSnapshot | None:
-        """Return diagnostics only when derived from current semantics."""
+        """Return diagnostics only when every exact semantic parent is current."""
         semantic = self._semantic.get(uri)
         with self._lock:
             snapshot = self._snapshots.get(uri)
             if semantic is None or snapshot is None or snapshot.semantic is not semantic:
                 return None
-            return snapshot
+        for related in snapshot.related_semantics:
+            if self._semantic.get(related.uri) is not related:
+                return None
+        return snapshot
 
     def commit_if_current(
         self, snapshot: DiagnosticSnapshot, commit: Callable[[], _T]
@@ -145,8 +180,14 @@ class DiagnosticStore:
                     )
                 return commit()
 
+        semantics = self._unique_semantics(
+            (snapshot.semantic, *snapshot.related_semantics)
+        )
         try:
-            return self._semantic.commit_if_current(snapshot.semantic, guarded_commit)
+            return self._commit_semantics_if_current(
+                semantics,
+                guarded_commit,
+            )
         except SemanticError as exc:
             raise DiagnosticError(
                 f"stale diagnostic snapshot for {snapshot.uri} at version {snapshot.version}"
@@ -167,27 +208,28 @@ class DiagnosticStore:
         if len(set(uris)) != len(uris):
             raise DiagnosticError("snapshot set guard requires unique diagnostic URIs")
 
-        def guard_at(index: int) -> _T:
-            if index == len(materialized):
-                with self._lock:
-                    for snapshot in materialized:
-                        if self._snapshots.get(snapshot.uri) is not snapshot:
-                            raise DiagnosticError(
-                                "stale diagnostic snapshot for "
-                                f"{snapshot.uri} at version {snapshot.version}"
-                            )
-                    return commit()
-            snapshot = materialized[index]
-            try:
-                return self._semantic.commit_if_current(
-                    snapshot.semantic, lambda: guard_at(index + 1)
-                )
-            except SemanticError as exc:
-                raise DiagnosticError(
-                    f"stale diagnostic snapshot for {snapshot.uri} at version {snapshot.version}"
-                ) from exc
+        semantics = self._unique_semantics(
+            tuple(
+                semantic
+                for snapshot in materialized
+                for semantic in (snapshot.semantic, *snapshot.related_semantics)
+            )
+        )
 
-        return guard_at(0)
+        def guarded_commit() -> _T:
+            with self._lock:
+                for snapshot in materialized:
+                    if self._snapshots.get(snapshot.uri) is not snapshot:
+                        raise DiagnosticError(
+                            "stale diagnostic snapshot for "
+                            f"{snapshot.uri} at version {snapshot.version}"
+                        )
+                return commit()
+
+        try:
+            return self._commit_semantics_if_current(semantics, guarded_commit)
+        except SemanticError as exc:
+            raise DiagnosticError("stale diagnostic snapshot set") from exc
 
     def publish(
         self, semantic: SemanticSnapshot, diagnostics: Iterable[Diagnostic]
@@ -204,15 +246,31 @@ class DiagnosticStore:
                     f"{diagnostic.span.end} > {text_length}"
                 )
             for related in diagnostic.related_information:
-                if related.uri != semantic.uri:
-                    raise DiagnosticError(
-                        "diagnostic related information must reference "
-                        "the same semantic URI"
-                    )
-                if related.span.end > text_length:
+                if related.semantic is None:
+                    if related.uri != semantic.uri:
+                        raise DiagnosticError(
+                            "cross-URI diagnostic related information requires "
+                            "an exact semantic snapshot"
+                        )
+                    related_semantic = semantic
+                else:
+                    related_semantic = related.semantic
+                    if related.uri == semantic.uri and related_semantic is not semantic:
+                        raise DiagnosticError(
+                            "same-URI diagnostic related information must reference "
+                            "the primary semantic snapshot"
+                        )
+                    if self._semantic.get(related.uri) is not related_semantic:
+                        raise DiagnosticError(
+                            "diagnostic related-information semantic is stale"
+                        )
+                related_length = len(
+                    related_semantic.symbols.syntax.document.text
+                )
+                if related.span.end > related_length:
                     raise DiagnosticError(
                         f"diagnostic related-information span is outside "
-                        f"{semantic.uri}: {related.span.end} > {text_length}"
+                        f"{related.uri}: {related.span.end} > {related_length}"
                     )
 
         ordered = tuple(
@@ -245,12 +303,48 @@ class DiagnosticStore:
                 self._snapshots[semantic.uri] = snapshot
             return snapshot
 
+        semantics = self._unique_semantics(
+            (semantic, *snapshot.related_semantics)
+        )
         try:
-            return self._semantic.commit_if_current(semantic, commit)
+            return self._commit_semantics_if_current(semantics, commit)
         except SemanticError as exc:
             raise DiagnosticError(
                 f"stale diagnostic result for {semantic.uri} at version {semantic.version}"
             ) from exc
+
+    @staticmethod
+    def _unique_semantics(
+        semantics: tuple[SemanticSnapshot, ...],
+    ) -> tuple[SemanticSnapshot, ...]:
+        """Deduplicate exact semantic parents and reject conflicting URI identities."""
+        by_uri: dict[str, SemanticSnapshot] = {}
+        for semantic in semantics:
+            previous = by_uri.get(semantic.uri)
+            if previous is not None and previous is not semantic:
+                raise DiagnosticError(
+                    "diagnostic semantic parents contain conflicting URI identities"
+                )
+            by_uri[semantic.uri] = semantic
+        return tuple(by_uri[uri] for uri in sorted(by_uri))
+
+    def _commit_semantics_if_current(
+        self,
+        semantics: tuple[SemanticSnapshot, ...],
+        commit: Callable[[], _T],
+    ) -> _T:
+        """Run one callback while every semantic parent remains exact-current."""
+
+        def guard_at(index: int) -> _T:
+            if index == len(semantics):
+                return commit()
+            semantic = semantics[index]
+            return self._semantic.commit_if_current(
+                semantic,
+                lambda: guard_at(index + 1),
+            )
+
+        return guard_at(0)
 
     def discard(self, uri: str) -> DiagnosticSnapshot | None:
         """Discard any cached diagnostic snapshot for *uri*, current or stale."""
