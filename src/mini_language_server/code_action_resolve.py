@@ -30,9 +30,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         self._code_action_resolve_edit = False
         self._code_action_resolve_next = 1
         self._code_action_resolve_records: dict[int, _CodeActionResolveRecord] = {}
-        self._closed_code_action_resolve_ownership: dict[
+        self._code_action_resolve_ownership: dict[
             str | int,
-            tuple[Any, int],
+            tuple[DiagnosticSnapshot | None, Any, int | None],
         ] = {}
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
@@ -74,6 +74,26 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         return super().handle(message)
 
+    def _capture_live_code_action_resolve_ownership(
+        self,
+        request_id: Any,
+        diagnostic: Any,
+        workspace_snapshots: Any,
+    ) -> None:
+        """Capture live ownership exactly when the eager action wins commit."""
+        if (
+            not self._code_action_resolve_edit
+            or not isinstance(diagnostic, DiagnosticSnapshot)
+            or isinstance(request_id, bool)
+            or not isinstance(request_id, str | int)
+        ):
+            return
+        self._code_action_resolve_ownership[request_id] = (
+            diagnostic,
+            workspace_snapshots,
+            None,
+        )
+
     def _capture_closed_code_action_resolve_ownership(
         self,
         request_id: Any,
@@ -87,7 +107,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             or not isinstance(request_id, str | int)
         ):
             return
-        self._closed_code_action_resolve_ownership[request_id] = (
+        self._code_action_resolve_ownership[request_id] = (
+            None,
             workspace_snapshots,
             folder_generation,
         )
@@ -100,46 +121,41 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             else None
         )
         if request_key is not None:
-            self._closed_code_action_resolve_ownership.pop(request_key, None)
-
-        params = message.get("params")
-        uri = self._document_uri(params)
-        snapshot = self.diagnostics.get(uri) if uri is not None else None
-        snapshots = self.workspace_symbols.snapshots()
+            self._code_action_resolve_ownership.pop(request_key, None)
 
         response = super().handle(message)
-        closed_ownership = (
-            self._closed_code_action_resolve_ownership.pop(request_key, None)
+        ownership = (
+            self._code_action_resolve_ownership.pop(request_key, None)
             if request_key is not None
             else None
         )
         if response is None or not isinstance(response.get("result"), list):
             return response
+        if ownership is None:
+            return response
 
-        if snapshot is not None:
+        diagnostic, workspace_snapshots, folder_generation = ownership
+        if diagnostic is not None:
             def enrich_live() -> dict[str, Any]:
                 return self._defer_code_action_edits(
                     response,
-                    diagnostic=snapshot,
-                    workspace=snapshots,
+                    diagnostic=diagnostic,
+                    workspace=workspace_snapshots,
                     folder_generation=None,
                 )
 
             try:
                 return self.diagnostics.commit_if_current(
-                    snapshot,
+                    diagnostic,
                     lambda: self.workspace_symbols.commit_snapshots_if_current(
-                        snapshots,
+                        workspace_snapshots,
                         enrich_live,
                     ),
                 )
             except (DiagnosticError, WorkspaceIndexError):
                 return self._error(request_id, -32801, "Content modified")
 
-        if closed_ownership is None:
-            return response
-
-        workspace_snapshots, folder_generation = closed_ownership
+        assert folder_generation is not None
         captured_semantics = tuple(workspace_snapshots)
         if not self._closed_workspace_snapshots_current(captured_semantics):
             self._refresh_closed_workspace_files()
