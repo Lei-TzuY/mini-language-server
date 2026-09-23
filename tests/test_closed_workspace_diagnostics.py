@@ -1621,3 +1621,194 @@ def test_closed_text_document_pull_honors_cancellation(
         "id": 41,
         "error": {"code": -32800, "message": "Request cancelled"},
     }
+
+def test_closed_document_pull_returns_closed_related_documents(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "a.nova"
+    second = tmp_path / "b.nova"
+    caller = tmp_path / "main.nova"
+    first.write_text("fn target() { missing(); }\n", encoding="utf-8")
+    second.write_text("fn target() {}\n", encoding="utf-8")
+    caller.write_text("fn main() { target(); }\n", encoding="utf-8")
+    server = initialized_server(tmp_path, related_information=True)
+
+    response = server.handle(
+        request(
+            "textDocument/diagnostic",
+            50,
+            {"textDocument": {"uri": caller.absolute().as_uri()}},
+        )
+    )
+    assert response is not None
+    report = response["result"]
+    related = report["relatedDocuments"]
+    first_uri = first.absolute().as_uri()
+    second_uri = second.absolute().as_uri()
+    assert list(related) == [first_uri, second_uri]
+    assert related[first_uri]["kind"] == "full"
+    assert related[first_uri]["resultId"].startswith("null:")
+    assert [item["code"] for item in related[first_uri]["items"]] == [
+        "nova.unresolved-function"
+    ]
+    assert related[second_uri]["kind"] == "full"
+    assert related[second_uri]["resultId"].startswith("null:")
+    assert related[second_uri]["items"] == []
+
+
+def test_closed_document_pull_streams_related_documents(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "a.nova"
+    second = tmp_path / "b.nova"
+    caller = tmp_path / "main.nova"
+    first.write_text("fn target() {}\n", encoding="utf-8")
+    second.write_text("fn target() {}\n", encoding="utf-8")
+    caller.write_text("fn main() { target(); }\n", encoding="utf-8")
+    server = initialized_server(tmp_path, related_information=True)
+    server.drain_notifications()
+
+    response = server.handle(
+        request(
+            "textDocument/diagnostic",
+            51,
+            {
+                "textDocument": {"uri": caller.absolute().as_uri()},
+                "partialResultToken": "closed-related",
+            },
+        )
+    )
+    assert response is not None
+    assert response["result"]["kind"] == "full"
+    assert "relatedDocuments" not in response["result"]
+
+    progress = [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ]
+    assert len(progress) == 1
+    assert progress[0]["params"]["token"] == "closed-related"
+    related = progress[0]["params"]["value"]["relatedDocuments"]
+    assert list(related) == [
+        first.absolute().as_uri(),
+        second.absolute().as_uri(),
+    ]
+    assert all(item["kind"] == "full" for item in related.values())
+
+
+def test_closed_document_pull_supports_mixed_open_closed_related_documents(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "a.nova"
+    second = tmp_path / "b.nova"
+    caller = tmp_path / "main.nova"
+    first.write_text("fn target() {}\n", encoding="utf-8")
+    second.write_text("fn target() {}\n", encoding="utf-8")
+    caller.write_text("fn main() { target(); }\n", encoding="utf-8")
+    server = initialized_server(tmp_path, related_information=True)
+    first_uri = first.absolute().as_uri()
+    second_uri = second.absolute().as_uri()
+    caller_uri = caller.absolute().as_uri()
+
+    server.handle(
+        notify(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": first_uri,
+                    "languageId": "nova",
+                    "version": 1,
+                    "text": "fn target() { missing_open(); }\n",
+                }
+            },
+        )
+    )
+
+    response = server.handle(
+        request(
+            "textDocument/diagnostic",
+            52,
+            {"textDocument": {"uri": caller_uri}},
+        )
+    )
+    assert response is not None
+    related = response["result"]["relatedDocuments"]
+    assert related[first_uri]["resultId"].startswith("1:")
+    assert [item["code"] for item in related[first_uri]["items"]] == [
+        "nova.unresolved-function"
+    ]
+    assert related[second_uri]["resultId"].startswith("null:")
+    assert related[second_uri]["items"] == []
+
+
+def test_closed_document_pull_rejects_open_related_document_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "a.nova"
+    second = tmp_path / "b.nova"
+    caller = tmp_path / "main.nova"
+    first.write_text("fn target() {}\n", encoding="utf-8")
+    second.write_text("fn target() {}\n", encoding="utf-8")
+    caller.write_text("fn main() { target(); }\n", encoding="utf-8")
+    server = initialized_server(tmp_path, related_information=True)
+    first_uri = first.absolute().as_uri()
+    caller_uri = caller.absolute().as_uri()
+
+    server.handle(
+        notify(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": first_uri,
+                    "languageId": "nova",
+                    "version": 1,
+                    "text": "fn target() {}\n",
+                }
+            },
+        )
+    )
+    server.drain_notifications()
+    original_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def replace_before_commit(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        original_checkpoint(context)
+        if calls == 2:
+            server.handle(
+                notify(
+                    "textDocument/didChange",
+                    {
+                        "textDocument": {"uri": first_uri, "version": 2},
+                        "contentChanges": [
+                            {"text": "fn target(value: Int) {}\n"}
+                        ],
+                    },
+                )
+            )
+
+    monkeypatch.setattr(
+        server.requests,
+        "checkpoint",
+        replace_before_commit,
+    )
+
+    assert server.handle(
+        request(
+            "textDocument/diagnostic",
+            53,
+            {"textDocument": {"uri": caller_uri}},
+        )
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 53,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert [
+        item
+        for item in server.drain_notifications()
+        if item.get("method") == "$/progress"
+    ] == []
