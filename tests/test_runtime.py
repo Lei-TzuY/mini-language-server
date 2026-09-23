@@ -1361,3 +1361,170 @@ def test_runtime_wakes_outbound_server_request_created_by_active_worker() -> Non
         "worker-finished",
     ]
     assert server._server_request_outbox_wakeup is None
+
+class FailingWriteBytesIO(BytesIO):
+    def __init__(self, fail_on_write: int) -> None:
+        super().__init__()
+        self._fail_on_write = fail_on_write
+        self._write_count = 0
+
+    def write(self, data: bytes) -> int:
+        self._write_count += 1
+        if self._write_count == self._fail_on_write:
+            raise OSError("stdout write failed")
+        return super().write(data)
+
+
+class FailingFlushBytesIO(BytesIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self._failed = False
+
+    def flush(self) -> None:
+        if not self._failed:
+            self._failed = True
+            raise OSError("stdout flush failed")
+        super().flush()
+
+
+def test_stdout_write_error_fails_closed_without_active_worker() -> None:
+    server = LanguageServer()
+    output_stream = FailingWriteBytesIO(fail_on_write=1)
+
+    assert run_session(
+        BytesIO(framed(initialize())),
+        output_stream,
+        server=server,
+    ) == 1
+
+    assert len(server.requests) == 0
+    assert server.drain_server_requests() == []
+    server._queue_notification("test/late", {"value": 1})
+    assert server.drain_notifications() == []
+    assert server._server_request_outbox_wakeup is None
+
+
+def test_stdout_flush_error_fails_closed_without_active_worker() -> None:
+    server = LanguageServer()
+    output_stream = FailingFlushBytesIO()
+
+    assert run_session(
+        BytesIO(framed(initialize())),
+        output_stream,
+        server=server,
+    ) == 1
+
+    assert len(server.requests) == 0
+    assert server.drain_server_requests() == []
+    server._queue_notification("test/late", {"value": 1})
+    assert server.drain_notifications() == []
+    assert server._server_request_outbox_wakeup is None
+
+
+class OutputAbortDependencyServer(LanguageServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.server_request_retired = Event()
+        self.transport_aborted = Event()
+        self.dependency_request_id: str | None = None
+        self.events: list[str] = []
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/output-dependency"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            context = self.requests.start(message["id"])
+            try:
+                self.events.append("worker-started")
+
+                def own_request(request_id: str) -> None:
+                    self.dependency_request_id = request_id
+                    self.events.append("server-request-owned")
+
+                self._queue_server_request(
+                    "test/output-dependency-request",
+                    {"value": "needed"},
+                    on_queued=own_request,
+                )
+                self.events.append("worker-waiting")
+                assert self.server_request_retired.wait(timeout=5)
+                self.events.append("worker-observed-retirement")
+                self.requests.checkpoint(context)
+                raise AssertionError("output abort did not cancel active worker")
+            except RequestCancelled:
+                self.events.append("worker-cancelled")
+                return self._error(
+                    message["id"],
+                    -32800,
+                    "Request cancelled",
+                )
+            finally:
+                self.requests.finish(context)
+
+        if message.get("method") == "test/post-output-failure":
+            self.events.append("post-output-failure-dispatched")
+            return None
+
+        return super().handle(message)
+
+    def abort_transport(
+        self, *, active_request_id: str | int | None = None
+    ) -> None:
+        self.events.append("transport-abort")
+        super().abort_transport(active_request_id=active_request_id)
+        self.transport_aborted.set()
+
+    def _server_request_cancelled(self, request_id: str, method: str) -> None:
+        super()._server_request_cancelled(request_id, method)
+        if request_id != self.dependency_request_id:
+            return
+        assert method == "test/output-dependency-request"
+        self.events.append("server-request-retired")
+        self.server_request_retired.set()
+
+
+def test_stdout_failure_retires_worker_created_server_request() -> None:
+    server = OutputAbortDependencyServer()
+    first = framed(
+        initialize(),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "test/output-dependency",
+            "params": {},
+        },
+    )
+    tail = framed(
+        {
+            "jsonrpc": "2.0",
+            "method": "test/post-output-failure",
+            "params": {},
+        }
+    )
+    input_stream = GatedBytesIO(
+        first + tail,
+        gate_offset=len(first),
+        gate=server.transport_aborted,
+    )
+    output_stream = FailingWriteBytesIO(fail_on_write=2)
+
+    assert run_session(input_stream, output_stream, server=server) == 1
+
+    messages = decoded(output_stream.getvalue())
+    assert [message.get("id") for message in messages] == [1]
+    assert server.events[:3] == [
+        "worker-started",
+        "server-request-owned",
+        "worker-waiting",
+    ]
+    assert "transport-abort" in server.events
+    assert "server-request-retired" in server.events
+    assert "worker-observed-retirement" in server.events
+    assert "worker-cancelled" in server.events
+    assert "post-output-failure-dispatched" not in server.events
+    assert len(server.requests) == 0
+    assert server.drain_server_requests() == []
+    assert server.drain_notifications() == []
+    assert server._server_request_outbox_wakeup is None
