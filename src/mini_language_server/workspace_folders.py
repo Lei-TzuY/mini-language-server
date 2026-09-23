@@ -63,6 +63,24 @@ class WorkspaceFolderSnapshot:
             for folder in self.folders
         )
 
+    def scope_uri_for(self, uri: str) -> str | None:
+        """Return the most specific captured workspace folder containing the URI."""
+        if not self.scoped:
+            return None
+        matches = [
+            folder.uri
+            for folder in self.folders
+            if WorkspaceFolderSet._contains(folder.uri, uri)
+        ]
+        if not matches:
+            return None
+        return max(
+            matches,
+            key=lambda folder_uri: len(
+                WorkspaceFolderSet._normalized_path(folder_uri).rstrip("/")
+            ),
+        )
+
 
 class WorkspaceFolderSet:
     """Track one session workspace-folder scope.
@@ -172,20 +190,7 @@ class WorkspaceFolderSet:
 
     def scope_uri_for(self, uri: str) -> str | None:
         """Return the most specific configured workspace folder containing the URI."""
-        with self._lock:
-            if self._folders is None:
-                return None
-            folders = tuple(self._folders.values())
-
-        matches = [folder.uri for folder in folders if self._contains(folder.uri, uri)]
-        if not matches:
-            return None
-        return max(
-            matches,
-            key=lambda folder_uri: len(
-                self._normalized_path(folder_uri).rstrip("/")
-            ),
-        )
+        return self.snapshot().scope_uri_for(uri)
 
     def commit_if_current(self, generation: int, callback):
         """Run a derived workspace publication only while folder scope is unchanged."""
