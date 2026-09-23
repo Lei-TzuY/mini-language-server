@@ -30,9 +30,12 @@ def initialized_server(
     did_create: bool = False,
     did_delete: bool = False,
     related_information: bool = False,
+    refresh_support: bool = False,
 ) -> NovaProductLanguageServer:
     server = NovaProductLanguageServer()
     workspace: dict[str, Any] = {"workspaceFolders": True}
+    if refresh_support:
+        workspace["diagnostics"] = {"refreshSupport": True}
     file_operations: dict[str, bool] = {}
     if did_create:
         file_operations["didCreate"] = True
@@ -304,3 +307,27 @@ def test_closed_pull_does_not_expose_unvalidated_unresolved_name_policy(
         item["code"] != "nova.unresolved-name"
         for item in report["items"]
     )
+
+def test_closed_file_create_requests_workspace_diagnostic_refresh(
+    tmp_path: Path,
+) -> None:
+    server = initialized_server(
+        tmp_path,
+        did_create=True,
+        refresh_support=True,
+    )
+    assert server.drain_server_requests() == []
+
+    source = tmp_path / "created.nova"
+    source.write_text("fn caller() { missing(); }\n", encoding="utf-8")
+    uri = source.absolute().as_uri()
+    server.handle(
+        notify(
+            "workspace/didCreateFiles",
+            {"files": [{"uri": uri}]},
+        )
+    )
+
+    queued = server.drain_server_requests()
+    assert len(queued) == 1
+    assert queued[0]["method"] == "workspace/diagnostic/refresh"
