@@ -841,3 +841,98 @@ def test_shutdown_retracts_unsent_dynamic_registration_and_configuration() -> No
     ) is None
     assert server._formatting_configuration_registration_active is False
     assert server._formatting_configurations[None] == (4, True)
+
+
+def test_will_save_rejects_configuration_generation_change_during_formatting(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(server, configuration=True)
+    server.handle(notify("initialized", {}))
+    server.drain_server_requests()
+    uri = "file:///workspace/main.nova"
+    open_nova(server, uri, "fn main() {\nreturn 1\n}\n")
+    real_format = server._format_nova_document
+
+    def change_configuration_during_format(
+        text: str,
+        *,
+        tab_size: int,
+        insert_spaces: bool,
+    ) -> str:
+        server.handle(
+            notify(
+                "workspace/didChangeConfiguration",
+                {"settings": {"ignored": True}},
+            )
+        )
+        return real_format(
+            text,
+            tab_size=tab_size,
+            insert_spaces=insert_spaces,
+        )
+
+    monkeypatch.setattr(
+        server,
+        "_format_nova_document",
+        change_configuration_during_format,
+    )
+
+    assert will_save(server, uri, 70) == {
+        "jsonrpc": "2.0",
+        "id": 70,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+
+def test_will_save_rejects_workspace_scope_change_during_formatting(
+    monkeypatch: Any,
+) -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        configuration=True,
+        workspace_folders=[{"uri": "file:///workspace/a", "name": "a"}],
+    )
+    server.handle(notify("initialized", {}))
+    server.drain_server_requests()
+    uri = "file:///workspace/a/main.nova"
+    open_nova(server, uri, "fn main() {\nreturn 1\n}\n")
+    real_format = server._format_nova_document
+
+    def change_workspace_during_format(
+        text: str,
+        *,
+        tab_size: int,
+        insert_spaces: bool,
+    ) -> str:
+        server.handle(
+            notify(
+                "workspace/didChangeWorkspaceFolders",
+                {
+                    "event": {
+                        "added": [
+                            {"uri": "file:///workspace/b", "name": "b"},
+                        ],
+                        "removed": [],
+                    }
+                },
+            )
+        )
+        return real_format(
+            text,
+            tab_size=tab_size,
+            insert_spaces=insert_spaces,
+        )
+
+    monkeypatch.setattr(
+        server,
+        "_format_nova_document",
+        change_workspace_during_format,
+    )
+
+    assert will_save(server, uri, 71) == {
+        "jsonrpc": "2.0",
+        "id": 71,
+        "error": {"code": -32801, "message": "Content modified"},
+    }

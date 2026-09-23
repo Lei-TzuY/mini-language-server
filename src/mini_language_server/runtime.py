@@ -96,6 +96,7 @@ def _is_live_snapshot_mutation(message: dict[str, Any]) -> bool:
             "textDocument/didChange",
             "textDocument/didClose",
             "workspace/didChangeWorkspaceFolders",
+            "workspace/didChangeConfiguration",
         }
     )
 
@@ -127,12 +128,13 @@ def run_session(
     """Run one stdio session with one request worker and live document mutation.
 
     Framing stays on one background reader. At most one ordinary client request executes
-    on a request worker. While that request is active, document lifecycle mutations and
-    workspace-folder scope changes may advance on the foreground dispatcher; all other
-    ordinary inbound client requests and lifecycle/configuration traffic remain deferred
-    in FIFO order. Live snapshot mutations may overtake queued requests while the active
-    request runs, so exact document and workspace guards can observe transport-time
-    changes without introducing parallel client-request execution.
+    on a request worker. While that request is active, document lifecycle mutations,
+    workspace-folder scope changes, and formatting-configuration invalidation may advance
+    on the foreground dispatcher; all other ordinary inbound client requests and
+    lifecycle traffic remain deferred in FIFO order. Live snapshot/configuration
+    mutations may overtake queued requests while the active request runs, so exact
+    document, workspace, and save-formatting guards can observe transport-time changes
+    without introducing parallel client-request execution.
     """
     active_server = server if server is not None else NovaProductLanguageServer()
     reader = MessageReader(input_stream)

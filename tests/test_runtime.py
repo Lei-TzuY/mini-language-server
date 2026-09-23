@@ -6,7 +6,13 @@ from typing import Any
 
 import pytest
 
-from mini_language_server import LanguageServer, MessageReader, ServerState, encode_message
+from mini_language_server import (
+    LanguageServer,
+    MessageReader,
+    NovaProductLanguageServer,
+    ServerState,
+    encode_message,
+)
 from mini_language_server.cancellation import RequestCancelled, StaleRequest
 from mini_language_server.runtime import run_session
 from mini_language_server.workspace_folders import WorkspaceFolderError
@@ -619,3 +625,130 @@ def test_runtime_dispatches_workspace_folder_change_while_request_is_active() ->
         "workspace-stale",
         "after-workspace",
     ]
+
+
+class LiveFormattingConfigurationServer(NovaProductLanguageServer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.changed = Event()
+        self.events: list[str] = []
+
+    def _format_nova_document(
+        self,
+        text: str,
+        *,
+        tab_size: int,
+        insert_spaces: bool,
+    ) -> str:
+        self.events.append("format-start")
+        self.entered.set()
+        assert self.changed.wait(timeout=5)
+        return super()._format_nova_document(
+            text,
+            tab_size=tab_size,
+            insert_spaces=insert_spaces,
+        )
+
+    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if (
+            message.get("method") == "test/after-format"
+            and "id" in message
+            and self.state is ServerState.RUNNING
+        ):
+            self.events.append("after-format")
+            return self._result(message["id"], {"ok": True})
+
+        response = super().handle(message)
+        if message.get("method") == "workspace/didChangeConfiguration":
+            self.events.append("configuration-change")
+            self.changed.set()
+        return response
+
+
+def formatting_runtime_initialize(request_id: int = 1) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "initialize",
+        "params": {
+            "capabilities": {
+                "textDocument": {
+                    "synchronization": {"willSaveWaitUntil": True},
+                },
+                "workspace": {"configuration": True},
+            }
+        },
+    }
+
+
+def did_change_configuration() -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "method": "workspace/didChangeConfiguration",
+        "params": {"settings": {"ignored": True}},
+    }
+
+
+def test_runtime_dispatches_configuration_change_while_save_request_is_active() -> None:
+    uri = "file:///workspace/main.nova"
+    server = LiveFormattingConfigurationServer()
+    first = framed(
+        formatting_runtime_initialize(),
+        {"jsonrpc": "2.0", "method": "initialized", "params": {}},
+        open_notification(
+            uri,
+            version=1,
+            text="fn main() {\nreturn 1\n}\n",
+        ),
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/willSaveWaitUntil",
+            "params": {"textDocument": {"uri": uri}, "reason": 1},
+        },
+    )
+    tail = framed(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "test/after-format",
+            "params": {},
+        },
+        did_change_configuration(),
+        shutdown(4),
+        exit_notification(),
+    )
+    input_stream = GatedBytesIO(
+        first + tail,
+        gate_offset=len(first),
+        gate=server.entered,
+    )
+    output_stream = BytesIO()
+
+    assert run_session(input_stream, output_stream, server=server) == 0
+
+    messages = decoded(output_stream.getvalue())
+    stale = next(message for message in messages if message.get("id") == 2)
+    assert stale == {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert server.events == [
+        "format-start",
+        "configuration-change",
+        "after-format",
+    ]
+
+    server_requests = [
+        message
+        for message in messages
+        if message.get("method") == "workspace/configuration"
+    ]
+    assert [message["id"] for message in server_requests] == ["server:1", "server:2"]
+    assert any(
+        message.get("method") == "$/cancelRequest"
+        and message.get("params") == {"id": "server:1"}
+        for message in messages
+    )

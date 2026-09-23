@@ -27,7 +27,7 @@ A `null` item resets that scope to the built-in default of four spaces. Missing 
 
 ## Save-time lookup
 
-`textDocument/willSaveWaitUntil` selects formatting settings from the most specific workspace folder containing the document URI. Nested folders can therefore override a parent folder. An open document outside every configured folder uses the global fallback. Sessions without workspace-folder scoping also use the global fallback.
+`textDocument/willSaveWaitUntil` captures the current workspace-folder generation and formatting-configuration generation before selecting settings from the most specific workspace folder containing the document URI. Nested folders can therefore override a parent folder. An open document outside every configured folder uses the global fallback. Sessions without workspace-folder scoping also use the global fallback. Before publishing edits, the request atomically revalidates its exact semantic snapshot, workspace-folder generation, and formatting-configuration generation; any intervening scope or configuration invalidation returns LSP `Content modified` rather than publishing edits derived from stale settings.
 
 Manual document/range/on-type formatting continues to use the per-request LSP `FormattingOptions` supplied by the editor; workspace configuration only controls save-time formatting.
 
@@ -44,3 +44,5 @@ A valid response is applied only when both its generation and its captured order
 Clients that do not advertise `workspace.configuration` receive no configuration request and keep deterministic four-space save formatting.
 
 The generic server-to-client request substrate validates and retires the JSON-RPC response before exposing its payload to this consumer. Unknown IDs, mixed result/error responses, and malformed error responses never reach configuration logic.
+
+The formatting configuration cache and generation are lock-backed because the stdio runtime may now deliver workspace-folder or `workspace/didChangeConfiguration` invalidation while one `willSaveWaitUntil` request is executing on the single request worker. Server-to-client configuration responses remain serialized on the foreground dispatcher; live invalidation can retire an already-delivered obsolete request and queue the newest generation without racing the worker's configuration read.
