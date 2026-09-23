@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import RLock
-from urllib import parse
+from urllib.parse import urlsplit
 
 
 _UNRESERVED = frozenset(
@@ -226,8 +226,8 @@ class WorkspaceFolderSet:
     @staticmethod
     def _contains(folder_uri: str, document_uri: str) -> bool:
         try:
-            folder = parse.urlsplit(folder_uri)
-            document = parse.urlsplit(document_uri)
+            folder = urlsplit(folder_uri)
+            document = urlsplit(document_uri)
         except ValueError:
             return False
         if (
@@ -254,7 +254,7 @@ class WorkspaceFolderSet:
     def _folder_identity(uri: str) -> tuple[str, str, str, str, str]:
         """Return one RFC-safe identity key while preserving the original URI."""
         try:
-            parsed = parse.urlsplit(uri)
+            parsed = urlsplit(uri)
         except ValueError:
             return ("__invalid__", uri, "", "", "")
         normalized_path = WorkspaceFolderSet._normalize_percent_encoding(
