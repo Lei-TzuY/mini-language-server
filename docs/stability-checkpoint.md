@@ -17,7 +17,7 @@ The checkpoint covers:
 9. request cancellation
 10. tracked server-to-client JSON-RPC requests, dynamic capability registration, coalesced negotiated workspace refresh lifecycles, standard `$/progress` partial-result and negotiated work-done lifecycles, response retirement, and validated consumer response delivery
 11. workspace-folder scope generations for cross-file tooling
-12. stale-result suppression across concurrent document, semantic, and workspace-scope replacement
+12. stale-result suppression across concurrent document, semantic, workspace-scope, and workspace-dependent semantic-token delta publication
 
 The core invariant is generational identity: a derived result is valid only while the exact parent snapshot that produced it remains current. Structural equality or a matching numeric document version is not enough. Workspace-wide derived results that capture a complete semantic or scoped open-document workspace must also reject publication when a relevant URI is added, removed, or leaves/re-enters workspace-folder scope after capture, even if every previously captured snapshot object remains current. Scoped queries may ignore mutations to documents that were outside the captured scope.
 
