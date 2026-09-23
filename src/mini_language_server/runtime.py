@@ -9,6 +9,7 @@ from queue import Empty, Queue
 from threading import Lock, Thread
 from typing import Any, BinaryIO
 
+from .cancellation import RequestCancelled
 from .completion_pipeline import NovaProductLanguageServer
 from .protocol import FramingError, MessageReader, encode_message
 from .server import LanguageServer, ServerState
@@ -145,6 +146,7 @@ def run_session(
     pending_lock = Lock()
     active_request_thread: Thread | None = None
     active_request_id: str | int | None = None
+    transport_failed = False
 
     def read_inbound() -> None:
         while True:
@@ -227,6 +229,14 @@ def run_session(
             active_request_thread.join()
             active_request_thread = None
             active_request_id = None
+            if transport_failed:
+                if (
+                    item.error is not None
+                    and not isinstance(item.error, RequestCancelled)
+                ):
+                    raise item.error
+                reader_thread.join()
+                return 1
             replay_controls()
             if item.error is not None:
                 raise item.error
@@ -238,13 +248,13 @@ def run_session(
 
         if item is _TRANSPORT_FAILURE:
             if active_request_thread is not None:
-                deferred.append(item)
+                assert active_request_id is not None
+                active_server.abort_transport(
+                    active_request_id=active_request_id,
+                )
+                transport_failed = True
                 continue
-            replay_controls()
-            _write_batch(
-                output_stream,
-                _drain_after_dispatch(active_server, None),
-            )
+            active_server.abort_transport()
             reader_thread.join()
             return 1
 
