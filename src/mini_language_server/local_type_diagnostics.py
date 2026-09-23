@@ -124,6 +124,38 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         end = offset + len(keyword)
         return end == len(code) or not (code[end].isalnum() or code[end] == "_")
 
+    def _closed_nova_code_actions(
+        self,
+        uri: str,
+        document: Any,
+        source: Any,
+        diagnostics: tuple[Diagnostic, ...],
+        start_offset: int,
+        end_offset: int,
+    ) -> list[dict[str, Any]]:
+        """Add detached explicit-local repairs from captured diagnostic evidence."""
+        actions = super()._closed_nova_code_actions(
+            uri,
+            document,
+            source,
+            diagnostics,
+            start_offset,
+            end_offset,
+        )
+        for diagnostic in diagnostics:
+            if diagnostic.code != _LOCAL_TYPE_DIAGNOSTIC:
+                continue
+            if not self._local_type_diagnostic_overlaps(
+                diagnostic,
+                start_offset=start_offset,
+                end_offset=end_offset,
+            ):
+                continue
+            action = self._local_type_quick_fix(uri, source, diagnostic)
+            if action is not None:
+                actions.append(action)
+        return actions
+
     def _nova_code_actions(
         self,
         uri: str,
@@ -147,33 +179,40 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 diagnostic, start_offset=start_offset, end_offset=end_offset
             ):
                 continue
-            match = _LOCAL_TYPE_MESSAGE.fullmatch(diagnostic.message)
-            if match is None:
-                continue
-            expected_type = match.group(1)
-            replacement = _DEFAULT_LITERAL_BY_TYPE.get(expected_type)
-            if replacement is None:
-                continue
-            actions.append(
-                {
-                    "title": (
-                        f"Replace local initializer with {expected_type} literal"
-                    ),
-                    "kind": "quickfix",
-                    "diagnostics": [self._diagnostic(source, diagnostic)],
-                    "edit": {
-                        "changes": {
-                            uri: [
-                                {
-                                    "range": self._range(source, diagnostic.span),
-                                    "newText": replacement,
-                                }
-                            ]
-                        }
-                    },
-                }
-            )
+            action = self._local_type_quick_fix(uri, source, diagnostic)
+            if action is not None:
+                actions.append(action)
         return actions
+
+    def _local_type_quick_fix(
+        self,
+        uri: str,
+        source: Any,
+        diagnostic: Diagnostic,
+    ) -> dict[str, Any] | None:
+        """Build one local-type replacement from captured diagnostic evidence."""
+        match = _LOCAL_TYPE_MESSAGE.fullmatch(diagnostic.message)
+        if match is None:
+            return None
+        expected_type = match.group(1)
+        replacement = _DEFAULT_LITERAL_BY_TYPE.get(expected_type)
+        if replacement is None:
+            return None
+        return {
+            "title": f"Replace local initializer with {expected_type} literal",
+            "kind": "quickfix",
+            "diagnostics": [self._diagnostic(source, diagnostic)],
+            "edit": {
+                "changes": {
+                    uri: [
+                        {
+                            "range": self._range(source, diagnostic.span),
+                            "newText": replacement,
+                        }
+                    ]
+                }
+            },
+        }
 
     @staticmethod
     def _local_type_diagnostic_overlaps(
