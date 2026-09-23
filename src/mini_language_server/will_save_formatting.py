@@ -12,6 +12,9 @@ from .source import Span
 _DEFAULT_FORMATTING_TAB_SIZE = 4
 _DEFAULT_FORMATTING_INSERT_SPACES = True
 _FORMATTING_CONFIGURATION_SECTION = "mini-language-server.formatting"
+_FORMATTING_CONFIGURATION_REGISTRATION_ID = (
+    "mini-language-server.formatting.didChangeConfiguration"
+)
 
 
 class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
@@ -20,6 +23,10 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
     def __init__(self) -> None:
         super().__init__()
         self._workspace_configuration_support = False
+        self._did_change_configuration_dynamic_registration = False
+        self._formatting_configuration_registration_attempted = False
+        self._formatting_configuration_registration_request: str | None = None
+        self._formatting_configuration_registration_active = False
         self._formatting_configurations: dict[
             str | None, tuple[int, bool]
         ] = {
@@ -36,13 +43,18 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
         if method == "initialize" and self.state is ServerState.PRE_INITIALIZE:
+            params = message.get("params")
             self._workspace_configuration_support = (
-                self._client_supports_workspace_configuration(message.get("params"))
+                self._client_supports_workspace_configuration(params)
+            )
+            self._did_change_configuration_dynamic_registration = (
+                self._client_supports_dynamic_configuration_registration(params)
             )
 
         if method == "initialized" and self.state is ServerState.RUNNING:
             result = super().handle(message)
             if self._workspace_configuration_support:
+                self._queue_formatting_configuration_registration()
                 self._invalidate_formatting_configuration()
             return result
 
@@ -90,6 +102,46 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
             isinstance(workspace, dict)
             and workspace.get("configuration") is True
         )
+
+    @staticmethod
+    def _client_supports_dynamic_configuration_registration(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        configuration = workspace.get("didChangeConfiguration")
+        return (
+            isinstance(configuration, dict)
+            and configuration.get("dynamicRegistration") is True
+        )
+
+    def _queue_formatting_configuration_registration(self) -> None:
+        if (
+            not self._workspace_configuration_support
+            or not self._did_change_configuration_dynamic_registration
+            or self._formatting_configuration_registration_attempted
+        ):
+            return
+        self._formatting_configuration_registration_attempted = True
+        request_id = self._queue_server_request(
+            "client/registerCapability",
+            {
+                "registrations": [
+                    {
+                        "id": _FORMATTING_CONFIGURATION_REGISTRATION_ID,
+                        "method": "workspace/didChangeConfiguration",
+                        "registerOptions": {
+                            "section": _FORMATTING_CONFIGURATION_SECTION,
+                        },
+                    }
+                ]
+            },
+        )
+        self._formatting_configuration_registration_request = request_id
 
     def _workspace_folder_scope_changed(self, before: Any, after: Any) -> None:
         super()._workspace_folder_scope_changed(before, after)
@@ -144,6 +196,13 @@ class NovaProductLanguageServer(_PreviousNovaProductLanguageServer):
             result=result,
             error=error,
         )
+        if method == "client/registerCapability":
+            if request_id != self._formatting_configuration_registration_request:
+                return
+            self._formatting_configuration_registration_request = None
+            if error is None and result is None:
+                self._formatting_configuration_registration_active = True
+            return
         if method != "workspace/configuration":
             return
         record = self._formatting_configuration_requests.pop(request_id, None)
