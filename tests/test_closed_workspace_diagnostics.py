@@ -2236,3 +2236,97 @@ def test_closed_definite_initialization_inferred_never_is_cycle_safe(
     ]
     assert len(reads) == 1
     assert reads[0]["message"] == "local 'value' is read before its first assignment"
+
+def test_closed_assignment_and_mutability_diagnostics_use_detached_semantics(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "assignments.nova"
+    source.write_text(
+        'fn main(input: Int) { let fixed: Int = 1; fixed = "bad"; input = false; }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+
+    report = reports_by_uri(workspace_diagnostics(server))[uri]
+    assignment_items = [
+        item
+        for item in report["items"]
+        if item["code"] in {"nova.immutable-assignment", "nova.assignment-type"}
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in assignment_items
+    ] == [
+        (
+            "nova.immutable-assignment",
+            "cannot assign to immutable local 'fixed'",
+        ),
+        (
+            "nova.assignment-type",
+            "assignment type mismatch: expected 'Int', got 'String'",
+        ),
+        (
+            "nova.assignment-type",
+            "assignment type mismatch: expected 'Int', got 'Bool'",
+        ),
+    ]
+    assert server.documents.get(uri) is None
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_assignment_type_rebinds_cross_file_initializer_type(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text("fn helper() -> Int { return 1; }\n", encoding="utf-8")
+    caller.write_text(
+        'fn main() { var value = helper(); value = "bad"; }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    caller_uri = caller.absolute().as_uri()
+
+    first = reports_by_uri(workspace_diagnostics(server))[caller_uri]
+    assert [
+        item["code"]
+        for item in first["items"]
+        if item["code"] == "nova.assignment-type"
+    ] == ["nova.assignment-type"]
+
+    provider.write_text(
+        'fn helper() -> String { return "ok"; }\n',
+        encoding="utf-8",
+    )
+    assert server._sync_closed_workspace_files() is True
+
+    second = reports_by_uri(
+        workspace_diagnostics(server, request_id=3)
+    )[caller_uri]
+    assert [
+        item
+        for item in second["items"]
+        if item["code"] == "nova.assignment-type"
+    ] == []
+
+
+def test_closed_parameter_assignment_is_not_immutable(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "parameter.nova"
+    source.write_text(
+        'fn main(input: Int) { input = "bad"; }\n',
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+
+    report = reports_by_uri(workspace_diagnostics(server))[uri]
+
+    assert [
+        item["code"]
+        for item in report["items"]
+        if item["code"] in {"nova.immutable-assignment", "nova.assignment-type"}
+    ] == ["nova.assignment-type"]
