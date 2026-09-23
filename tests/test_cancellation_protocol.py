@@ -170,6 +170,7 @@ def test_cancel_after_completion_does_not_poison_reused_id() -> None:
     assert second == first
     assert len(server.requests) == 0
 
+
 def test_shutdown_cancels_inflight_definition_before_acknowledged_quiescence(
     monkeypatch,
 ) -> None:
