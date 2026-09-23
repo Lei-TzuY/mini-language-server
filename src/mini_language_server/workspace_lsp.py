@@ -294,7 +294,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
     ) -> dict[str, Any]:
         """Preflight one open + detached Nova rename batch without mutation."""
         try:
-            renames = self._workspace_file_rename_pairs(params)
+            renames = self._workspace_file_rename_pairs(
+                params,
+                include_closed=True,
+            )
         except DocumentError:
             return self._error(request_id, -32602, "Invalid params")
         if not renames:
@@ -485,7 +488,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         return path is not None and path.suffix == ".nova"
 
     def _workspace_file_rename_pairs(
-        self, params: Any
+        self,
+        params: Any,
+        *,
+        include_closed: bool = False,
     ) -> tuple[tuple[str, str], ...]:
         if not isinstance(params, dict):
             raise DocumentError("file rename params must be an object")
@@ -507,9 +513,17 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             ):
                 raise DocumentError("file rename entries require oldUri and newUri")
             document = self.documents.get(old_uri)
-            if document is None or document.language_id != self.nova_adapter.language_id:
+            if (
+                document is not None
+                and document.language_id == self.nova_adapter.language_id
+            ):
+                renames.append((old_uri, new_uri))
                 continue
-            renames.append((old_uri, new_uri))
+            if include_closed and (
+                self._workspace_file_affects_closed_index(old_uri)
+                or self._workspace_file_affects_closed_index(new_uri)
+            ):
+                renames.append((old_uri, new_uri))
         return tuple(renames)
 
     def _handle_workspace_file_renames(self, params: Any) -> None:
