@@ -196,7 +196,6 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return
 
         renames: list[tuple[str, str]] = []
-        documents: list[Document] = []
         for item in files:
             if not isinstance(item, dict):
                 return
@@ -217,7 +216,6 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             except SyntaxError:
                 return
             renames.append((old_uri, new_uri))
-            documents.append(document)
 
         if not renames:
             return
@@ -237,8 +235,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for previous, current in moved:
             indexed = previous_workspace.get(previous.uri)
             if indexed is not None:
-                with suppress(WorkspaceIndexError):
-                    self.workspace_symbols.remove(previous.uri, expected=indexed)
+                self.workspace_symbols.remove(previous.uri, expected=indexed)
             self.diagnostics.discard(previous.uri)
             self.semantics.discard(previous.uri)
             self.symbols.discard(previous.uri)
@@ -253,11 +250,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 continue
             if not self.workspace_folders.contains(document.uri):
                 continue
-            with suppress(WorkspaceIndexError):
-                self.workspace_symbols.replace(
-                    semantic,
-                    expected=self.workspace_symbols.get(document.uri),
-                )
+            self.workspace_symbols.replace(
+                semantic,
+                expected=self.workspace_symbols.get(document.uri),
+            )
 
         self._publish_workspace_diagnostics()
         after = self.workspace_symbols.snapshots()
