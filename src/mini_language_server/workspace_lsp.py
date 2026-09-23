@@ -27,6 +27,7 @@ _SYMBOL_KINDS = {
     "variable": 13,
     "parameter": 13,
 }
+_WORKSPACE_SYMBOL_PARTIAL_CHUNK_SIZE = 16
 
 
 class WorkspaceNovaLanguageServer(NovaLanguageServer):
@@ -871,19 +872,50 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
     def _handle_workspace_symbol(self, request_id: Any, params: Any) -> dict[str, Any]:
         if not isinstance(params, dict) or not isinstance(params.get("query"), str):
             return self._error(request_id, -32602, "Invalid params")
+        valid_partial, partial_result_token = self._workspace_symbol_progress_token(
+            params, "partialResultToken"
+        )
+        if not valid_partial:
+            return self._error(request_id, -32602, "Invalid params")
+        valid_work_done, work_done_token = self._workspace_symbol_progress_token(
+            params, "workDoneToken"
+        )
+        if not valid_work_done:
+            return self._error(request_id, -32602, "Invalid params")
+        active_work_done_token = (
+            work_done_token if self._work_done_progress_support else None
+        )
+
         try:
             context = self.requests.start(request_id)
         except RequestError:
             return self._error(request_id, -32602, "Invalid params")
 
         snapshots = self.workspace_symbols.snapshots()
+        work_done_started = False
         try:
             self.requests.checkpoint(context)
+            if active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {
+                        "kind": "begin",
+                        "title": "Workspace symbols",
+                        "cancellable": True,
+                        "percentage": 0,
+                    },
+                )
+                work_done_started = True
+
             declarations = self.workspace_symbols.search(params["query"])
             self.requests.checkpoint(context)
             result = []
-            for declaration in declarations:
-                source = self._source_text(declaration.snapshot.symbols.syntax.document.text)
+            total_symbols = len(declarations)
+            for index, declaration in enumerate(declarations, start=1):
+                self.requests.checkpoint(context)
+                source = self._source_text(
+                    declaration.snapshot.symbols.syntax.document.text
+                )
                 result.append(
                     {
                         "name": declaration.symbol.name,
@@ -894,17 +926,85 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         },
                     }
                 )
+                if (
+                    active_work_done_token is not None
+                    and (
+                        index % _WORKSPACE_SYMBOL_PARTIAL_CHUNK_SIZE == 0
+                        or index == total_symbols
+                    )
+                ):
+                    self._queue_progress(
+                        active_work_done_token,
+                        {
+                            "kind": "report",
+                            "message": (
+                                f"Processed {index} of {total_symbols} workspace symbols"
+                            ),
+                            "percentage": (
+                                100
+                                if total_symbols == 0
+                                else (index * 100) // total_symbols
+                            ),
+                        },
+                    )
+
             self.requests.checkpoint(context)
+
+            def publish() -> dict[str, Any]:
+                if partial_result_token is None:
+                    return self._result(request_id, result)
+                for chunk_start in range(
+                    0, len(result), _WORKSPACE_SYMBOL_PARTIAL_CHUNK_SIZE
+                ):
+                    self._queue_progress(
+                        partial_result_token,
+                        result[
+                            chunk_start : chunk_start
+                            + _WORKSPACE_SYMBOL_PARTIAL_CHUNK_SIZE
+                        ],
+                    )
+                return self._result(request_id, [])
+
             try:
-                return self.workspace_symbols.commit_snapshots_if_current(
-                    snapshots, lambda: self._result(request_id, result)
+                response = self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots, publish
                 )
-            except WorkspaceIndexError:
-                return self._error(request_id, -32801, "Content modified")
+            except WorkspaceIndexError as exc:
+                raise StaleRequest("workspace symbol inputs changed") from exc
+
+            if active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {"kind": "end", "message": "Workspace symbol search complete"},
+                )
+            return response
         except RequestCancelled:
+            if work_done_started and active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {"kind": "end", "message": "Workspace symbol search cancelled"},
+                )
             return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            if work_done_started and active_work_done_token is not None:
+                self._queue_progress(
+                    active_work_done_token,
+                    {"kind": "end", "message": "Workspace symbol search changed"},
+                )
+            return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
+
+    @staticmethod
+    def _workspace_symbol_progress_token(
+        params: dict[str, Any], key: str
+    ) -> tuple[bool, str | int | None]:
+        if key not in params:
+            return True, None
+        token = params[key]
+        if isinstance(token, bool) or not isinstance(token, str | int):
+            return False, None
+        return True, token
 
     @staticmethod
     def _client_supports_workspace_folders(params: Any) -> bool:
