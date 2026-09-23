@@ -14,7 +14,7 @@ The checkpoint covers:
 6. semantic reference publication
 7. diagnostic publication plus push/pull rendering with negotiated version/tag/related-location metadata, exact direct related-document pull dependencies, and commit-gated related-document partial streaming
 8. definition/reference/rename queries
-9. request cancellation
+9. request cancellation, including shutdown/exit retirement of all active client-to-server request generations
 10. tracked server-to-client JSON-RPC requests, cancellation/retirement of proven-stale generation-bound requests, shutdown/exit retirement that prevents post-lifecycle response delivery, dynamic capability registration, coalesced negotiated workspace refresh lifecycles, standard `$/progress` partial-result and negotiated work-done lifecycles including exact-commit workspace-symbol streaming, response retirement, and validated consumer response delivery
 11. workspace-folder scope generations for cross-file tooling
 12. stale-result suppression across concurrent document, semantic, workspace-scope, and workspace-dependent semantic-token delta publication
@@ -31,7 +31,7 @@ The core invariant is generational identity: a derived result is valid only whil
 | symbol index | deterministic symbols for one exact syntax snapshot | reference semantics |
 | semantic database | resolved references bound to exact symbol objects | protocol rendering |
 | diagnostic store | diagnostics bound to the primary semantic snapshot plus any exact cross-file related semantic parents | document mutation |
-| request tracker | cancellation and stale-document checkpoints | semantic freshness publication |
+| request tracker | cancellation, terminal lifecycle retirement, and stale-document checkpoints | semantic freshness publication |
 
 ## Maintenance triggers
 
