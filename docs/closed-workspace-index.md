@@ -26,7 +26,7 @@ URI deduplication reuses the workspace-folder RFC-safe identity rules. Scheme/ho
 
 ## Refresh lifecycle
 
-A bounded filesystem scan runs after the LSP `initialized` notification when a workspace folder/root scope exists. The closed index is also reconciled after workspace-folder changes and `workspace/didRenameFiles`. `didClose` restores the single relinquished disk source directly.
+A bounded filesystem scan runs after the LSP `initialized` notification when a workspace folder/root scope exists. The closed index is also reconciled after workspace-folder changes and `workspace/didRenameFiles`. Negotiated `workspace/didCreateFiles` and `workspace/didDeleteFiles` apply targeted post-operation additions/removals, while `didClose` restores the single relinquished disk source directly.
 
 The server does not watch the filesystem in this phase. External edits made after a scan remain outside the server-known workspace snapshot until one of those lifecycle transitions refreshes the index. Read-only tooling therefore describes the exact server-known indexed snapshot, not an unobserved later disk state.
 
@@ -40,4 +40,4 @@ Legacy clients that do not negotiate `documentChanges` continue to receive the e
 
 ## Deliberate nonclaims
 
-This milestone is not a general filesystem service. It does not implement filesystem watchers, `workspace/didCreateFiles`, `workspace/didDeleteFiles`, closed-file diagnostics, remote workspace providers, symlink identity, module/import path rewriting, or permission/preflight guarantees for closed-file resource renames. Those are separate executable phases.
+This milestone is not a general filesystem service. Create/delete support observes completed client-side resource operations; it does not perform filesystem mutations. Filesystem watchers, `willCreateFiles`/`willDeleteFiles`, closed-file diagnostics, remote workspace providers, symlink identity, module/import path rewriting, and permission/preflight guarantees for closed-file resource operations remain separate executable phases.
