@@ -14,3 +14,9 @@ Only one request per refresh method may remain pending at a time. Additional qua
 The refresh request carries no params, matching the LSP request shape. It does not replace deterministic pull result IDs or exact-snapshot validation: the client is merely told to re-pull, and each subsequent `textDocument/diagnostic` or `workspace/diagnostic` request still runs through the existing document/diagnostic/workspace generation guards.
 
 This outbound-request substrate is intentionally generic. Diagnostic and CodeLens refreshes reuse the same tracked lifecycle independently, workspace configuration consumes validated response payloads through the shared completion hook, and dynamic capability registration remains a consumer policy layered on top of the same request/response retirement rules. Future configuration or other request methods should add only their own capability negotiation, payload validation, and conservative invalidation policy rather than creating feature-specific transport queues.
+
+## Runtime delivery while a client request is active
+
+The stdio runtime may deliver a valid response on the foreground lane while one ordinary client request worker is active, but only when the response id still owns a pending server request and that request has already been drained from the local outbox. This prevents guessed responses from completing requests the client has never received. Unknown ids and malformed responses keep the existing conservative behavior.
+
+This bounded live path allows an active request to depend on a previously delivered configuration/prompt-style request without deadlocking the single-worker runtime. It does not yet provide an outbound wakeup mechanism for a server request first created by that active worker; such a request still requires a later dispatch boundary before bytes are written.

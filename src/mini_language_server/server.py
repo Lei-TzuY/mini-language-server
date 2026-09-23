@@ -395,6 +395,36 @@ class LanguageServer:
     def _server_request_cancelled(self, request_id: str, method: str) -> None:
         """Extension point for consumers that own per-request state."""
 
+    def _can_dispatch_server_response_live(
+        self, message: dict[str, Any]
+    ) -> bool:
+        """Return whether one response targets an already-delivered pending request."""
+        if (
+            message.get("jsonrpc") != "2.0"
+            or "method" in message
+            or "id" not in message
+        ):
+            return False
+        request_id = message.get("id")
+        if not isinstance(request_id, str | int) or isinstance(request_id, bool):
+            return False
+        has_result = "result" in message
+        has_error = "error" in message
+        if has_result == has_error:
+            return False
+        error = message.get("error") if has_error else None
+        if has_error and not isinstance(error, dict):
+            return False
+
+        key = str(request_id)
+        with self._server_request_lock:
+            if key not in self._pending_server_requests:
+                return False
+            return all(
+                request.get("id") != key
+                for request in self._server_requests
+            )
+
     def _handle_server_response(self, message: dict[str, Any]) -> None:
         """Consume a valid response to one tracked server-to-client request."""
         request_id = message.get("id")
