@@ -20,18 +20,20 @@ Both entry points instantiate the final `NovaProductLanguageServer` and use bina
 
 ## Dispatch loop
 
-The runtime is intentionally synchronous:
+The runtime keeps ordinary server dispatch deliberately serialized while separating framing from dispatch:
 
-1. read one bounded `Content-Length` frame with `MessageReader`;
-2. dispatch the decoded JSON-RPC object through `LanguageServer.handle()`;
-3. drain the server's outbound channels;
-4. encode every outbound object with the existing UTF-8 `encode_message()` framing primitive;
-5. flush the output stream;
-6. repeat until the server reaches `EXITED`.
+1. one background reader decodes bounded `Content-Length` frames with `MessageReader`;
+2. ordinary requests, responses, and notifications enter one FIFO dispatch queue;
+3. the calling thread dispatches those queued objects through `LanguageServer.handle()` one at a time;
+4. `$/cancelRequest` is the only control message allowed to cross that queue boundary: once its target request frame has been read, the reader can mark that exact pending request generation cancelled immediately, even while the foreground dispatcher is still inside the request handler;
+5. the original cancellation notification is replayed through the normal server handle surface at the dispatch boundary so lifecycle and trace behavior are preserved;
+6. after each ordinary dispatch, queued notifications are written first, tracked server-to-client requests second, and the direct response last;
+7. every outbound object uses the existing UTF-8 `encode_message()` framing primitive and the batch is flushed once;
+8. the loop ends when the server reaches `EXITED` or the transport fails.
 
-One inbound dispatch produces one deterministic outbound batch. Queued notifications are written first, tracked server-to-client requests second, and the direct response last. This keeps progress, cancellation, diagnostic, and trace notifications produced during request handling ahead of that request's terminal response.
+This is not a worker pool. Document changes, workspace mutations, shutdown, server-response delivery, and ordinary client requests remain single-dispatch ordered. The reader thread exists specifically so an executing request can observe cancellation at its next existing `RequestTracker.checkpoint()` instead of waiting for that request to finish before stdin is read again.
 
-The runtime does not create a background scheduler. Existing exact-snapshot, cancellation, stale-result, server-request, notification-quiescence, and shutdown/exit semantics remain owned by the server layers.
+A cancel frame may arrive after the request frame has been read but before the handler calls `RequestTracker.start()`. The runtime stages a one-shot cancellation only for request ids it has already read and still owns as pending. `start()` consumes that staged state, and dispatch completion clears any unconsumed stage, so an early cancel cannot poison a later reuse of the same JSON-RPC id. Generic cancellation of unknown ids remains harmless.
 
 ## Failure and lifecycle behavior
 
@@ -45,4 +47,4 @@ The server's terminal notification/request quiescence remains authoritative. Aft
 
 ## Scope
 
-This milestone makes the existing language server executable over stdio. It deliberately does not add asyncio, worker threads, socket transports, process supervision, logging to stdout, or editor-specific launch configuration. Any future concurrent host must preserve the same ordering and lifecycle ownership invariants with separate deterministic evidence.
+This milestone keeps the executable server single-dispatch while adding one framing reader thread for live request cancellation. It deliberately does not add asyncio, a request worker pool, parallel document/workspace mutation, socket transports, process supervision, logging to stdout, or editor-specific launch configuration. Any future broader concurrent host must preserve the same ordering and lifecycle ownership invariants with separate deterministic evidence.
