@@ -244,8 +244,17 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
             self.requests.checkpoint(context)
 
             def publish() -> dict[str, Any]:
+                def commit_action() -> dict[str, Any]:
+                    self._capture_live_code_action_resolve_ownership(
+                        request_id,
+                        snapshot,
+                        workspace_snapshots,
+                    )
+                    return self._result(request_id, actions)
+
                 return self.diagnostics.commit_if_current(
-                    snapshot, lambda: self._result(request_id, actions)
+                    snapshot,
+                    commit_action,
                 )
 
             try:
@@ -363,6 +372,14 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
+
+    def _capture_live_code_action_resolve_ownership(
+        self,
+        request_id: Any,
+        diagnostic: Any,
+        workspace_snapshots: Any,
+    ) -> None:
+        """Extension hook for lazy-resolve ownership at the live commit boundary."""
 
     def _capture_closed_code_action_resolve_ownership(
         self,
