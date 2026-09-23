@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass
+from threading import RLock
 from urllib import parse
 
 
@@ -78,7 +78,7 @@ class WorkspaceFolderSet:
             dict[tuple[str, str, str, str, str], WorkspaceFolder] | None
         ) = None
         self._generation = 0
-        self._lock = threading.RLock()
+        self._lock = RLock()
 
     @property
     def generation(self) -> int:
