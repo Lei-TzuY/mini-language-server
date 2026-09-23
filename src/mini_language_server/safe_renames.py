@@ -114,10 +114,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 ordered = sorted(edits_by_uri[uri], key=lambda item: item[0])
                 changes[uri] = [edit for _, edit in ordered]
 
-            versions = {
-                snapshot.uri: snapshot.symbols.syntax.document.version
-                for snapshot in snapshots
-            }
+            versions = self._workspace_edit_versions(snapshots)
             workspace_edit = self._workspace_edit(
                 changes,
                 versions=versions,
