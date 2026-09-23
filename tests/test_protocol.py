@@ -2,7 +2,12 @@ from io import BytesIO
 
 import pytest
 
-from mini_language_server.protocol import FramingError, MessageReader, encode_message
+from mini_language_server.protocol import (
+    MAX_HEADER_LINE_LENGTH,
+    FramingError,
+    MessageReader,
+    encode_message,
+)
 
 
 def test_round_trip_unicode_message() -> None:
@@ -85,7 +90,7 @@ def test_total_header_byte_limit_rejects_before_payload_read() -> None:
     extra = b"X-Trace: one\r\n"
     content_length = b"Content-Length: 2\r\n"
     stream = TrackingBytesIO(extra + content_length + b"\r\n{}")
-    budget = len(extra) + len(content_length) - 1
+    budget = len(extra) + len(content_length) + len(b"\r\n") - 1
 
     with pytest.raises(FramingError, match="header section"):
         MessageReader(stream, max_header_bytes=budget).read()
@@ -101,7 +106,7 @@ def test_exact_header_byte_and_count_boundaries_are_accepted() -> None:
 
     assert MessageReader(
         stream,
-        max_header_bytes=len(headers),
+        max_header_bytes=len(headers) + len(b"\r\n"),
         max_header_count=2,
     ).read() == {}
 
@@ -122,7 +127,7 @@ def test_single_header_line_read_is_bounded_before_allocation() -> None:
     with pytest.raises(FramingError, match="header line too long"):
         MessageReader(stream).read()
 
-    assert stream.readline_sizes[0] == 8193
+    assert stream.readline_sizes[0] == MAX_HEADER_LINE_LENGTH + 1
     assert stream.payload_reads == 0
 
 
