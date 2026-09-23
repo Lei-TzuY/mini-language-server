@@ -140,9 +140,12 @@ def run_session(
     Framing stays on one background reader. At most one ordinary client request executes
     on a request worker. While that request is active, document lifecycle mutations,
     workspace-folder scope changes, formatting-configuration invalidation, and one
-    terminal shutdown request may advance on the foreground dispatcher; all other
-    ordinary inbound client requests and lifecycle traffic remain deferred in FIFO
-    order. A live shutdown retires the worker generation immediately but delays its own
+    causally safe terminal shutdown request may advance on the foreground dispatcher;
+    all other ordinary inbound client requests and lifecycle traffic remain deferred in
+    FIFO order. Shutdown may overtake only deferred ordinary client requests: an
+    earlier deferred server response/lifecycle frame, or a live snapshot mutation
+    already applied to the active generation, preserves the older transport outcome.
+    A live shutdown retires the worker generation immediately but delays its own
     response until that worker has cooperatively produced a cancellation completion.
     Live snapshot/configuration
     mutations may overtake queued requests while the active request runs, so exact
@@ -161,6 +164,7 @@ def run_session(
     transport_failed = False
     pending_shutdown_prefix: tuple[dict[str, object], ...] = ()
     pending_shutdown_response: dict[str, object] | None = None
+    active_request_saw_live_mutation = False
 
     def read_inbound() -> None:
         while True:
@@ -304,6 +308,12 @@ def run_session(
             if (
                 active_server.state is ServerState.RUNNING
                 and _is_shutdown_request(item)
+                and not active_request_saw_live_mutation
+                and all(
+                    isinstance(deferred_item, dict)
+                    and _is_worker_request(deferred_item, active_server.state)
+                    for deferred_item in deferred
+                )
             ):
                 response = dispatch_foreground(item)
                 assert response is not None
@@ -317,6 +327,7 @@ def run_session(
                 continue
             if _is_live_snapshot_mutation(item):
                 response = dispatch_foreground(item)
+                active_request_saw_live_mutation = True
                 replay_controls()
                 _write_batch(
                     output_stream,
@@ -330,6 +341,7 @@ def run_session(
             request_id = _client_request_id(item)
             assert request_id is not None
             active_request_id = request_id
+            active_request_saw_live_mutation = False
             active_request_thread = Thread(
                 target=dispatch_request,
                 args=(item, request_id),
