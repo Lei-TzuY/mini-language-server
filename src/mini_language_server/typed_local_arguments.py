@@ -6,7 +6,6 @@ import re
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
-from .diagnostics import Diagnostic
 from .nova import NovaFunctionSyntax
 from .source import SourceText, Span
 from .typed_parameter_arguments import NovaProductLanguageServer as _NovaProductLanguageServer
@@ -22,59 +21,16 @@ _LOCAL_INITIALIZER_SUFFIX = re.compile(
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product server with bounded local type propagation."""
 
-    def _closed_workspace_product_diagnostics(
+    def _closed_argument_type(
         self,
         snapshot: Any,
-        functions: dict[str, list[tuple[Any, Any]]],
-    ) -> tuple[Diagnostic, ...]:
-        """Extend detached call typing with exact same-snapshot reference evidence."""
-        diagnostics = list(
-            super()._closed_workspace_product_diagnostics(snapshot, functions)
-        )
-        tree = snapshot.symbols.syntax.tree
-        if not isinstance(tree, NovaFunctionSyntax):
-            return tuple(diagnostics)
-
-        text = snapshot.symbols.syntax.document.text
-        for name, span in tree.calls:
-            candidates = functions.get(name, [])
-            if len(candidates) != 1:
-                continue
-
-            candidate_snapshot, candidate_symbol = candidates[0]
-            expected_types = self._closed_function_parameter_types(
-                candidate_snapshot,
-                candidate_symbol.span,
-            )
-            parsed = self._call_argument_spans(text, span.end)
-            if parsed is None:
-                continue
-            arguments = parsed[2]
-            if len(arguments) != len(expected_types):
-                continue
-
-            for index, (expected_type, argument) in enumerate(
-                zip(expected_types, arguments, strict=True),
-                start=1,
-            ):
-                if expected_type is None:
-                    continue
-                actual_type = self._closed_reference_argument_type(
-                    snapshot,
-                    argument,
-                )
-                if actual_type is None or actual_type == expected_type:
-                    continue
-                diagnostics.append(
-                    self._argument_type_diagnostic(
-                        name,
-                        index,
-                        argument,
-                        actual_type,
-                        expected_type,
-                    )
-                )
-        return tuple(diagnostics)
+        argument: Span,
+    ) -> str | None:
+        """Extend detached literals with exact same-snapshot reference evidence."""
+        inherited = super()._closed_argument_type(snapshot, argument)
+        if inherited is not None:
+            return inherited
+        return self._closed_reference_argument_type(snapshot, argument)
 
     def _closed_reference_argument_type(
         self,
@@ -130,24 +86,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if alias_target.kind != "variable":
             return None
         return self._closed_local_type(snapshot, alias_target, seen)
-
-    @staticmethod
-    def _argument_type_diagnostic(
-        name: str,
-        index: int,
-        argument: Span,
-        actual_type: str,
-        expected_type: str,
-    ) -> Diagnostic:
-        return Diagnostic(
-            argument,
-            (
-                f"argument {index} to '{name}' has type "
-                f"'{actual_type}'; expected '{expected_type}'"
-            ),
-            code="nova.argument-type",
-            source="nova",
-        )
 
     def _argument_type(self, snapshot: Any, argument: Span) -> str | None:
         """Return a bounded actual type from literals, parameters, or local aliases."""
