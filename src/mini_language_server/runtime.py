@@ -272,6 +272,13 @@ def run_session(
             else events.get()
         )
 
+        if (
+            transport_failed
+            and active_request_thread is not None
+            and not isinstance(item, _CompletedRequest)
+        ):
+            continue
+
         if isinstance(item, _CompletedRequest):
             assert active_request_thread is not None
             assert active_request_id == item.request_id
