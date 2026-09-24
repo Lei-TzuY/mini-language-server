@@ -23,7 +23,7 @@ _FUNCTION_DECLARATION = re.compile(
 _CALL = re.compile(rf"\b({_IDENTIFIER})\s*(?=\()")
 _IMPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*import[ \t]+((?:\./|\.\./)(?:[A-Za-z0-9_.~%+-]+/)*"
-    r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*$"
+    r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
 )
 _IDENTIFIER_MATCH = re.compile(rf"\b({_IDENTIFIER})\b")
 _PARAMETER_PART = re.compile(r"[^,]+")
