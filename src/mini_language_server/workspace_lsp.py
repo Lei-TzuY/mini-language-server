@@ -479,12 +479,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 return self._error(request_id, -32801, "Content modified")
 
             def publish() -> dict[str, Any] | None:
-                nonlocal (
-                    validation_error,
-                    stale_closed_inputs,
-                    stale_local_inputs,
-                    stale_mutation_inputs,
-                )
+                nonlocal validation_error, stale_closed_inputs
+                nonlocal stale_local_inputs, stale_mutation_inputs
                 if not self._local_workspace_path_evidence_current(captured_local):
                     stale_local_inputs = True
                     return None
