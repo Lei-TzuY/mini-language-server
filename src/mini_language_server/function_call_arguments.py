@@ -18,4 +18,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return inherited
         text = snapshot.symbols.syntax.document.text
         expression = text[argument.start : argument.end].strip()
-        return self._function_call_return_type(expression)
+        return self._function_call_return_type_for_semantic(
+            snapshot,
+            expression,
+        )
