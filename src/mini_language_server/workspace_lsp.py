@@ -20,7 +20,7 @@ from .server import LanguageServer, ServerState
 from .source import Span
 from .symbols import SymbolError
 from .syntax import SyntaxError
-from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
+from .workspace import WorkspaceDeclaration, WorkspaceIndexError, WorkspaceSymbolIndex
 from .workspace_files import (
     ClosedWorkspaceFile,
     LocalWorkspaceMutationEvidence,
@@ -1350,6 +1350,89 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         return target_uri
 
     @classmethod
+    def _nova_visible_function_map(
+        cls,
+        importer: SemanticSnapshot,
+        snapshots: tuple[SemanticSnapshot, ...],
+    ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
+        """Return deterministic direct-import function visibility for one snapshot.
+
+        Files without explicit imports retain the legacy workspace-global function
+        namespace. Once a file declares imports, same-file functions take precedence
+        by name and otherwise only directly imported file functions are visible.
+        """
+        tree = importer.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return {}
+
+        indexed = {
+            WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
+            for snapshot in snapshots
+        }
+        if tree.imports:
+            imported_identities = {
+                WorkspaceFolderSet.uri_identity(target_uri)
+                for item in tree.imports
+                if (
+                    target_uri := cls._nova_import_target_uri(importer.uri, item.path)
+                )
+                is not None
+                and WorkspaceFolderSet.uri_identity(target_uri) in indexed
+            }
+            visible_snapshots = tuple(
+                snapshot
+                for identity, snapshot in indexed.items()
+                if identity in imported_identities
+            )
+        else:
+            visible_snapshots = tuple(snapshots)
+
+        local_by_name: dict[str, list[WorkspaceDeclaration]] = {}
+        imported_by_name: dict[str, list[WorkspaceDeclaration]] = {}
+
+        for symbol in importer.symbols.symbols:
+            if symbol.kind != "function":
+                continue
+            local_by_name.setdefault(symbol.name, []).append(
+                WorkspaceDeclaration(importer.uri, importer, symbol)
+            )
+
+        for snapshot in visible_snapshots:
+            if snapshot is importer:
+                continue
+            for symbol in snapshot.symbols.symbols:
+                if symbol.kind != "function":
+                    continue
+                imported_by_name.setdefault(symbol.name, []).append(
+                    WorkspaceDeclaration(snapshot.uri, snapshot, symbol)
+                )
+
+        names = set(imported_by_name) | set(local_by_name)
+        result: dict[str, tuple[WorkspaceDeclaration, ...]] = {}
+        for name in names:
+            declarations = local_by_name.get(name) or imported_by_name.get(name, [])
+            result[name] = tuple(
+                sorted(
+                    declarations,
+                    key=lambda item: (
+                        item.uri,
+                        item.symbol.span.start,
+                        item.symbol.span.end,
+                    ),
+                )
+            )
+        return result
+
+    @classmethod
+    def _nova_visible_function_declarations(
+        cls,
+        importer: SemanticSnapshot,
+        snapshots: tuple[SemanticSnapshot, ...],
+        name: str,
+    ) -> tuple[WorkspaceDeclaration, ...]:
+        return cls._nova_visible_function_map(importer, snapshots).get(name, ())
+
+    @classmethod
     def _nova_import_diagnostics(
         cls,
         snapshot: SemanticSnapshot,
@@ -1465,13 +1548,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self,
         snapshots: tuple[SemanticSnapshot, ...],
     ) -> tuple[DiagnosticSnapshot, ...]:
-        """Recompute closed-file base + function resolution diagnostics."""
-        functions: dict[str, list[tuple[SemanticSnapshot, Any]]] = {}
-        for snapshot in snapshots:
-            for symbol in snapshot.symbols.symbols:
-                if symbol.kind == "function":
-                    functions.setdefault(symbol.name, []).append((snapshot, symbol))
-
+        """Recompute closed-file diagnostics against exact import visibility."""
         rendered: list[DiagnosticSnapshot] = []
         for snapshot in snapshots:
             identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
@@ -1483,6 +1560,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
                 continue
+
+            visible = self._nova_visible_function_map(snapshot, snapshots)
+            functions = {
+                name: [
+                    (declaration.snapshot, declaration.symbol)
+                    for declaration in declarations
+                ]
+                for name, declarations in visible.items()
+            }
 
             diagnostics = [
                 diagnostic
