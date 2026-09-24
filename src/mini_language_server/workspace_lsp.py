@@ -541,7 +541,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             WorkspaceFolderSet.uri_identity(document.uri): document.uri
             for document in captured_documents
         }
-        for uri, identity in requested:
+        for _uri, identity in requested:
             open_uri = open_by_identity.get(identity)
             if open_uri is not None:
                 raise DocumentError(f"create target already open: {open_uri}")
