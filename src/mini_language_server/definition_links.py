@@ -71,6 +71,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         semantics: SemanticSnapshot,
         offset: int,
         workspace_name: str | None,
+        snapshots: tuple[SemanticSnapshot, ...] | None,
     ) -> dict[str, Any] | None:
         target_uri = location.get("uri")
         target_selection = location.get("range")
@@ -78,11 +79,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return None
 
         target_range = target_selection
-        if workspace_name is not None:
-            declarations = tuple(
-                declaration
-                for declaration in self.workspace_symbols.declarations(workspace_name)
-                if declaration.symbol.kind == "function"
+        if workspace_name is not None and snapshots is not None:
+            declarations = self._nova_visible_function_declarations(
+                semantics,
+                snapshots,
+                workspace_name,
             )
             if len(declarations) == 1 and declarations[0].uri == target_uri:
                 declaration = declarations[0]
@@ -126,7 +127,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         location = response.get("result")
         if not isinstance(location, dict):
             return response
-        link = self._definition_link(location, semantics, offset, workspace_name)
+        link = self._definition_link(
+            location,
+            semantics,
+            offset,
+            workspace_name,
+            snapshots,
+        )
         if link is None:
             return response
         transformed = dict(response)
