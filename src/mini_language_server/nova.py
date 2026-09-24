@@ -31,11 +31,11 @@ _SELECTIVE_IMPORT_DECLARATION = re.compile(
     r"((?:\./|\.\./)(?:[A-Za-z0-9_.~%+-]+/)*"
     r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
 )
-_IMPORT_NAME = re.compile(rf"(?:^|,)[ \\t]*({_IDENTIFIER})[ \\t]*(?=,|$)")
+_IMPORT_NAME = re.compile(rf"(?:^|,)[ \t]*({_IDENTIFIER})[ \t]*(?=,|$)")
 _ALIASED_IMPORT_NAME = re.compile(
-    rf"(?:^|,)[ \\t]*({_IDENTIFIER})(?:[ \\t]+as[ \\t]+({_IDENTIFIER}))?[ \\t]*(?=,|$)"
+    rf"(?:^|,)[ \t]*({_IDENTIFIER})(?:[ \t]+as[ \t]+({_IDENTIFIER}))?[ \t]*(?=,|$)"
 )
-_IMPORT_ALIAS_MARKER = re.compile(r"[ \\t]+as[ \\t]+")
+_IMPORT_ALIAS_MARKER = re.compile(r"[ \t]+as[ \t]+")
 _EXPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*export[ \t]*\{([^}\r\n]*)\}[ \t]*;?[ \t]*\r?$"
 )
