@@ -924,11 +924,12 @@ def test_exported_alias_rename_propagates_explicit_selective_graph() -> None:
     }
 
 
-def test_exported_alias_rename_rejects_bare_import_consumer() -> None:
+def test_exported_alias_rename_propagates_bare_import_consumer() -> None:
     server = initialized_server()
     provider_uri = "file:///workspace/provider.nova"
     middle_uri = "file:///workspace/middle.nova"
     consumer_uri = "file:///workspace/consumer.nova"
+    leaf_uri = "file:///workspace/leaf.nova"
     open_nova(server, provider_uri, "fn source() {}\n")
     middle = (
         "import { source as public } from ./provider.nova;\n"
@@ -936,8 +937,14 @@ def test_exported_alias_rename_rejects_bare_import_consumer() -> None:
         "fn middle() { public(); }\n"
     )
     consumer = "import ./middle.nova;\nfn consumer() { public(); }\n"
+    leaf = (
+        "import { public as local } from ./consumer.nova;\n"
+        "export {};\n"
+        "fn leaf() { local(); }\n"
+    )
     open_nova(server, middle_uri, middle)
     open_nova(server, consumer_uri, consumer)
+    open_nova(server, leaf_uri, leaf)
 
     prepared = server.handle(
         request(
@@ -950,7 +957,7 @@ def test_exported_alias_rename_rejects_bare_import_consumer() -> None:
         )
     )
     assert prepared is not None
-    assert prepared["result"] is None
+    assert prepared["result"]["placeholder"] == "public"
 
     renamed = server.handle(
         request(
@@ -964,14 +971,24 @@ def test_exported_alias_rename_rejects_bare_import_consumer() -> None:
         )
     )
     assert renamed is not None
-    assert renamed["result"] is None
+    changes = renamed["result"]["changes"]
+    assert set(changes) == {middle_uri, consumer_uri, leaf_uri}
+    assert [edit["newText"] for edit in changes[middle_uri]] == [
+        "renamed",
+        "renamed",
+        "renamed",
+    ]
+    assert [edit["newText"] for edit in changes[consumer_uri]] == ["renamed"]
+    assert [edit["newText"] for edit in changes[leaf_uri]] == ["renamed"]
+    assert provider_uri not in changes
 
 
-def test_exported_alias_rename_rejects_implicit_downstream_export() -> None:
+def test_exported_alias_rename_propagates_implicit_downstream_export() -> None:
     server = initialized_server()
     provider_uri = "file:///workspace/provider.nova"
     middle_uri = "file:///workspace/middle.nova"
     consumer_uri = "file:///workspace/consumer.nova"
+    leaf_uri = "file:///workspace/leaf.nova"
     open_nova(server, provider_uri, "fn source() {}\n")
     middle = (
         "import { source as public } from ./provider.nova;\n"
@@ -982,8 +999,10 @@ def test_exported_alias_rename_rejects_implicit_downstream_export() -> None:
         "import { public } from ./middle.nova;\n"
         "fn consumer() { public(); }\n"
     )
+    leaf = "import ./consumer.nova;\nfn leaf() { public(); }\n"
     open_nova(server, middle_uri, middle)
     open_nova(server, consumer_uri, consumer)
+    open_nova(server, leaf_uri, leaf)
 
     renamed = server.handle(
         request(
@@ -997,7 +1016,13 @@ def test_exported_alias_rename_rejects_implicit_downstream_export() -> None:
         )
     )
     assert renamed is not None
-    assert renamed["result"] is None
+    changes = renamed["result"]["changes"]
+    assert set(changes) == {middle_uri, consumer_uri, leaf_uri}
+    assert [edit["newText"] for edit in changes[consumer_uri]] == [
+        "renamed",
+        "renamed",
+    ]
+    assert [edit["newText"] for edit in changes[leaf_uri]] == ["renamed"]
 
 
 def test_exported_alias_rename_rejects_downstream_binding_collision() -> None:
@@ -1041,6 +1066,46 @@ def test_exported_alias_rename_rejects_downstream_binding_collision() -> None:
     }
 
 
+def test_exported_alias_rename_rejects_bare_import_binding_collision() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    middle_uri = "file:///workspace/middle.nova"
+    consumer_uri = "file:///workspace/consumer.nova"
+    open_nova(server, provider_uri, "fn source() {}\n")
+    middle = (
+        "import { source as public } from ./provider.nova;\n"
+        "export { public };\n"
+        "fn middle() { public(); }\n"
+    )
+    consumer = (
+        "import ./middle.nova;\n"
+        "fn renamed() {}\n"
+        "fn consumer() { public(); }\n"
+    )
+    open_nova(server, middle_uri, middle)
+    open_nova(server, consumer_uri, consumer)
+
+    response = server.handle(
+        request(
+            "textDocument/rename",
+            1051,
+            {
+                "textDocument": {"uri": middle_uri},
+                "position": position(middle, "public();", delta=1),
+                "newName": "renamed",
+            },
+        )
+    )
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 1051,
+        "error": {
+            "code": -32803,
+            "message": "Rename would conflict with existing binding 'renamed'",
+        },
+    }
+
+
 def test_exported_alias_rename_versions_closed_downstream_as_null(
     tmp_path: Path,
 ) -> None:
@@ -1056,11 +1121,7 @@ def test_exported_alias_rename_versions_closed_downstream_as_null(
     )
     middle_file.write_text(middle, encoding="utf-8")
     root.write_text(
-        (
-            "import { public } from ./middle.nova;\n"
-            "export { public };\n"
-            "fn root() { public(); }\n"
-        ),
+        "import ./middle.nova;\nfn root() { public(); }\n",
         encoding="utf-8",
     )
     leaf.write_text(
@@ -1115,11 +1176,7 @@ def test_exported_alias_rename_rejects_closed_graph_disk_drift(
     )
     middle_file.write_text(middle, encoding="utf-8")
     root.write_text(
-        (
-            "import { public } from ./middle.nova;\n"
-            "export { public };\n"
-            "fn root() { public(); }\n"
-        ),
+        "import ./middle.nova;\nfn root() { public(); }\n",
         encoding="utf-8",
     )
     server = initialized_workspace_server(tmp_path)
@@ -1135,11 +1192,7 @@ def test_exported_alias_rename_rejects_closed_graph_disk_drift(
         original_checkpoint(context)
         if calls == 2:
             root.write_text(
-                (
-                    "import { public } from ./middle.nova;\n"
-                    "export {};\n"
-                    "fn root() { public(); }\n"
-                ),
+                "import ./middle.nova;\nexport {};\nfn root() { public(); }\n",
                 encoding="utf-8",
             )
 
