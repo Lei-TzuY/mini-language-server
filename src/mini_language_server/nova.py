@@ -121,6 +121,7 @@ class NovaFunctionSyntax:
     locals: tuple[NovaScopedName, ...] = ()
     local_references: tuple[NovaScopedName, ...] = ()
     unresolved_names: tuple[NovaScopedName, ...] = ()
+    namespace_references: tuple[tuple[str, Span], ...] = ()
 
 
 class NovaFunctionAdapter:
@@ -300,6 +301,13 @@ class NovaFunctionAdapter:
             for match in _QUALIFIED_CALL.finditer(text)
             if match.group(1) in namespace_aliases
         )
+        namespace_references = tuple(
+            (
+                match.group(1),
+                Span(match.start(1), match.end(1)),
+            )
+            for match in qualified_call_matches
+        )
         qualified_member_spans = {
             Span(match.start(2), match.end(2))
             for match in qualified_call_matches
@@ -415,6 +423,7 @@ class NovaFunctionAdapter:
             locals=tuple(locals_),
             local_references=tuple(local_references),
             unresolved_names=tuple(unresolved_names),
+            namespace_references=namespace_references,
         )
 
     def publish(self, server: LanguageServer, document: Document) -> SemanticSnapshot:
