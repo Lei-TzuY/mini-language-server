@@ -8,6 +8,7 @@ from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .code_lenses import NovaProductLanguageServer as _NovaProductLanguageServer
 from .nova import NovaFunctionSyntax
 from .workspace import WorkspaceIndexError
+from .workspace_folders import WorkspaceFolderSet
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -94,10 +95,88 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 )
             )
 
+            indexed = {
+                WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
+                for snapshot in snapshots
+            }
+
+            def targets_declaration(
+                candidates: tuple[Any, ...],
+            ) -> bool:
+                return (
+                    len(candidates) == 1
+                    and candidates[0].snapshot is declaration.snapshot
+                    and candidates[0].symbol is declaration.symbol
+                )
+
             for snapshot in snapshots:
                 snapshot_tree = snapshot.symbols.syntax.tree
                 if not isinstance(snapshot_tree, NovaFunctionSyntax):
                     continue
+                source = self._source_text(snapshot.symbols.syntax.document.text)
+
+                for imported in snapshot_tree.imports:
+                    if not imported.has_name_list:
+                        continue
+                    target_uri = self._nova_import_target_uri(
+                        snapshot.uri,
+                        imported.path,
+                    )
+                    if target_uri is None:
+                        continue
+                    target = indexed.get(
+                        WorkspaceFolderSet.uri_identity(target_uri)
+                    )
+                    if target is None:
+                        continue
+                    target_candidates = self._nova_outward_function_map(
+                        target,
+                        snapshots,
+                    ).get(name, ())
+                    if not targets_declaration(target_candidates):
+                        continue
+                    for selected in imported.names:
+                        if selected.name != name:
+                            continue
+                        edits_by_uri.setdefault(snapshot.uri, []).append(
+                            (
+                                selected.span.start,
+                                {
+                                    "range": self._range(source, selected.span),
+                                    "newText": new_name,
+                                },
+                            )
+                        )
+
+                export_candidates = self._nova_visible_function_map(
+                    snapshot,
+                    snapshots,
+                    legacy_global=False,
+                ).get(name, ())
+                if targets_declaration(export_candidates):
+                    candidate = export_candidates[0]
+                    private_spans = frozenset(snapshot_tree.private_declarations)
+                    valid_export = not (
+                        candidate.snapshot is snapshot
+                        and candidate.symbol.span in private_spans
+                    )
+                    if valid_export:
+                        for exported in snapshot_tree.exports:
+                            if exported.name != name:
+                                continue
+                            edits_by_uri.setdefault(snapshot.uri, []).append(
+                                (
+                                    exported.span.start,
+                                    {
+                                        "range": self._range(
+                                            source,
+                                            exported.span,
+                                        ),
+                                        "newText": new_name,
+                                    },
+                                )
+                            )
+
                 resolved = self._nova_visible_function_declarations(
                     snapshot,
                     snapshots,
@@ -109,7 +188,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     or resolved[0].symbol is not declaration.symbol
                 ):
                     continue
-                source = self._source_text(snapshot.symbols.syntax.document.text)
                 for call_name, span in snapshot_tree.calls:
                     if call_name != name:
                         continue
