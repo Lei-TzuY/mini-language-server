@@ -112,6 +112,18 @@ def test_import_syntax_is_top_level_and_trivia_safe() -> None:
     ]
 
 
+def test_import_syntax_accepts_crlf_line_endings() -> None:
+    server = NovaProductLanguageServer()
+    text = "import ./dep.nova;\r\nfn main() {}\r\n"
+
+    tree = server.nova_adapter.parse(text)
+
+    assert isinstance(tree, NovaFunctionSyntax)
+    assert [(item.path, text[item.span.start : item.span.end]) for item in tree.imports] == [
+        ("./dep.nova", "./dep.nova")
+    ]
+
+
 def test_open_import_diagnostic_tracks_exact_workspace_membership() -> None:
     server = NovaProductLanguageServer()
     initialize(server)
