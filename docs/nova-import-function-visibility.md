@@ -7,9 +7,10 @@ The Nova imported-symbol namespace gives bounded semantic meaning to existing to
 Function call lookup has two compatibility modes:
 
 - a file with no explicit imports keeps the historical workspace-global function lookup;
-- once a file declares at least one supported relative import, same-file function declarations take precedence by name, and otherwise functions declared by exact workspace snapshots reachable through the explicit relative-import graph are visible.
+- once a file declares at least one supported relative import, same-file function declarations take precedence by name, and otherwise each directly imported module contributes its own bounded export view;
+- that export view applies the same local-first rule recursively before propagating transitively, so an imported module's local declaration shadows same-named declarations from its own imports.
 
-Import traversal is transitive across actual supported import edges, canonical workspace identities are visited at most once, and cycles terminate without duplicating candidates. A file reached through multiple diamond paths contributes each declaration once. Unresolved or unsupported imports contribute no declarations and continue to report the existing `nova.unresolved-import` diagnostic.
+Import traversal is transitive across actual supported import edges, canonical declarations are deduplicated by exact snapshot/symbol identity, and cycles terminate without duplicating candidates. A file reached through multiple diamond paths contributes each declaration once. Unresolved or unsupported imports contribute no declarations and continue to report the existing `nova.unresolved-import` diagnostic.
 
 The local-first rule applies only after a file has opted into explicit imports. This preserves historical no-import behavior while allowing an importer to distinguish two same-named functions that live in different workspace files.
 
