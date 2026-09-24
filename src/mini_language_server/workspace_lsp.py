@@ -1358,22 +1358,37 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         """Return deterministic function visibility for one exact importer snapshot.
 
         Files without explicit imports retain the legacy workspace-global function
-        namespace. Once a file declares imports, same-file functions take precedence
-        by name and otherwise functions reachable through the explicit import graph
-        are visible. Traversal follows only real import edges, deduplicates canonical
-        workspace identities, and terminates safely on cycles.
+        namespace except that foreign private declarations are hidden. Once a file
+        declares imports, same-file functions take precedence by name and otherwise
+        only exported functions reachable through the explicit import graph are
+        visible. Traversal follows real import edges, deduplicates canonical workspace
+        identities, and terminates safely on cycles.
         """
         tree = importer.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
             return {}
 
+        def private_spans(snapshot: SemanticSnapshot) -> frozenset[Span]:
+            snapshot_tree = snapshot.symbols.syntax.tree
+            if not isinstance(snapshot_tree, NovaFunctionSyntax):
+                return frozenset()
+            return frozenset(snapshot_tree.private_declarations)
+
         def declaration_map(
             visible_snapshots: tuple[SemanticSnapshot, ...],
+            *,
+            include_private_for: SemanticSnapshot | None = None,
         ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
             grouped: dict[str, list[WorkspaceDeclaration]] = {}
             for snapshot in visible_snapshots:
+                hidden = private_spans(snapshot)
                 for symbol in snapshot.symbols.symbols:
                     if symbol.kind != "function":
+                        continue
+                    if (
+                        symbol.span in hidden
+                        and snapshot is not include_private_for
+                    ):
                         continue
                     grouped.setdefault(symbol.name, []).append(
                         WorkspaceDeclaration(snapshot.uri, snapshot, symbol)
@@ -1393,7 +1408,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             }
 
         if not tree.imports:
-            return declaration_map(tuple(snapshots))
+            return declaration_map(
+                tuple(snapshots),
+                include_private_for=importer,
+            )
 
         indexed = {
             WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
@@ -1432,17 +1450,27 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         def exported(
             snapshot: SemanticSnapshot,
             visiting: frozenset[Any],
+            *,
+            include_private_local: bool = False,
         ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
             identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
-            local = declaration_map((snapshot,))
+            local_all = declaration_map(
+                (snapshot,),
+                include_private_for=snapshot,
+            )
+            local_exported = (
+                local_all
+                if include_private_local
+                else declaration_map((snapshot,))
+            )
             if identity in visiting:
-                return local
+                return local_exported
 
             snapshot_tree = snapshot.symbols.syntax.tree
             if not isinstance(snapshot_tree, NovaFunctionSyntax):
-                return local
+                return local_exported
             if not snapshot_tree.imports:
-                return local
+                return local_exported
 
             next_visiting = visiting | {identity}
             imported_maps: list[dict[str, tuple[WorkspaceDeclaration, ...]]] = []
@@ -1456,10 +1484,16 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 imported_maps.append(exported(target, next_visiting))
 
             imported = merge_maps(tuple(imported_maps))
-            imported.update(local)
+            for name in local_all:
+                imported.pop(name, None)
+            imported.update(local_exported)
             return imported
 
-        return exported(importer, frozenset())
+        return exported(
+            importer,
+            frozenset(),
+            include_private_local=True,
+        )
 
     @classmethod
     def _nova_visible_function_declarations(

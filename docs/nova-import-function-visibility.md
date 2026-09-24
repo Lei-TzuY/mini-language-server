@@ -4,15 +4,16 @@ The Nova imported-symbol namespace gives bounded semantic meaning to existing to
 
 ## Visibility contract
 
-Function call lookup has two compatibility modes:
+Function call lookup has two compatibility modes plus one explicit visibility modifier:
 
-- a file with no explicit imports keeps the historical workspace-global function lookup;
+- a file with no explicit imports keeps the historical workspace-global function lookup for ordinary functions, while foreign `private fn` declarations are excluded;
 - once a file declares at least one supported relative import, same-file function declarations take precedence by name, and otherwise each directly imported module contributes its own bounded export view;
-- that export view applies the same local-first rule recursively before propagating transitively, so an imported module's local declaration shadows same-named declarations from its own imports.
+- `private fn name(...) { ... }` remains fully visible inside its declaring module but is omitted from every foreign export view;
+- that export view applies the same local-first rule recursively before propagating transitively, so any local declaration shadows same-named declarations from its own imports. A private local therefore blocks a deeper same-named declaration from being re-exported accidentally.
 
 Import traversal is transitive across actual supported import edges, canonical declarations are deduplicated by exact snapshot/symbol identity, and cycles terminate without duplicating candidates. A file reached through multiple diamond paths contributes each declaration once. Unresolved or unsupported imports contribute no declarations and continue to report the existing `nova.unresolved-import` diagnostic.
 
-The local-first rule applies only after a file has opted into explicit imports. This preserves historical no-import behavior while allowing an importer to distinguish two same-named functions that live in different workspace files.
+The local-first rule applies only after a file has opted into explicit imports. Ordinary unmodified `fn` declarations therefore preserve historical visibility, while the explicit private modifier is honored for both import-graph callers and legacy no-import foreign callers.
 
 ## Shared tooling surfaces
 
@@ -40,9 +41,9 @@ This phase does not claim a general Nova module system. It does not add:
 
 - package or module search paths;
 - import aliases or selective/wildcard imports;
-- visibility modifiers or exported/private declarations;
+- public/export lists, friend/package visibility, or declaration-level visibility beyond bounded `private fn`;
 - non-function imported namespaces;
 - cross-authority or remote-provider module resolution;
 - a stable external package identity.
 
-Transitive visibility is intentionally limited to function declarations reachable through existing relative-file import edges; it does not imply a general export system, package identity, or non-function namespace. Specialized later product layers that are not part of the shared call-resolution surfaces above remain future namespace-parity work and must not infer broader module semantics from this bounded contract.
+Transitive visibility is intentionally limited to function declarations reachable through existing relative-file import edges plus the bounded private-function filter above; it does not imply a general export-list system, package identity, or non-function namespace. Specialized later product layers that are not part of the shared call-resolution surfaces above remain future namespace-parity work and must not infer broader module semantics from this bounded contract.
