@@ -172,8 +172,8 @@ def test_selective_namespace_alias_has_local_identity_surfaces() -> None:
         )
     )
     assert defined is not None
-    assert defined["result"]["uri"] == root_uri
-    assert defined["result"]["range"]["start"] == position(root, "facade }")
+    assert defined["result"][0]["targetUri"] == root_uri
+    assert defined["result"][0]["targetRange"]["start"] == position(root, "facade }")
 
     refs = server.handle(
         request(
