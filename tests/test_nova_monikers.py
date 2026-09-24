@@ -312,7 +312,14 @@ def test_aliased_call_reuses_canonical_project_moniker() -> None:
     open_nova(server, caller_uri, caller)
 
     declaration = moniker_at(server, provider_uri, provider, "source", 30)
-    alias_call = moniker_at(server, caller_uri, caller, "local", 31)
+    alias_call = moniker_at(
+        server,
+        caller_uri,
+        caller,
+        "local",
+        31,
+        occurrence=1,
+    )
 
     assert alias_call["result"] == declaration["result"]
     assert alias_call["result"] == [
