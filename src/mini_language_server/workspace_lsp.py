@@ -1359,7 +1359,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
         Files without explicit imports retain the legacy workspace-global function
         namespace. Once a file declares imports, same-file functions take precedence
-        by name and otherwise only directly imported file functions are visible.
+        by name and otherwise functions reachable through the explicit import graph
+        are visible. Traversal follows only real import edges, deduplicates canonical
+        workspace identities, and terminates safely on cycles.
         """
         tree = importer.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
@@ -1397,26 +1399,67 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
             for snapshot in snapshots
         }
-        imported_identities = {
-            WorkspaceFolderSet.uri_identity(target_uri)
-            for item in tree.imports
-            if (
-                target_uri := cls._nova_import_target_uri(importer.uri, item.path)
-            )
-            is not None
-            and WorkspaceFolderSet.uri_identity(target_uri) in indexed
-        }
-        imported = declaration_map(
-            tuple(
-                snapshot
-                for identity, snapshot in indexed.items()
-                if identity in imported_identities and snapshot is not importer
-            )
-        )
-        local = declaration_map((importer,))
-        result = dict(imported)
-        result.update(local)
-        return result
+
+        def merge_maps(
+            maps: tuple[dict[str, tuple[WorkspaceDeclaration, ...]], ...],
+        ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
+            grouped: dict[str, list[WorkspaceDeclaration]] = {}
+            for visible in maps:
+                for name, declarations in visible.items():
+                    bucket = grouped.setdefault(name, [])
+                    for declaration in declarations:
+                        if any(
+                            existing.snapshot is declaration.snapshot
+                            and existing.symbol is declaration.symbol
+                            for existing in bucket
+                        ):
+                            continue
+                        bucket.append(declaration)
+            return {
+                name: tuple(
+                    sorted(
+                        declarations,
+                        key=lambda item: (
+                            item.uri,
+                            item.symbol.span.start,
+                            item.symbol.span.end,
+                        ),
+                    )
+                )
+                for name, declarations in grouped.items()
+            }
+
+        def exported(
+            snapshot: SemanticSnapshot,
+            visiting: frozenset[Any],
+        ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
+            identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
+            local = declaration_map((snapshot,))
+            if identity in visiting:
+                return local
+
+            snapshot_tree = snapshot.symbols.syntax.tree
+            if not isinstance(snapshot_tree, NovaFunctionSyntax):
+                return local
+            if not snapshot_tree.imports:
+                return local
+
+            next_visiting = visiting | {identity}
+            imported_maps: list[dict[str, tuple[WorkspaceDeclaration, ...]]] = []
+            for item in snapshot_tree.imports:
+                target_uri = cls._nova_import_target_uri(snapshot.uri, item.path)
+                if target_uri is None:
+                    continue
+                target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
+                if target is None:
+                    continue
+                imported_maps.append(exported(target, next_visiting))
+
+            imported = merge_maps(tuple(imported_maps))
+            imported.update(local)
+            return imported
+
+        return exported(importer, frozenset())
 
     @classmethod
     def _nova_visible_function_declarations(
