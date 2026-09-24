@@ -61,6 +61,7 @@ _NOVA_IMPORT_DIAGNOSTIC_CODES = frozenset(
         "nova.ambiguous-import-name",
         "nova.duplicate-export",
         "nova.unresolved-export",
+        "nova.unresolved-export-target",
         "nova.ambiguous-export",
         "nova.private-export",
     }
@@ -1565,7 +1566,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 for name, declarations in grouped.items()
             }
 
-        if not tree.imports and legacy_global:
+        if not tree.imports and not tree.wildcard_exports and legacy_global:
             return declaration_map(
                 tuple(snapshots),
                 include_private_for=importer,
@@ -1611,6 +1612,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             *,
             apply: bool,
             namespace_members: frozenset[str] = frozenset(),
+            wildcard_members: frozenset[str] = frozenset(),
         ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
             if not apply:
                 return visible
@@ -1622,6 +1624,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 return visible
             allowed = {item.name for item in snapshot_tree.exports}
             allowed.update(namespace_members)
+            allowed.update(wildcard_members)
             return {
                 name: declarations
                 for name, declarations in visible.items()
@@ -1655,7 +1658,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             snapshot_tree = snapshot.symbols.syntax.tree
             if not isinstance(snapshot_tree, NovaFunctionSyntax):
                 return local_exported
-            if not snapshot_tree.imports:
+            if not snapshot_tree.imports and not snapshot_tree.wildcard_exports:
                 return apply_export_list(
                     snapshot,
                     local_exported,
@@ -1767,10 +1770,32 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         }
                 imported_maps.append(target_visible)
 
+            wildcard_maps: list[
+                dict[str, tuple[WorkspaceDeclaration, ...]]
+            ] = []
+            if apply_exports:
+                for wildcard in snapshot_tree.wildcard_exports:
+                    target_uri = self._nova_import_target_uri(
+                        snapshot.uri,
+                        wildcard.path,
+                    )
+                    if target_uri is None:
+                        continue
+                    target = indexed.get(
+                        WorkspaceFolderSet.uri_identity(target_uri)
+                    )
+                    if target is None:
+                        continue
+                    wildcard_maps.append(exported(target, next_visiting))
+
             imported = merge_maps(tuple(imported_maps))
+            wildcard_reexported = merge_maps(tuple(wildcard_maps))
             for name in local_all:
                 imported.pop(name, None)
+                wildcard_reexported.pop(name, None)
             imported.update(local_exported)
+            if apply_exports:
+                imported = merge_maps((imported, wildcard_reexported))
 
             namespace_members: set[str] = set()
             if snapshot_tree.has_export_list:
@@ -1792,6 +1817,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 imported,
                 apply=apply_exports,
                 namespace_members=frozenset(namespace_members),
+                wildcard_members=frozenset(wildcard_reexported),
             )
 
         return exported(
@@ -2089,6 +2115,18 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         """Whether one diagnostic is wholly recomputed from the import graph."""
         return code in _NOVA_IMPORT_DIAGNOSTIC_CODES
 
+    @staticmethod
+    def _nova_module_dependency_edges(
+        tree: NovaFunctionSyntax,
+    ) -> tuple[Any, ...]:
+        """Return exact local-file module edges in deterministic source order."""
+        return tuple(
+            sorted(
+                (*tree.imports, *tree.wildcard_exports),
+                key=lambda item: item.span.start,
+            )
+        )
+
     def _nova_import_cycle_edges(
         self,
         snapshots: tuple[SemanticSnapshot, ...],
@@ -2111,7 +2149,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
                 continue
-            for item in tree.imports:
+            for item in self._nova_module_dependency_edges(tree):
                 target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
                 if target_uri is None:
                     continue
@@ -2180,8 +2218,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 cycle_edges[source] = spans
         return cycle_edges
 
-    @staticmethod
     def _nova_import_cycle_related_information(
+        self,
         target: SemanticSnapshot,
         cycle_edges: dict[WorkspaceUriIdentity, frozenset[Span]],
     ) -> tuple[DiagnosticRelatedInformation, ...]:
@@ -2193,14 +2231,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         tree = target.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
             return ()
-        for item in tree.imports:
+        for item in self._nova_module_dependency_edges(tree):
             if item.span not in target_spans:
                 continue
+            kind = "import" if item in tree.imports else "wildcard export"
             return (
                 DiagnosticRelatedInformation(
                     target.uri,
                     item.span,
-                    f"import cycle continues through '{item.path}'",
+                    f"{kind} cycle continues through '{item.path}'",
                     semantic=target,
                 ),
             )
@@ -2434,6 +2473,41 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         )
                     )
 
+        for item in tree.wildcard_exports:
+            target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
+            target = (
+                None
+                if target_uri is None
+                else indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
+            )
+            if target is None:
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"unresolved wildcard export target '{item.path}'",
+                        code="nova.unresolved-export-target",
+                        source="nova",
+                    )
+                )
+                continue
+            if item.span in cycle_edges.get(snapshot_identity, frozenset()):
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"import cycle includes wildcard export '{item.path}'",
+                        code="nova.import-cycle",
+                        source="nova",
+                        related_information=(
+                            ()
+                            if target is snapshot
+                            else self._nova_import_cycle_related_information(
+                                target,
+                                cycle_edges,
+                            )
+                        ),
+                    )
+                )
+
         if not tree.has_export_list:
             return tuple(diagnostics)
 
@@ -2661,13 +2735,16 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         planned: dict[str, list[tuple[int, dict[str, Any]]]] = {}
         for snapshot in snapshots:
             tree = snapshot.symbols.syntax.tree
-            if not isinstance(tree, NovaFunctionSyntax) or not tree.imports:
+            if (
+                not isinstance(tree, NovaFunctionSyntax)
+                or (not tree.imports and not tree.wildcard_exports)
+            ):
                 continue
             importer_identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
             post_importer_uri = renamed.get(importer_identity, snapshot.uri)
             source = self._source_text(snapshot.symbols.syntax.document.text)
 
-            for item in tree.imports:
+            for item in self._nova_module_dependency_edges(tree):
                 target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
                 if target_uri is None:
                     continue
@@ -2984,7 +3061,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 for snapshot in snapshots
             }
             links: list[dict[str, Any]] = []
-            for item in semantics.symbols.syntax.tree.imports:
+            for item in self._nova_module_dependency_edges(
+                semantics.symbols.syntax.tree
+            ):
                 target_uri = self._nova_import_target_uri(semantics.uri, item.path)
                 if target_uri is None:
                     continue
