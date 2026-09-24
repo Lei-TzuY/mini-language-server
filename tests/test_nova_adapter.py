@@ -214,3 +214,12 @@ def test_non_nova_documents_are_not_analyzed_by_nova_adapter() -> None:
     assert server.syntax.get(uri) is None
     assert server.symbols.get(uri) is None
     assert server.semantics.get(uri) is None
+
+def test_adapter_tracks_explicit_function_exports() -> None:
+    text = "export fn public() {}\nfn private() {}\n"
+    parsed = NovaFunctionAdapter.parse(text)
+
+    assert [name for name, _ in parsed.declarations] == ["public", "private"]
+    assert parsed.exported_functions == (
+        parsed.declarations[0][1],
+    )
