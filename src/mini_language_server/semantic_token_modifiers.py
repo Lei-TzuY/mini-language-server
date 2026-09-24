@@ -256,15 +256,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             by_identity[identity] = len(decoded) - 1
 
         parsed = self.nova_adapter.parse(text)
+        snapshots = self.workspace_symbols.snapshots()
         function_token_type = _TOKEN_TYPE_INDEX["function"]
         for name, span in parsed.calls:
             identity = self._token_identity(source, span, requested_span)
             if identity is None or identity in by_identity:
                 continue
-            declarations = tuple(
-                declaration
-                for declaration in self.workspace_symbols.declarations(name)
-                if declaration.symbol.kind == "function"
+            declarations = self._nova_visible_function_declarations(
+                semantics,
+                snapshots,
+                name,
             )
             if len(declarations) != 1:
                 continue

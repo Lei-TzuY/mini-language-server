@@ -155,10 +155,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 if parsed is None:
                     continue
                 _, _, arguments = parsed
-                declarations = tuple(
-                    declaration
-                    for declaration in self.workspace_symbols.declarations(name)
-                    if declaration.symbol.kind == "function"
+                declarations = self._nova_visible_function_declarations(
+                    semantics,
+                    snapshots,
+                    name,
                 )
                 if len(declarations) != 1:
                     continue
