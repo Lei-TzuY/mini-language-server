@@ -327,10 +327,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             semantics,
             snapshots,
         )
-        for declarations in visible_functions.values():
+        for binding_name, declarations in visible_functions.items():
             for declaration in declarations:
                 symbol = declaration.symbol
-                items.setdefault((symbol.name, symbol.kind), symbol.kind)
+                items.setdefault((binding_name, symbol.kind), symbol.kind)
 
         for name, kind in tuple(items):
             if kind != "function":
