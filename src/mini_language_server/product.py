@@ -52,7 +52,11 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
 
         text = snapshot.symbols.syntax.document.text
         for name, span in tree.calls:
-            candidates = functions.get(name, [])
+            candidates = self._nova_function_candidate_pairs(
+                snapshot,
+                name,
+                tuple(functions.get(name, ())),
+            )
             if len(candidates) != 1:
                 continue
             candidate_snapshot, candidate_symbol = candidates[0]
@@ -99,10 +103,10 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
             ]
             text = snapshot.symbols.syntax.document.text
             for name, span in tree.calls:
-                declarations = tuple(
-                    declaration
-                    for declaration in self.workspace_symbols.declarations(name)
-                    if declaration.symbol.kind == "function"
+                declarations = self._nova_function_declarations(
+                    snapshot,
+                    name,
+                    snapshots,
                 )
                 if len(declarations) == 0:
                     diagnostics.append(
