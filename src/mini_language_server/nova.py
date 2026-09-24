@@ -31,7 +31,7 @@ _PARAMETER = re.compile(
     rf"^\s*({_IDENTIFIER})(?:\s*:\s*{_SIMPLE_TYPE_REF})?\s*$"
 )
 _LOCAL_DECLARATION = re.compile(rf"\b(?:let|var)\s+({_IDENTIFIER})\b")
-_KEYWORDS = frozenset({"fn", "let", "var"})
+_KEYWORDS = frozenset({"export", "fn", "let", "var"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +58,7 @@ class NovaFunctionSyntax:
     declarations: tuple[tuple[str, Span], ...]
     calls: tuple[tuple[str, Span], ...]
     imports: tuple[NovaImportSyntax, ...] = ()
+    exported_functions: tuple[Span, ...] = ()
     parameters: tuple[NovaScopedName, ...] = ()
     parameter_references: tuple[NovaScopedName, ...] = ()
     locals: tuple[NovaScopedName, ...] = ()
@@ -129,6 +130,10 @@ class NovaFunctionAdapter:
         declaration_spans: set[Span] = set()
 
         matches = tuple(_FUNCTION_DECLARATION.finditer(text))
+        exported_candidates = {
+            Span(match.start(1), match.end(1))
+            for match in _EXPORTED_FUNCTION_DECLARATION.finditer(text)
+        }
         function_extents: list[Span] = []
         for match in matches:
             opening_brace = match.end() - 1
@@ -222,6 +227,12 @@ class NovaFunctionAdapter:
             declarations=tuple(declarations),
             calls=calls,
             imports=imports,
+            exported_functions=tuple(
+                sorted(
+                    exported_candidates & declaration_spans,
+                    key=lambda span: (span.start, span.end),
+                )
+            ),
             parameters=tuple(parameters),
             parameter_references=tuple(parameter_references),
             locals=tuple(locals_),
