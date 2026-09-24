@@ -2260,6 +2260,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 if declarations
             }
 
+            namespace_exports = self._nova_direct_exported_namespace_targets(
+                target,
+                snapshot_tuple,
+            )
             seen_imports: set[str] = set()
             for selected in item.names:
                 binding_name = selected.binding_name
@@ -2276,6 +2280,73 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 seen_imports.add(binding_name)
 
                 candidates = target_visible.get(selected.name, ())
+                namespace_target = namespace_exports.get(selected.name)
+                if namespace_target is not None:
+                    if candidates:
+                        namespace_export_span = next(
+                            (
+                                exported.span
+                                for exported in target_tree.exports
+                                if exported.name == selected.name
+                            ),
+                            selected.span,
+                        ) if isinstance(target_tree, NovaFunctionSyntax) else selected.span
+                        related = [
+                            DiagnosticRelatedInformation(
+                                target.uri,
+                                namespace_export_span,
+                                (
+                                    "candidate exported namespace "
+                                    f"'{selected.name}' is here"
+                                ),
+                                semantic=target,
+                            )
+                        ]
+                        related.extend(
+                            DiagnosticRelatedInformation(
+                                candidate.uri,
+                                candidate.symbol.span,
+                                (
+                                    "candidate imported function declaration "
+                                    f"'{selected.name}' is here"
+                                ),
+                                semantic=candidate.snapshot,
+                            )
+                            for candidate in candidates
+                        )
+                        diagnostics.append(
+                            Diagnostic(
+                                selected.span,
+                                f"ambiguous imported name '{selected.name}'",
+                                code="nova.ambiguous-import-name",
+                                source="nova",
+                                related_information=tuple(related),
+                            )
+                        )
+                        continue
+                    if binding_name in {"Int", "UInt"}:
+                        diagnostics.append(
+                            Diagnostic(
+                                selected.binding_span,
+                                f"reserved import namespace '{binding_name}'",
+                                code="nova.reserved-import-namespace",
+                                source="nova",
+                            )
+                        )
+                        continue
+                    if binding_name in seen_namespaces:
+                        diagnostics.append(
+                            Diagnostic(
+                                selected.binding_span,
+                                f"duplicate import namespace '{binding_name}'",
+                                code="nova.duplicate-import-namespace",
+                                source="nova",
+                            )
+                        )
+                        continue
+                    seen_namespaces.add(binding_name)
+                    continue
+
                 if not candidates:
                     diagnostics.append(
                         Diagnostic(
