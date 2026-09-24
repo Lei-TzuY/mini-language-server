@@ -675,20 +675,20 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if imported.selected is not None and imported.selected.alias is None:
                 return super()._handle_workspace_prepare_rename(request_id, params)
             old_name = imported.name
-            if self._nova_import_namespace_is_outward(tree, old_name):
-                if (
-                    self._outward_namespace_rename_plan(
-                        semantics,
-                        snapshots,
-                        namespace_target,
-                        old_name,
-                    )
-                    is None
-                ):
-                    return super()._handle_workspace_prepare_rename(
-                        request_id,
-                        params,
-                    )
+            if (
+                self._nova_import_namespace_is_outward(tree, old_name)
+                and self._outward_namespace_rename_plan(
+                    semantics,
+                    snapshots,
+                    namespace_target,
+                    old_name,
+                )
+                is None
+            ):
+                return super()._handle_workspace_prepare_rename(
+                    request_id,
+                    params,
+                )
             try:
                 context = self.requests.start(request_id, uri=semantics.uri)
             except RequestError:
