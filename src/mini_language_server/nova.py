@@ -114,7 +114,7 @@ class NovaFunctionAdapter:
     @classmethod
     def parse(cls, text: str) -> NovaFunctionSyntax:
         declarations: list[tuple[str, Span]] = []
-        imports = tuple(
+        import_candidates = tuple(
             NovaImportSyntax(
                 match.group(1),
                 Span(match.start(1), match.end(1)),
@@ -129,6 +129,20 @@ class NovaFunctionAdapter:
         declaration_spans: set[Span] = set()
 
         matches = tuple(_FUNCTION_DECLARATION.finditer(text))
+        function_extents: list[Span] = []
+        for match in matches:
+            opening_brace = match.end() - 1
+            closing_brace = cls._matching_brace(text, opening_brace)
+            if closing_brace is not None:
+                function_extents.append(Span(match.start(), closing_brace + 1))
+        imports = tuple(
+            item
+            for item in import_candidates
+            if not any(
+                extent.start <= item.span.start < extent.end
+                for extent in function_extents
+            )
+        )
         call_spans = {
             Span(match.start(1), match.end(1)) for match in _CALL.finditer(text)
         }
