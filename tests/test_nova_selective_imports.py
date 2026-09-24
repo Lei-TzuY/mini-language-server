@@ -495,28 +495,51 @@ def test_canonical_rename_updates_alias_source_selector_but_preserves_alias_call
     changes = renamed["result"]["changes"]
 
     provider_edits = changes[provider_uri]
-    assert [provider[server._source_text(provider).offset_at(
-        server._position_from_lsp(edit["range"]["start"])
-    ):server._source_text(provider).offset_at(
-        server._position_from_lsp(edit["range"]["end"])
-    )] for edit in provider_edits] == ["source", "source"]
+    assert provider_edits == [
+        {
+            "range": {
+                "start": {"line": 0, "character": 3},
+                "end": {"line": 0, "character": 9},
+            },
+            "newText": "renamed",
+        },
+        {
+            "range": {
+                "start": {"line": 1, "character": 9},
+                "end": {"line": 1, "character": 15},
+            },
+            "newText": "renamed",
+        },
+    ]
 
     alias_edits = changes[alias_uri]
-    assert len(alias_edits) == 1
-    assert alias_edits[0]["newText"] == "renamed"
-    alias_range = alias_edits[0]["range"]
-    alias_start = server._source_text(aliased).offset_at(
-        server._position_from_lsp(alias_range["start"])
-    )
-    alias_end = server._source_text(aliased).offset_at(
-        server._position_from_lsp(alias_range["end"])
-    )
-    assert aliased[alias_start:alias_end] == "source"
-    assert "local" not in [edit["newText"] for edit in alias_edits]
+    assert alias_edits == [
+        {
+            "range": {
+                "start": {"line": 0, "character": 9},
+                "end": {"line": 0, "character": 15},
+            },
+            "newText": "renamed",
+        }
+    ]
 
     canonical_edits = changes[canonical_uri]
-    assert len(canonical_edits) == 2
-    assert all(edit["newText"] == "renamed" for edit in canonical_edits)
+    assert canonical_edits == [
+        {
+            "range": {
+                "start": {"line": 0, "character": 9},
+                "end": {"line": 0, "character": 15},
+            },
+            "newText": "renamed",
+        },
+        {
+            "range": {
+                "start": {"line": 1, "character": 17},
+                "end": {"line": 1, "character": 23},
+            },
+            "newText": "renamed",
+        },
+    ]
 
     prepared = server.handle(
         request(
