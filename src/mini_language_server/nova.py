@@ -308,6 +308,11 @@ class NovaFunctionAdapter:
                 namespace_counts[imported.namespace] = (
                     namespace_counts.get(imported.namespace, 0) + 1
                 )
+            if imported.has_name_list:
+                for selected in imported.names:
+                    namespace_counts[selected.binding_name] = (
+                        namespace_counts.get(selected.binding_name, 0) + 1
+                    )
         function_names = {match.group(1) for match in matches}
         qualified_call_matches = tuple(
             match

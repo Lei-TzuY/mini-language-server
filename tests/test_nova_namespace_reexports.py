@@ -270,3 +270,226 @@ def test_closed_namespace_reexport_uses_detached_graph(tmp_path: Path) -> None:
     assert "nova.unresolved-function" not in codes
     assert server.documents.get(root_uri) is None
     assert server.diagnostics.get(root_uri) is None
+
+
+def test_selective_namespace_reexport_chains_exact_object_identity() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    first_uri = "file:///workspace/first.nova"
+    second_uri = "file:///workspace/second.nova"
+    root_uri = "file:///workspace/root.nova"
+    provider = "fn target() {}\nexport { target };\n"
+    first = "import * as api from ./provider.nova;\nexport { api };\n"
+    second = (
+        "import { api as facade } from ./first.nova;\n"
+        "export { facade };\n"
+        "fn second() { facade::target(); }\n"
+    )
+    root = (
+        "import { facade as surface } from ./second.nova;\n"
+        "fn root() { surface::target(); }\n"
+    )
+    open_nova(server, provider_uri, provider)
+    open_nova(server, first_uri, first)
+    open_nova(server, second_uri, second)
+    open_nova(server, root_uri, root)
+
+    assert "nova.unresolved-import-name" not in diagnostic_codes(server, second_uri)
+    assert "nova.unresolved-export" not in diagnostic_codes(server, second_uri)
+    assert "nova.unresolved-function" not in diagnostic_codes(server, second_uri)
+    assert "nova.unresolved-import-name" not in diagnostic_codes(server, root_uri)
+    assert "nova.unresolved-function" not in diagnostic_codes(server, root_uri)
+
+    definition = server.handle(
+        request(
+            "textDocument/definition",
+            50,
+            {
+                "textDocument": {"uri": root_uri},
+                "position": position(root, "target", delta=1),
+            },
+        )
+    )
+    assert definition is not None
+    assert definition["result"][0]["targetUri"] == provider_uri
+
+    references = server.handle(
+        request(
+            "textDocument/references",
+            51,
+            {
+                "textDocument": {"uri": provider_uri},
+                "position": position(provider, "target", delta=1),
+                "context": {"includeDeclaration": True},
+            },
+        )
+    )
+    assert references is not None
+    assert {item["uri"] for item in references["result"]} == {
+        provider_uri,
+        second_uri,
+        root_uri,
+    }
+
+
+def test_selective_namespace_reexport_selector_shares_local_identity() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    first_uri = "file:///workspace/first.nova"
+    second_uri = "file:///workspace/second.nova"
+    open_nova(server, provider_uri, "fn target() {}\nexport { target };\n")
+    open_nova(
+        server,
+        first_uri,
+        "import * as api from ./provider.nova;\nexport { api };\n",
+    )
+    second = (
+        "import { api as facade } from ./first.nova;\n"
+        "export { facade };\n"
+        "fn second() { facade::target(); }\n"
+    )
+    open_nova(server, second_uri, second)
+
+    defined = server.handle(
+        request(
+            "textDocument/definition",
+            60,
+            {
+                "textDocument": {"uri": second_uri},
+                "position": position(second, "facade };", delta=1),
+            },
+        )
+    )
+    assert defined is not None
+    assert defined["result"][0]["targetUri"] == second_uri
+    assert defined["result"][0]["targetSelectionRange"]["start"] == position(
+        second,
+        "facade } from",
+    )
+
+    references = server.handle(
+        request(
+            "textDocument/references",
+            61,
+            {
+                "textDocument": {"uri": second_uri},
+                "position": position(second, "facade };", delta=1),
+                "context": {"includeDeclaration": True},
+            },
+        )
+    )
+    assert references is not None
+    assert [item["range"]["start"]["line"] for item in references["result"]] == [0, 1, 2]
+
+
+def test_selective_namespace_reexport_function_collision_fails_closed() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    first_uri = "file:///workspace/first.nova"
+    second_uri = "file:///workspace/second.nova"
+    root_uri = "file:///workspace/root.nova"
+    open_nova(server, provider_uri, "fn target() {}\nexport { target };\n")
+    open_nova(
+        server,
+        first_uri,
+        "import * as api from ./provider.nova;\nexport { api };\n",
+    )
+    second = (
+        "import { api as facade } from ./first.nova;\n"
+        "fn facade() {}\n"
+        "export { facade };\n"
+    )
+    root = (
+        "import { facade as surface } from ./second.nova;\n"
+        "fn root() { surface::target(); }\n"
+    )
+    open_nova(server, second_uri, second)
+    open_nova(server, root_uri, root)
+
+    assert "nova.ambiguous-export" in diagnostic_codes(server, second_uri)
+    assert "nova.unresolved-function" in diagnostic_codes(server, root_uri)
+
+
+def test_closed_selective_namespace_reexport_uses_detached_graph(tmp_path: Path) -> None:
+    provider = tmp_path / "provider.nova"
+    first = tmp_path / "first.nova"
+    second = tmp_path / "second.nova"
+    root = tmp_path / "root.nova"
+    provider.write_text(
+        "fn target(left: Int, right: Int) {}\nexport { target };\n",
+        encoding="utf-8",
+    )
+    first.write_text(
+        "import * as api from ./provider.nova;\nexport { api };\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        (
+            "import { api as facade } from ./first.nova;\n"
+            "export { facade };\n"
+        ),
+        encoding="utf-8",
+    )
+    root.write_text(
+        (
+            "import { facade as surface } from ./second.nova;\n"
+            "fn root() { surface::target(1); }\n"
+        ),
+        encoding="utf-8",
+    )
+    server = NovaProductLanguageServer()
+    initialize(server, root=tmp_path)
+    root_uri = root.as_uri()
+
+    response = server.handle(
+        request(
+            "textDocument/diagnostic",
+            70,
+            {"textDocument": {"uri": root_uri}},
+        )
+    )
+
+    assert response is not None
+    codes = [item["code"] for item in response["result"]["items"]]
+    assert "nova.unresolved-import-name" not in codes
+    assert "nova.argument-count" in codes
+    assert "nova.unresolved-function" not in codes
+    assert server.documents.get(root_uri) is None
+    assert server.diagnostics.get(root_uri) is None
+
+
+def test_exported_selective_namespace_rename_stays_fail_closed() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    first_uri = "file:///workspace/first.nova"
+    second_uri = "file:///workspace/second.nova"
+    open_nova(server, provider_uri, "fn target() {}\nexport { target };\n")
+    open_nova(
+        server,
+        first_uri,
+        "import * as api from ./provider.nova;\nexport { api };\n",
+    )
+    second = (
+        "import { api as facade } from ./first.nova;\n"
+        "export { facade };\n"
+        "fn second() { facade::target(); }\n"
+    )
+    open_nova(server, second_uri, second)
+
+    prepared = server.handle(
+        request(
+            "textDocument/prepareRename",
+            80,
+            {
+                "textDocument": {"uri": second_uri},
+                "position": position(second, "facade::target", delta=1),
+            },
+        )
+    )
+
+    assert prepared is not None
+    assert prepared["result"] is None

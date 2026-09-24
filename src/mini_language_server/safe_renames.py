@@ -327,7 +327,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         )
         if namespace_target is not None:
             imported, target_span = namespace_target
-            if imported.selected is not None and imported.selected.alias is None:
+            if (
+                imported.selected is not None
+                and imported.selected.alias is None
+            ) or self._nova_import_namespace_is_outward(tree, imported.name):
                 return super()._handle_workspace_prepare_rename(request_id, params)
             old_name = imported.name
             try:
@@ -477,7 +480,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         tree = semantics.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
             return self._result(request_id, None)
-        if imported.selected is not None and imported.selected.alias is None:
+        if (
+            imported.selected is not None
+            and imported.selected.alias is None
+        ) or self._nova_import_namespace_is_outward(tree, imported.name):
             return self._result(request_id, None)
         old_name = imported.name
 
