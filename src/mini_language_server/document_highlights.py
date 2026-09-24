@@ -6,7 +6,9 @@ from typing import Any
 
 from .cancellation import RequestCancelled, StaleRequest
 from .document_symbols import NovaProductLanguageServer as _NovaProductLanguageServer
+from .semantic import SemanticError
 from .server import ServerState
+from .workspace import WorkspaceIndexError
 
 _DOCUMENT_HIGHLIGHT_READ = 2
 _DOCUMENT_HIGHLIGHT_WRITE = 3
@@ -69,8 +71,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             target = semantics.definition_at(offset)
             self.requests.checkpoint(context)
             if target is None:
+                snapshots = self.workspace_symbols.snapshots()
                 namespace_target = self._nova_import_namespace_target(
                     semantics,
+                    snapshots,
                     offset,
                 )
                 if namespace_target is None:
@@ -85,18 +89,23 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         "range": self._range(source, span),
                         "kind": (
                             _DOCUMENT_HIGHLIGHT_WRITE
-                            if imported.namespace_span == span
+                            if imported.span == span
                             else _DOCUMENT_HIGHLIGHT_READ
                         ),
                     }
                     for span in spans
                 ]
                 self.requests.checkpoint(context)
-                return self._current_semantic_result(
-                    semantics,
-                    request_id,
-                    highlights,
-                )
+                try:
+                    return self.semantics.commit_if_current(
+                        semantics,
+                        lambda: self.workspace_symbols.commit_snapshots_if_current(
+                            snapshots,
+                            lambda: self._result(request_id, highlights),
+                        ),
+                    )
+                except (SemanticError, WorkspaceIndexError):
+                    return self._error(request_id, -32801, "Content modified")
 
             spans = semantics.references_to(target, include_declaration=True)
             highlights = [

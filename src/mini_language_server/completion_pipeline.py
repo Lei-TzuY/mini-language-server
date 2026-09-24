@@ -285,11 +285,14 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             span = self._completion_identifier_span(code, offset)
             prefix = self._completion_identifier_prefix(code, offset)
             raw_namespace = self._completion_namespace_context(code, span.start)
-            tree = semantics.symbols.syntax.tree
+            snapshots = self.workspace_symbols.snapshots()
             namespace = (
                 raw_namespace
-                if isinstance(tree, NovaFunctionSyntax)
-                and self._completion_import_namespace(tree, raw_namespace)
+                if self._completion_import_namespace(
+                    semantics,
+                    snapshots,
+                    raw_namespace,
+                )
                 else None
             )
             if raw_namespace is not None and namespace is None:
@@ -303,7 +306,6 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
                 self.requests.checkpoint(request_context)
                 return self._current_semantic_result(semantics, request_id, [])
 
-            snapshots = self.workspace_symbols.snapshots()
             candidates = self._typed_completion_items(
                 semantics,
                 offset,
@@ -402,11 +404,9 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             span = self._completion_identifier_span(code, offset)
             prefix = self._completion_identifier_prefix(code, offset)
             raw_namespace = self._completion_namespace_context(code, span.start)
-            tree = semantics.symbols.syntax.tree
-            import_namespaces = (
-                self._completion_import_namespaces(tree)
-                if isinstance(tree, NovaFunctionSyntax)
-                else frozenset()
+            import_namespaces = self._completion_import_namespaces(
+                semantics,
+                snapshots,
             )
             namespace = (
                 raw_namespace
@@ -564,29 +564,29 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             projected.append(item)
         return projected
 
-    @staticmethod
     def _completion_import_namespaces(
-        tree: NovaFunctionSyntax,
+        self,
+        semantics: Any,
+        snapshots: tuple[Any, ...],
     ) -> frozenset[str]:
-        counts: dict[str, int] = {}
-        for imported in tree.imports:
-            namespace = imported.namespace
-            if namespace is None or namespace in {"Int", "UInt"}:
-                continue
-            counts[namespace] = counts.get(namespace, 0) + 1
         return frozenset(
-            namespace
-            for namespace, count in counts.items()
-            if count == 1
+            binding.name
+            for binding in self._nova_import_namespace_bindings(
+                semantics,
+                snapshots,
+            )
         )
 
-    @classmethod
     def _completion_import_namespace(
-        cls,
-        tree: NovaFunctionSyntax,
+        self,
+        semantics: Any,
+        snapshots: tuple[Any, ...],
         namespace: str | None,
     ) -> bool:
-        return namespace in cls._completion_import_namespaces(tree)
+        return namespace in self._completion_import_namespaces(
+            semantics,
+            snapshots,
+        )
 
     @classmethod
     def _completion_namespace_context(

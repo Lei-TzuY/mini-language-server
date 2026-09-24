@@ -322,12 +322,14 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         snapshots = self.workspace_symbols.snapshots()
         namespace_target = self._nova_import_namespace_target(
             semantics,
+            snapshots,
             offset,
         )
         if namespace_target is not None:
             imported, target_span = namespace_target
-            old_name = imported.namespace
-            assert old_name is not None
+            if imported.selected is not None and imported.selected.alias is None:
+                return super()._handle_workspace_prepare_rename(request_id, params)
+            old_name = imported.name
             try:
                 context = self.requests.start(request_id, uri=semantics.uri)
             except RequestError:
@@ -473,13 +475,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         """Rename one importer-local namespace binding and its exact qualifiers."""
         imported, _ = namespace_target
         tree = semantics.symbols.syntax.tree
-        if (
-            not isinstance(tree, NovaFunctionSyntax)
-            or imported.namespace is None
-            or imported.namespace_span is None
-        ):
+        if not isinstance(tree, NovaFunctionSyntax):
             return self._result(request_id, None)
-        old_name = imported.namespace
+        if imported.selected is not None and imported.selected.alias is None:
+            return self._result(request_id, None)
+        old_name = imported.name
 
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
@@ -510,10 +510,22 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 except WorkspaceIndexError:
                     return self._error(request_id, -32801, "Content modified")
 
-            if any(
-                other is not imported and other.namespace == new_name
-                for other in tree.imports
-            ):
+            namespace_bindings = self._nova_import_namespace_bindings(
+                semantics,
+                snapshots,
+            )
+            namespace_conflict = any(
+                other.span != imported.span and other.name == new_name
+                for other in namespace_bindings
+            )
+            selective_conflict = any(
+                selected.binding_span != imported.span
+                and selected.binding_name == new_name
+                for imported_syntax in tree.imports
+                if imported_syntax.has_name_list
+                for selected in imported_syntax.names
+            )
+            if namespace_conflict or selective_conflict:
                 return self._error(
                     request_id,
                     -32803,
@@ -523,9 +535,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             source = self._source_text(semantics.symbols.syntax.document.text)
             edits: list[tuple[int, dict[str, Any]]] = [
                 (
-                    imported.namespace_span.start,
+                    imported.span.start,
                     {
-                        "range": self._range(source, imported.namespace_span),
+                        "range": self._range(source, imported.span),
                         "newText": new_name,
                     },
                 )
@@ -701,6 +713,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 if isinstance(tree, NovaFunctionSyntax):
                     namespace_target = self._nova_import_namespace_target(
                         semantics,
+                        snapshots,
                         offset,
                     )
                     if namespace_target is not None:
