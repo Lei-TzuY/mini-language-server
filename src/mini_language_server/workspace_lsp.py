@@ -14,7 +14,7 @@ from .diagnostics import (
     DiagnosticSnapshot,
 )
 from .documents import Document, DocumentError
-from .nova import NovaFunctionSyntax, NovaImportNameSyntax, NovaLanguageServer
+from .nova import NovaFunctionSyntax, NovaImportNameSyntax, NovaImportSyntax, NovaLanguageServer
 from .semantic import SemanticError, SemanticSnapshot
 from .server import LanguageServer, ServerState
 from .source import Span
@@ -1703,6 +1703,53 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         ):
             return None
         return selected, declaration
+
+    @staticmethod
+    def _nova_import_namespace_target(
+        importer: SemanticSnapshot,
+        offset: int,
+    ) -> tuple[NovaImportSyntax, Span] | None:
+        """Return one unique importer-local namespace binding addressed by exact syntax."""
+        tree = importer.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return None
+
+        addressed_name: str | None = None
+        addressed_span: Span | None = None
+        for imported in tree.imports:
+            span = imported.namespace_span
+            if (
+                imported.namespace is not None
+                and span is not None
+                and span.start <= offset < span.end
+            ):
+                addressed_name = imported.namespace
+                addressed_span = span
+                break
+
+        if addressed_name is None:
+            for namespace, span in tree.namespace_references:
+                if span.start <= offset < span.end:
+                    addressed_name = namespace
+                    addressed_span = span
+                    break
+
+        if (
+            addressed_name is None
+            or addressed_span is None
+            or addressed_name in {"Int", "UInt"}
+        ):
+            return None
+
+        bindings = tuple(
+            imported
+            for imported in tree.imports
+            if imported.namespace == addressed_name
+            and imported.namespace_span is not None
+        )
+        if len(bindings) != 1:
+            return None
+        return bindings[0], addressed_span
 
     def _nova_import_alias_target(
         self,

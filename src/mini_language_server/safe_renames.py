@@ -320,6 +320,39 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return super()._handle_workspace_prepare_rename(request_id, params)
 
         snapshots = self.workspace_symbols.snapshots()
+        namespace_target = self._nova_import_namespace_target(
+            semantics,
+            offset,
+        )
+        if namespace_target is not None:
+            imported, target_span = namespace_target
+            old_name = imported.namespace
+            assert old_name is not None
+            try:
+                context = self.requests.start(request_id, uri=semantics.uri)
+            except RequestError:
+                return self._error(request_id, -32602, "Invalid params")
+            try:
+                self.requests.checkpoint(context)
+                result = {
+                    "range": self._range(source, target_span),
+                    "placeholder": old_name,
+                }
+                self.requests.checkpoint(context)
+                try:
+                    return self.workspace_symbols.commit_snapshots_if_current(
+                        snapshots,
+                        lambda: self._result(request_id, result),
+                    )
+                except WorkspaceIndexError:
+                    return self._error(request_id, -32801, "Content modified")
+            except RequestCancelled:
+                return self._error(request_id, -32800, "Request cancelled")
+            except StaleRequest:
+                return self._error(request_id, -32801, "Content modified")
+            finally:
+                self.requests.finish(context)
+
         workspace_query = self._workspace_function_query(params)
         if workspace_query is not None:
             _, query_name = workspace_query
@@ -419,6 +452,107 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 return self.workspace_symbols.commit_snapshots_if_current(
                     snapshots,
                     lambda: self._result(request_id, result),
+                )
+            except WorkspaceIndexError:
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
+    def _handle_import_namespace_rename(
+        self,
+        request_id: Any,
+        semantics: Any,
+        snapshots: tuple[Any, ...],
+        namespace_target: tuple[Any, Any],
+        new_name: str,
+    ) -> dict[str, Any]:
+        """Rename one importer-local namespace binding and its exact qualifiers."""
+        imported, _ = namespace_target
+        tree = semantics.symbols.syntax.tree
+        if (
+            not isinstance(tree, NovaFunctionSyntax)
+            or imported.namespace is None
+            or imported.namespace_span is None
+        ):
+            return self._result(request_id, None)
+        old_name = imported.namespace
+
+        try:
+            context = self.requests.start(request_id, uri=semantics.uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            if not _is_nova_identifier(new_name):
+                return self._error(request_id, -32602, "Invalid params")
+            if new_name in {"Int", "UInt"}:
+                return self._error(
+                    request_id,
+                    -32803,
+                    f"Rename would conflict with reserved namespace '{new_name}'",
+                )
+
+            if new_name == old_name:
+                self.requests.checkpoint(context)
+                try:
+                    return self.workspace_symbols.commit_snapshots_if_current(
+                        snapshots,
+                        lambda: self._result(
+                            request_id,
+                            self._workspace_edit({}, versions={}),
+                        ),
+                    )
+                except WorkspaceIndexError:
+                    return self._error(request_id, -32801, "Content modified")
+
+            if any(
+                other is not imported and other.namespace == new_name
+                for other in tree.imports
+            ):
+                return self._error(
+                    request_id,
+                    -32803,
+                    f"Rename would conflict with import namespace '{new_name}'",
+                )
+
+            source = self._source_text(semantics.symbols.syntax.document.text)
+            edits: list[tuple[int, dict[str, Any]]] = [
+                (
+                    imported.namespace_span.start,
+                    {
+                        "range": self._range(source, imported.namespace_span),
+                        "newText": new_name,
+                    },
+                )
+            ]
+            edits.extend(
+                (
+                    span.start,
+                    {
+                        "range": self._range(source, span),
+                        "newText": new_name,
+                    },
+                )
+                for namespace, span in tree.namespace_references
+                if namespace == old_name
+            )
+            edits.sort(key=lambda item: item[0])
+            workspace_edit = self._workspace_edit(
+                {semantics.uri: [edit for _, edit in edits]},
+                versions=self._workspace_edit_versions(snapshots),
+                annotation_label=f"Rename namespace '{old_name}' to '{new_name}'",
+            )
+
+            self.requests.checkpoint(context)
+            try:
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots,
+                    lambda: self._result(request_id, workspace_edit),
                 )
             except WorkspaceIndexError:
                 return self._error(request_id, -32801, "Content modified")
@@ -565,6 +699,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if semantics is not None:
                 tree = semantics.symbols.syntax.tree
                 if isinstance(tree, NovaFunctionSyntax):
+                    namespace_target = self._nova_import_namespace_target(
+                        semantics,
+                        offset,
+                    )
+                    if namespace_target is not None:
+                        return self._handle_import_namespace_rename(
+                            request_id,
+                            semantics,
+                            snapshots,
+                            namespace_target,
+                            new_name,
+                        )
                     alias_target = self._nova_import_alias_target(
                         semantics,
                         snapshots,
