@@ -61,6 +61,7 @@ _NOVA_IMPORT_DIAGNOSTIC_CODES = frozenset(
         "nova.ambiguous-import-name",
         "nova.duplicate-export",
         "nova.unresolved-export",
+        "nova.unresolved-export-target",
         "nova.ambiguous-export",
         "nova.private-export",
     }
@@ -2089,6 +2090,13 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         """Whether one diagnostic is wholly recomputed from the import graph."""
         return code in _NOVA_IMPORT_DIAGNOSTIC_CODES
 
+    @staticmethod
+    def _nova_module_dependency_edges(
+        tree: NovaFunctionSyntax,
+    ) -> tuple[Any, ...]:
+        """Return exact local-file module edges that affect outward semantics."""
+        return (*tree.imports, *tree.wildcard_exports)
+
     def _nova_import_cycle_edges(
         self,
         snapshots: tuple[SemanticSnapshot, ...],
@@ -2111,7 +2119,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
                 continue
-            for item in tree.imports:
+            for item in self._nova_module_dependency_edges(tree):
                 target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
                 if target_uri is None:
                     continue
@@ -2193,14 +2201,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         tree = target.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
             return ()
-        for item in tree.imports:
+        for item in self._nova_module_dependency_edges(tree):
             if item.span not in target_spans:
                 continue
+            kind = "import" if item in tree.imports else "wildcard export"
             return (
                 DiagnosticRelatedInformation(
                     target.uri,
                     item.span,
-                    f"import cycle continues through '{item.path}'",
+                    f"{kind} cycle continues through '{item.path}'",
                     semantic=target,
                 ),
             )
