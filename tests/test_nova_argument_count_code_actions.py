@@ -233,6 +233,7 @@ def test_argument_count_quick_fix_honors_cancellation_checkpoint() -> None:
         "error": {"code": -32800, "message": "Request cancelled"},
     }
 
+
 def test_argument_count_quick_fix_uses_versioned_edit_when_negotiated() -> None:
     server = initialized_server(document_changes=True)
     uri = "file:///workspace/main.nova"
@@ -259,6 +260,7 @@ def test_argument_count_quick_fix_uses_versioned_edit_when_negotiated() -> None:
             ],
         }
     ]
+
 
 def test_argument_count_quick_fix_follows_transitive_import_visibility() -> None:
     server = initialized_server()
