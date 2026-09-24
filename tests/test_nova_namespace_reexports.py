@@ -467,7 +467,7 @@ def test_closed_selective_namespace_reexport_uses_detached_graph(tmp_path: Path)
     assert server.diagnostics.get(root_uri) is None
 
 
-def test_exported_selective_namespace_rename_stays_fail_closed() -> None:
+def test_exported_selective_namespace_alias_supports_prepare_rename() -> None:
     server = NovaProductLanguageServer()
     initialize(server)
     provider_uri = "file:///workspace/provider.nova"
@@ -498,7 +498,11 @@ def test_exported_selective_namespace_rename_stays_fail_closed() -> None:
     )
 
     assert prepared is not None
-    assert prepared["result"] is None
+    assert prepared["result"]["placeholder"] == "facade"
+    assert prepared["result"]["range"]["start"] == position(
+        second,
+        "facade::target",
+    )
 
 def test_exported_namespace_rename_propagates_unaliased_selective_edges() -> None:
     server = NovaProductLanguageServer()
