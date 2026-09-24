@@ -22,6 +22,9 @@ _FUNCTION_DECLARATION = re.compile(
     rf"(?:->\s*{_SIMPLE_TYPE_REF}\s*)?\{{"
 )
 _CALL = re.compile(rf"\b({_IDENTIFIER})\s*(?=\()")
+_QUALIFIED_CALL = re.compile(
+    rf"\b({_IDENTIFIER})\s*::\s*({_IDENTIFIER})\s*(?=\()"
+)
 _IMPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*import[ \t]+((?:\./|\.\./|@/)(?:[A-Za-z0-9_.~%+-]+/)*"
     r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
@@ -29,6 +32,11 @@ _IMPORT_DECLARATION = re.compile(
 _SELECTIVE_IMPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*import[ \t]*\{([^}\r\n]*)\}[ \t]+from[ \t]+"
     r"((?:\./|\.\./|@/)(?:[A-Za-z0-9_.~%+-]+/)*"
+    r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
+)
+_NAMESPACE_IMPORT_DECLARATION = re.compile(
+    rf"(?m)^[ \t]*import[ \t]+\*[ \t]+as[ \t]+({_IDENTIFIER})[ \t]+"
+    r"from[ \t]+((?:\./|\.\./|@/)(?:[A-Za-z0-9_.~%+-]+/)*"
     r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
 )
 _IMPORT_NAME = re.compile(rf"(?:^|,)[ \t]*({_IDENTIFIER})[ \t]*(?=,|$)")
@@ -86,6 +94,8 @@ class NovaImportSyntax:
     span: Span
     names: tuple[NovaImportNameSyntax, ...] = ()
     has_name_list: bool = False
+    namespace: str | None = None
+    namespace_span: Span | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,9 +219,25 @@ class NovaFunctionAdapter:
             )
             for declaration in selective_import_declarations
         )
+        namespace_import_candidates = tuple(
+            NovaImportSyntax(
+                declaration.group(2),
+                Span(declaration.start(2), declaration.end(2)),
+                namespace=declaration.group(1),
+                namespace_span=Span(
+                    declaration.start(1),
+                    declaration.end(1),
+                ),
+            )
+            for declaration in _NAMESPACE_IMPORT_DECLARATION.finditer(text)
+        )
         import_candidates = tuple(
             sorted(
-                (*bare_import_candidates, *selective_import_candidates),
+                (
+                    *bare_import_candidates,
+                    *selective_import_candidates,
+                    *namespace_import_candidates,
+                ),
                 key=lambda item: item.span.start,
             )
         )
@@ -264,9 +290,28 @@ class NovaFunctionAdapter:
             )
             for declaration in export_declarations
         )
-        call_spans = {
-            Span(match.start(1), match.end(1)) for match in _CALL.finditer(text)
+        namespace_aliases = {
+            item.namespace
+            for item in imports
+            if item.namespace is not None
         }
+        qualified_call_matches = tuple(
+            match
+            for match in _QUALIFIED_CALL.finditer(text)
+            if match.group(1) in namespace_aliases
+        )
+        qualified_member_spans = {
+            Span(match.start(2), match.end(2))
+            for match in qualified_call_matches
+        }
+        call_spans = {
+            Span(match.start(1), match.end(1))
+            for match in _CALL.finditer(text)
+        }
+        call_spans.update(
+            Span(match.start(1), match.end(1))
+            for match in qualified_call_matches
+        )
 
         for match in matches:
             owner = Span(match.start(1), match.end(1))
@@ -337,9 +382,26 @@ class NovaFunctionAdapter:
                     unresolved_names.append(NovaScopedName(owner, name, span))
 
         calls = tuple(
-            (match.group(1), Span(match.start(1), match.end(1)))
-            for match in _CALL.finditer(text)
-            if Span(match.start(1), match.end(1)) not in declaration_spans
+            sorted(
+                (
+                    *(
+                        (match.group(1), Span(match.start(1), match.end(1)))
+                        for match in _CALL.finditer(text)
+                        if Span(match.start(1), match.end(1))
+                        not in declaration_spans
+                        and Span(match.start(1), match.end(1))
+                        not in qualified_member_spans
+                    ),
+                    *(
+                        (
+                            f"{match.group(1)}::{match.group(2)}",
+                            Span(match.start(2), match.end(2)),
+                        )
+                        for match in qualified_call_matches
+                    ),
+                ),
+                key=lambda item: item[1].start,
+            )
         )
         return NovaFunctionSyntax(
             declarations=tuple(declarations),
