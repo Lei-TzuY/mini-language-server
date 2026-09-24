@@ -313,3 +313,179 @@ def test_direct_import_visibility_scopes_reference_code_lens() -> None:
     )
     assert locations is not None
     assert [item["uri"] for item in locations["result"]] == [caller_a_uri]
+
+def test_transitive_import_visibility_aligns_resolution_surfaces() -> None:
+    server = initialized_server()
+    helper_uri = "file:///workspace/helper.nova"
+    middle_uri = "file:///workspace/middle.nova"
+    caller_uri = "file:///workspace/caller.nova"
+    helper = "fn transit(value: Int) -> Int { value }\n"
+    middle = "import ./helper.nova;\nfn middle() {}\n"
+    caller = "import ./middle.nova;\nfn caller() { transit(1) }\n"
+    open_nova(server, helper_uri, helper)
+    open_nova(server, middle_uri, middle)
+    open_nova(server, caller_uri, caller)
+    call = position(caller, "transit", delta=1)
+
+    assert "nova.unresolved-function" not in diagnostic_codes(server, caller_uri)
+    assert "nova.ambiguous-function" not in diagnostic_codes(server, caller_uri)
+
+    definition = server.handle(
+        request(
+            "textDocument/definition",
+            40,
+            {"textDocument": {"uri": caller_uri}, "position": call},
+        )
+    )
+    assert definition is not None
+    assert definition["result"][0]["targetUri"] == helper_uri
+
+    hover = server.handle(
+        request(
+            "textDocument/hover",
+            41,
+            {"textDocument": {"uri": caller_uri}, "position": call},
+        )
+    )
+    assert hover is not None
+    assert hover["result"]["contents"]["value"] == "fn transit(value: Int) -> Int"
+
+    completion = server.handle(
+        request(
+            "textDocument/completion",
+            42,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": position(caller, "transit"),
+            },
+        )
+    )
+    assert completion is not None
+    assert "transit" in {item["label"] for item in completion["result"]}
+
+    references = server.handle(
+        request(
+            "textDocument/references",
+            43,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": call,
+                "context": {"includeDeclaration": True},
+            },
+        )
+    )
+    assert references is not None
+    assert [item["uri"] for item in references["result"]] == [
+        helper_uri,
+        caller_uri,
+    ]
+
+    rename = server.handle(
+        request(
+            "textDocument/rename",
+            44,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": call,
+                "newName": "transit_renamed",
+            },
+        )
+    )
+    assert rename is not None
+    assert set(rename["result"]["changes"]) == {helper_uri, caller_uri}
+
+
+def test_transitive_import_visibility_deduplicates_diamonds_and_cycles() -> None:
+    server = initialized_server()
+    shared_uri = "file:///workspace/shared.nova"
+    left_uri = "file:///workspace/left.nova"
+    right_uri = "file:///workspace/right.nova"
+    root_uri = "file:///workspace/root.nova"
+    cycle_a_uri = "file:///workspace/cycle-a.nova"
+    cycle_b_uri = "file:///workspace/cycle-b.nova"
+
+    open_nova(server, shared_uri, "fn shared() {}\n")
+    open_nova(
+        server,
+        left_uri,
+        "import ./shared.nova;\nfn left() {}\n",
+    )
+    open_nova(
+        server,
+        right_uri,
+        "import ./shared.nova;\nfn right() {}\n",
+    )
+    root = (
+        "import ./left.nova;\n"
+        "import ./right.nova;\n"
+        "fn root() { shared() }\n"
+    )
+    open_nova(server, root_uri, root)
+
+    assert "nova.ambiguous-function" not in diagnostic_codes(server, root_uri)
+    definition = server.handle(
+        request(
+            "textDocument/definition",
+            50,
+            {
+                "textDocument": {"uri": root_uri},
+                "position": position(root, "shared", delta=1),
+            },
+        )
+    )
+    assert definition is not None
+    assert definition["result"][0]["targetUri"] == shared_uri
+
+    open_nova(
+        server,
+        cycle_a_uri,
+        "import ./cycle-b.nova;\nfn from_a() {}\n",
+    )
+    cycle_b = "import ./cycle-a.nova;\nfn from_b() { from_a() }\n"
+    open_nova(server, cycle_b_uri, cycle_b)
+
+    assert "nova.unresolved-function" not in diagnostic_codes(server, cycle_b_uri)
+    cycle_definition = server.handle(
+        request(
+            "textDocument/definition",
+            51,
+            {
+                "textDocument": {"uri": cycle_b_uri},
+                "position": position(cycle_b, "from_a", delta=1),
+            },
+        )
+    )
+    assert cycle_definition is not None
+    assert cycle_definition["result"][0]["targetUri"] == cycle_a_uri
+
+
+def test_transitive_import_visibility_preserves_local_precedence() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    middle_uri = "file:///workspace/middle-local.nova"
+    caller_uri = "file:///workspace/caller-local.nova"
+    open_nova(server, provider_uri, "fn target(value: String) -> String { value }\n")
+    open_nova(
+        server,
+        middle_uri,
+        "import ./provider.nova;\nfn middle() {}\n",
+    )
+    caller = (
+        "import ./middle-local.nova;\n"
+        "fn target(value: Int) -> Int { value }\n"
+        "fn caller() { target(1) }\n"
+    )
+    open_nova(server, caller_uri, caller)
+
+    call = position(caller, "target(1)", delta=1)
+    definition = server.handle(
+        request(
+            "textDocument/definition",
+            60,
+            {"textDocument": {"uri": caller_uri}, "position": call},
+        )
+    )
+    assert definition is not None
+    assert definition["result"][0]["targetUri"] == caller_uri
+    assert definition["result"][0]["targetSelectionRange"]["start"]["line"] == 1
+    assert "nova.ambiguous-function" not in diagnostic_codes(server, caller_uri)
