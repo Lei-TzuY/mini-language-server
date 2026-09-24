@@ -1514,7 +1514,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
                 if target is None:
                     continue
-                imported_maps.append(exported(target, next_visiting))
+                target_visible = exported(target, next_visiting)
+                if item.has_name_list:
+                    selected = {name.name for name in item.names}
+                    target_visible = {
+                        name: declarations
+                        for name, declarations in target_visible.items()
+                        if name in selected
+                    }
+                imported_maps.append(target_visible)
 
             imported = merge_maps(tuple(imported_maps))
             for name in local_all:
@@ -1547,22 +1555,24 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         snapshot: SemanticSnapshot,
         snapshots: Any,
     ) -> tuple[Diagnostic, ...]:
-        """Validate exact-workspace Nova imports and explicit exports."""
+        """Validate exact-workspace Nova imports, selections, and explicit exports."""
         tree = snapshot.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
             return ()
         snapshot_tuple = tuple(snapshots)
-        known = {
-            WorkspaceFolderSet.uri_identity(candidate.uri)
+        indexed = {
+            WorkspaceFolderSet.uri_identity(candidate.uri): candidate
             for candidate in snapshot_tuple
         }
         diagnostics: list[Diagnostic] = []
         for item in tree.imports:
             target_uri = cls._nova_import_target_uri(snapshot.uri, item.path)
-            if (
-                target_uri is None
-                or WorkspaceFolderSet.uri_identity(target_uri) not in known
-            ):
+            target = (
+                None
+                if target_uri is None
+                else indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
+            )
+            if target is None:
                 diagnostics.append(
                     Diagnostic(
                         item.span,
@@ -1571,6 +1581,85 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         source="nova",
                     )
                 )
+                continue
+            if not item.has_name_list:
+                continue
+
+            target_visible = cls._nova_visible_function_map(
+                target,
+                snapshot_tuple,
+                legacy_global=False,
+                respect_root_exports=True,
+            )
+            target_tree = target.symbols.syntax.tree
+            target_private = (
+                frozenset(target_tree.private_declarations)
+                if isinstance(target_tree, NovaFunctionSyntax)
+                else frozenset()
+            )
+            target_visible = {
+                name: tuple(
+                    declaration
+                    for declaration in declarations
+                    if not (
+                        declaration.snapshot is target
+                        and declaration.symbol.span in target_private
+                    )
+                )
+                for name, declarations in target_visible.items()
+            }
+            target_visible = {
+                name: declarations
+                for name, declarations in target_visible.items()
+                if declarations
+            }
+
+            seen_imports: set[str] = set()
+            for selected in item.names:
+                if selected.name in seen_imports:
+                    diagnostics.append(
+                        Diagnostic(
+                            selected.span,
+                            f"duplicate imported function '{selected.name}'",
+                            code="nova.duplicate-import-name",
+                            source="nova",
+                        )
+                    )
+                    continue
+                seen_imports.add(selected.name)
+
+                candidates = target_visible.get(selected.name, ())
+                if not candidates:
+                    diagnostics.append(
+                        Diagnostic(
+                            selected.span,
+                            f"unresolved imported function '{selected.name}'",
+                            code="nova.unresolved-import-name",
+                            source="nova",
+                        )
+                    )
+                    continue
+                if len(candidates) > 1:
+                    diagnostics.append(
+                        Diagnostic(
+                            selected.span,
+                            f"ambiguous imported function '{selected.name}'",
+                            code="nova.ambiguous-import-name",
+                            source="nova",
+                            related_information=tuple(
+                                DiagnosticRelatedInformation(
+                                    candidate.uri,
+                                    candidate.symbol.span,
+                                    (
+                                        "candidate imported function declaration "
+                                        f"'{selected.name}' is here"
+                                    ),
+                                    semantic=candidate.snapshot,
+                                )
+                                for candidate in candidates
+                            ),
+                        )
+                    )
 
         if not tree.has_export_list:
             return tuple(diagnostics)
