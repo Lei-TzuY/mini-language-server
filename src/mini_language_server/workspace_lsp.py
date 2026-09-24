@@ -1550,6 +1550,42 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         return cls._nova_visible_function_map(importer, snapshots).get(name, ())
 
     @classmethod
+    def _nova_outward_function_map(
+        cls,
+        module: SemanticSnapshot,
+        snapshots: tuple[SemanticSnapshot, ...],
+    ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
+        """Return one module's exact externally consumable function view."""
+        visible = cls._nova_visible_function_map(
+            module,
+            snapshots,
+            legacy_global=False,
+            respect_root_exports=True,
+        )
+        tree = module.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return {}
+        private_spans = frozenset(tree.private_declarations)
+        return {
+            name: tuple(
+                declaration
+                for declaration in declarations
+                if not (
+                    declaration.snapshot is module
+                    and declaration.symbol.span in private_spans
+                )
+            )
+            for name, declarations in visible.items()
+            if any(
+                not (
+                    declaration.snapshot is module
+                    and declaration.symbol.span in private_spans
+                )
+                for declaration in declarations
+            )
+        }
+
+    @classmethod
     def _nova_import_diagnostics(
         cls,
         snapshot: SemanticSnapshot,
@@ -1585,34 +1621,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if not item.has_name_list:
                 continue
 
-            target_visible = cls._nova_visible_function_map(
+            target_visible = cls._nova_outward_function_map(
                 target,
                 snapshot_tuple,
-                legacy_global=False,
-                respect_root_exports=True,
             )
-            target_tree = target.symbols.syntax.tree
-            target_private = (
-                frozenset(target_tree.private_declarations)
-                if isinstance(target_tree, NovaFunctionSyntax)
-                else frozenset()
-            )
-            target_visible = {
-                name: tuple(
-                    declaration
-                    for declaration in declarations
-                    if not (
-                        declaration.snapshot is target
-                        and declaration.symbol.span in target_private
-                    )
-                )
-                for name, declarations in target_visible.items()
-            }
-            target_visible = {
-                name: declarations
-                for name, declarations in target_visible.items()
-                if declarations
-            }
 
             seen_imports: set[str] = set()
             for selected in item.names:
