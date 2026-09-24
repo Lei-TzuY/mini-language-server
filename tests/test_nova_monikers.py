@@ -298,3 +298,28 @@ def test_moniker_request_is_cancellable(monkeypatch) -> None:
         }
     ]
     assert len(server.requests) == 0
+
+def test_aliased_call_reuses_canonical_project_moniker() -> None:
+    server = configured_server()
+    provider_uri = "file:///workspace/provider.nova"
+    caller_uri = "file:///workspace/caller.nova"
+    provider = "fn source() {}\n"
+    caller = (
+        "import { source as local } from ./provider.nova;\n"
+        "fn caller() { local(); }\n"
+    )
+    open_nova(server, provider_uri, provider)
+    open_nova(server, caller_uri, caller)
+
+    declaration = moniker_at(server, provider_uri, provider, "source", 30)
+    alias_call = moniker_at(server, caller_uri, caller, "local", 31)
+
+    assert alias_call["result"] == declaration["result"]
+    assert alias_call["result"] == [
+        {
+            "scheme": "nova",
+            "identifier": "source",
+            "unique": "project",
+            "kind": "local",
+        }
+    ]
