@@ -26,6 +26,12 @@ _IMPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*import[ \t]+((?:\./|\.\./)(?:[A-Za-z0-9_.~%+-]+/)*"
     r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
 )
+_SELECTIVE_IMPORT_DECLARATION = re.compile(
+    r"(?m)^[ \t]*import[ \t]*\{([^}\r\n]*)\}[ \t]+from[ \t]+"
+    r"((?:\./|\.\./)(?:[A-Za-z0-9_.~%+-]+/)*"
+    r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
+)
+_IMPORT_NAME = re.compile(rf"(?:^|,)[ \t]*({_IDENTIFIER})[ \t]*(?=,|$)")
 _EXPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*export[ \t]*\{([^}\r\n]*)\}[ \t]*;?[ \t]*\r?$"
 )
@@ -49,11 +55,21 @@ class NovaScopedName:
 
 
 @dataclass(frozen=True, slots=True)
+class NovaImportNameSyntax:
+    """One exact selected function name in a relative Nova import."""
+
+    name: str
+    span: Span
+
+
+@dataclass(frozen=True, slots=True)
 class NovaImportSyntax:
     """One exact URI-relative Nova file dependency declaration."""
 
     path: str
     span: Span
+    names: tuple[NovaImportNameSyntax, ...] = ()
+    has_name_list: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,12 +148,39 @@ class NovaFunctionAdapter:
     def parse(cls, text: str) -> NovaFunctionSyntax:
         declarations: list[tuple[str, Span]] = []
         private_declarations: list[Span] = []
-        import_candidates = tuple(
+        bare_import_candidates = tuple(
             NovaImportSyntax(
                 match.group(1),
                 Span(match.start(1), match.end(1)),
             )
             for match in _IMPORT_DECLARATION.finditer(text)
+        )
+        selective_import_declarations = tuple(
+            _SELECTIVE_IMPORT_DECLARATION.finditer(text)
+        )
+        selective_import_candidates = tuple(
+            NovaImportSyntax(
+                declaration.group(2),
+                Span(declaration.start(2), declaration.end(2)),
+                names=tuple(
+                    NovaImportNameSyntax(
+                        name.group(1),
+                        Span(
+                            declaration.start(1) + name.start(1),
+                            declaration.start(1) + name.end(1),
+                        ),
+                    )
+                    for name in _IMPORT_NAME.finditer(declaration.group(1))
+                ),
+                has_name_list=True,
+            )
+            for declaration in selective_import_declarations
+        )
+        import_candidates = tuple(
+            sorted(
+                (*bare_import_candidates, *selective_import_candidates),
+                key=lambda item: item.span.start,
+            )
         )
         export_declarations = tuple(_EXPORT_DECLARATION.finditer(text))
         export_candidates = tuple(
