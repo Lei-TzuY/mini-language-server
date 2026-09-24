@@ -147,8 +147,8 @@ def test_namespace_export_selector_reuses_importer_namespace_identity() -> None:
         )
     )
     assert defined is not None
-    assert defined["result"]["uri"] == middle_uri
-    assert defined["result"]["range"]["start"] == {
+    assert defined["result"][0]["targetUri"] == middle_uri
+    assert defined["result"][0]["targetSelectionRange"]["start"] == {
         "line": 0,
         "character": len("import * as "),
     }
