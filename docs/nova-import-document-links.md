@@ -8,4 +8,4 @@ Publication captures both the primary open `SemanticSnapshot` and the complete `
 
 Unresolved imports, unsupported URI shapes, and imports that cannot resolve through the bounded same-authority local-file resolver do not produce links. Closed files remain available to pull diagnostics and may serve as link targets, but a detached closed importer does not itself own a `textDocument/documentLink` request because document-link ranges are editor-document tooling.
 
-This does not introduce package search paths, aliases, wildcard imports, imported symbol namespaces, remote-provider modules, cross-authority resolution, or lazy document-link resolution.
+Document links remain a navigation surface only. The next bounded namespace phase adds direct-import function visibility for semantic call tooling, but this document-link contract itself still does not introduce package search paths, aliases, wildcard imports, transitive re-export, non-function imported namespaces, remote-provider modules, cross-authority resolution, or lazy document-link resolution.
