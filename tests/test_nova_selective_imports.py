@@ -849,3 +849,315 @@ def test_private_alias_rename_rejects_workspace_drift() -> None:
     }
 
 
+
+def test_exported_alias_rename_propagates_explicit_selective_graph() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    middle_uri = "file:///workspace/middle.nova"
+    root_uri = "file:///workspace/root.nova"
+    leaf_uri = "file:///workspace/leaf.nova"
+    provider = "fn source() {}\n"
+    middle = (
+        "import { source as public } from ./provider.nova;\n"
+        "export { public };\n"
+        "fn middle() { public(); }\n"
+    )
+    root = (
+        "import { public } from ./middle.nova;\n"
+        "export { public };\n"
+        "fn root() { public(); }\n"
+    )
+    leaf = (
+        "import { public as local } from ./root.nova;\n"
+        "export {};\n"
+        "fn leaf() { local(); }\n"
+    )
+    open_nova(server, provider_uri, provider)
+    open_nova(server, middle_uri, middle)
+    open_nova(server, root_uri, root)
+    open_nova(server, leaf_uri, leaf)
+
+    prepared = server.handle(
+        request(
+            "textDocument/prepareRename",
+            100,
+            {
+                "textDocument": {"uri": middle_uri},
+                "position": position(middle, "public }", delta=1),
+            },
+        )
+    )
+    assert prepared is not None
+    assert prepared["result"]["placeholder"] == "public"
+
+    renamed = server.handle(
+        request(
+            "textDocument/rename",
+            101,
+            {
+                "textDocument": {"uri": middle_uri},
+                "position": position(middle, "public();", delta=1),
+                "newName": "renamed",
+            },
+        )
+    )
+    assert renamed is not None
+    changes = renamed["result"]["changes"]
+    assert set(changes) == {middle_uri, root_uri, leaf_uri}
+    assert [edit["newText"] for edit in changes[middle_uri]] == [
+        "renamed",
+        "renamed",
+        "renamed",
+    ]
+    assert [edit["newText"] for edit in changes[root_uri]] == [
+        "renamed",
+        "renamed",
+        "renamed",
+    ]
+    assert [edit["newText"] for edit in changes[leaf_uri]] == ["renamed"]
+    assert provider_uri not in changes
+
+    leaf_source_start = leaf.index("public")
+    assert changes[leaf_uri][0]["range"] == {
+        "start": {"line": 0, "character": leaf_source_start},
+        "end": {"line": 0, "character": leaf_source_start + len("public")},
+    }
+
+
+def test_exported_alias_rename_rejects_bare_import_consumer() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    middle_uri = "file:///workspace/middle.nova"
+    consumer_uri = "file:///workspace/consumer.nova"
+    open_nova(server, provider_uri, "fn source() {}\n")
+    middle = (
+        "import { source as public } from ./provider.nova;\n"
+        "export { public };\n"
+        "fn middle() { public(); }\n"
+    )
+    consumer = "import ./middle.nova;\nfn consumer() { public(); }\n"
+    open_nova(server, middle_uri, middle)
+    open_nova(server, consumer_uri, consumer)
+
+    prepared = server.handle(
+        request(
+            "textDocument/prepareRename",
+            102,
+            {
+                "textDocument": {"uri": middle_uri},
+                "position": position(middle, "public();", delta=1),
+            },
+        )
+    )
+    assert prepared is not None
+    assert prepared["result"] is None
+
+    renamed = server.handle(
+        request(
+            "textDocument/rename",
+            103,
+            {
+                "textDocument": {"uri": middle_uri},
+                "position": position(middle, "public();", delta=1),
+                "newName": "renamed",
+            },
+        )
+    )
+    assert renamed is not None
+    assert renamed["result"] is None
+
+
+def test_exported_alias_rename_rejects_implicit_downstream_export() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    middle_uri = "file:///workspace/middle.nova"
+    consumer_uri = "file:///workspace/consumer.nova"
+    open_nova(server, provider_uri, "fn source() {}\n")
+    middle = (
+        "import { source as public } from ./provider.nova;\n"
+        "export { public };\n"
+        "fn middle() { public(); }\n"
+    )
+    consumer = (
+        "import { public } from ./middle.nova;\n"
+        "fn consumer() { public(); }\n"
+    )
+    open_nova(server, middle_uri, middle)
+    open_nova(server, consumer_uri, consumer)
+
+    renamed = server.handle(
+        request(
+            "textDocument/rename",
+            104,
+            {
+                "textDocument": {"uri": middle_uri},
+                "position": position(middle, "public();", delta=1),
+                "newName": "renamed",
+            },
+        )
+    )
+    assert renamed is not None
+    assert renamed["result"] is None
+
+
+def test_exported_alias_rename_rejects_downstream_binding_collision() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    middle_uri = "file:///workspace/middle.nova"
+    consumer_uri = "file:///workspace/consumer.nova"
+    open_nova(server, provider_uri, "fn source() {}\n")
+    middle = (
+        "import { source as public } from ./provider.nova;\n"
+        "export { public };\n"
+        "fn middle() { public(); }\n"
+    )
+    consumer = (
+        "import { public } from ./middle.nova;\n"
+        "export { public };\n"
+        "fn renamed() {}\n"
+        "fn consumer() { public(); }\n"
+    )
+    open_nova(server, middle_uri, middle)
+    open_nova(server, consumer_uri, consumer)
+
+    response = server.handle(
+        request(
+            "textDocument/rename",
+            105,
+            {
+                "textDocument": {"uri": middle_uri},
+                "position": position(middle, "public();", delta=1),
+                "newName": "renamed",
+            },
+        )
+    )
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 105,
+        "error": {
+            "code": -32803,
+            "message": "Rename would conflict with existing binding 'renamed'",
+        },
+    }
+
+
+def test_exported_alias_rename_versions_closed_downstream_as_null(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    middle_file = tmp_path / "middle.nova"
+    root = tmp_path / "root.nova"
+    leaf = tmp_path / "leaf.nova"
+    provider.write_text("fn source() {}\n", encoding="utf-8")
+    middle = (
+        "import { source as public } from ./provider.nova;\n"
+        "export { public };\n"
+        "fn middle() { public(); }\n"
+    )
+    middle_file.write_text(middle, encoding="utf-8")
+    root.write_text(
+        (
+            "import { public } from ./middle.nova;\n"
+            "export { public };\n"
+            "fn root() { public(); }\n"
+        ),
+        encoding="utf-8",
+    )
+    leaf.write_text(
+        (
+            "import { public as local } from ./root.nova;\n"
+            "export {};\n"
+            "fn leaf() { local(); }\n"
+        ),
+        encoding="utf-8",
+    )
+    server = initialized_workspace_server(
+        tmp_path,
+        document_changes=True,
+    )
+    middle_uri = middle_file.as_uri()
+    open_nova(server, middle_uri, middle, version=7)
+
+    response = server.handle(
+        request(
+            "textDocument/rename",
+            106,
+            {
+                "textDocument": {"uri": middle_uri},
+                "position": position(middle, "public();", delta=1),
+                "newName": "renamed",
+            },
+        )
+    )
+    assert response is not None
+    changes = response["result"]["documentChanges"]
+    versions = {
+        item["textDocument"]["uri"]: item["textDocument"]["version"]
+        for item in changes
+    }
+    assert versions[middle_uri] == 7
+    assert versions[root.as_uri()] is None
+    assert versions[leaf.as_uri()] is None
+    assert provider.as_uri() not in versions
+
+
+def test_exported_alias_rename_rejects_closed_graph_disk_drift(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    middle_file = tmp_path / "middle.nova"
+    root = tmp_path / "root.nova"
+    provider.write_text("fn source() {}\n", encoding="utf-8")
+    middle = (
+        "import { source as public } from ./provider.nova;\n"
+        "export { public };\n"
+        "fn middle() { public(); }\n"
+    )
+    middle_file.write_text(middle, encoding="utf-8")
+    root.write_text(
+        (
+            "import { public } from ./middle.nova;\n"
+            "export { public };\n"
+            "fn root() { public(); }\n"
+        ),
+        encoding="utf-8",
+    )
+    server = initialized_workspace_server(tmp_path)
+    middle_uri = middle_file.as_uri()
+    open_nova(server, middle_uri, middle)
+
+    original_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def mutate_before_publish(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        original_checkpoint(context)
+        if calls == 2:
+            root.write_text(
+                (
+                    "import { public } from ./middle.nova;\n"
+                    "export {};\n"
+                    "fn root() { public(); }\n"
+                ),
+                encoding="utf-8",
+            )
+
+    server.requests.checkpoint = mutate_before_publish  # type: ignore[method-assign]
+
+    response = server.handle(
+        request(
+            "textDocument/rename",
+            107,
+            {
+                "textDocument": {"uri": middle_uri},
+                "position": position(middle, "public();", delta=1),
+                "newName": "renamed",
+            },
+        )
+    )
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 107,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
