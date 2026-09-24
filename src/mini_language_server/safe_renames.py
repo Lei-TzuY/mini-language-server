@@ -26,12 +26,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if query is None:
             return None
         semantics, name = query
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
         snapshots = self.workspace_symbols.snapshots()
+        declarations = self._nova_function_declarations(
+            semantics,
+            name,
+            snapshots,
+        )
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
@@ -101,6 +101,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 source = self._source_text(snapshot.symbols.syntax.document.text)
                 for call_name, span in snapshot_tree.calls:
                     if call_name != name:
+                        continue
+                    resolved = self._nova_function_declarations(
+                        snapshot,
+                        name,
+                        snapshots,
+                    )
+                    if (
+                        len(resolved) != 1
+                        or not self._same_function_declaration(
+                            resolved[0],
+                            declaration,
+                        )
+                    ):
                         continue
                     edits_by_uri.setdefault(snapshot.uri, []).append(
                         (
