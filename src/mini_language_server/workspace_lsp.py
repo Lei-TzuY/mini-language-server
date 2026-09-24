@@ -1354,6 +1354,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         cls,
         importer: SemanticSnapshot,
         snapshots: tuple[SemanticSnapshot, ...],
+        *,
+        legacy_global: bool = True,
+        respect_root_exports: bool = False,
     ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
         """Return deterministic function visibility for one exact importer snapshot.
 
@@ -1407,7 +1410,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 for name, declarations in grouped.items()
             }
 
-        if not tree.imports:
+        if not tree.imports and legacy_global:
             return declaration_map(
                 tuple(snapshots),
                 include_private_for=importer,
@@ -1447,6 +1450,27 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 for name, declarations in grouped.items()
             }
 
+        def apply_export_list(
+            snapshot: SemanticSnapshot,
+            visible: dict[str, tuple[WorkspaceDeclaration, ...]],
+            *,
+            apply: bool,
+        ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
+            if not apply:
+                return visible
+            snapshot_tree = snapshot.symbols.syntax.tree
+            if (
+                not isinstance(snapshot_tree, NovaFunctionSyntax)
+                or not snapshot_tree.has_export_list
+            ):
+                return visible
+            allowed = {item.name for item in snapshot_tree.exports}
+            return {
+                name: declarations
+                for name, declarations in visible.items()
+                if name in allowed
+            }
+
         def exported(
             snapshot: SemanticSnapshot,
             visiting: frozenset[Any],
@@ -1463,14 +1487,23 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 if include_private_local
                 else declaration_map((snapshot,))
             )
+            apply_exports = not include_private_local or respect_root_exports
             if identity in visiting:
-                return local_exported
+                return apply_export_list(
+                    snapshot,
+                    local_exported,
+                    apply=apply_exports,
+                )
 
             snapshot_tree = snapshot.symbols.syntax.tree
             if not isinstance(snapshot_tree, NovaFunctionSyntax):
                 return local_exported
             if not snapshot_tree.imports:
-                return local_exported
+                return apply_export_list(
+                    snapshot,
+                    local_exported,
+                    apply=apply_exports,
+                )
 
             next_visiting = visiting | {identity}
             imported_maps: list[dict[str, tuple[WorkspaceDeclaration, ...]]] = []
@@ -1487,7 +1520,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for name in local_all:
                 imported.pop(name, None)
             imported.update(local_exported)
-            return imported
+            return apply_export_list(
+                snapshot,
+                imported,
+                apply=apply_exports,
+            )
 
         return exported(
             importer,
@@ -1510,13 +1547,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         snapshot: SemanticSnapshot,
         snapshots: Any,
     ) -> tuple[Diagnostic, ...]:
-        """Validate exact-workspace Nova file dependencies."""
+        """Validate exact-workspace Nova imports and explicit exports."""
         tree = snapshot.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
             return ()
+        snapshot_tuple = tuple(snapshots)
         known = {
             WorkspaceFolderSet.uri_identity(candidate.uri)
-            for candidate in snapshots
+            for candidate in snapshot_tuple
         }
         diagnostics: list[Diagnostic] = []
         for item in tree.imports:
@@ -1531,6 +1569,88 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         f"unresolved import '{item.path}'",
                         code="nova.unresolved-import",
                         source="nova",
+                    )
+                )
+
+        if not tree.has_export_list:
+            return tuple(diagnostics)
+
+        visible = cls._nova_visible_function_map(
+            snapshot,
+            snapshot_tuple,
+            legacy_global=False,
+        )
+        private_spans = frozenset(tree.private_declarations)
+        seen: set[str] = set()
+        for item in tree.exports:
+            if item.name in seen:
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"duplicate export '{item.name}'",
+                        code="nova.duplicate-export",
+                        source="nova",
+                    )
+                )
+                continue
+            seen.add(item.name)
+
+            candidates = visible.get(item.name, ())
+            if not candidates:
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"unresolved export '{item.name}'",
+                        code="nova.unresolved-export",
+                        source="nova",
+                    )
+                )
+                continue
+            if len(candidates) > 1:
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"ambiguous export '{item.name}'",
+                        code="nova.ambiguous-export",
+                        source="nova",
+                        related_information=tuple(
+                            DiagnosticRelatedInformation(
+                                candidate.uri,
+                                candidate.symbol.span,
+                                (
+                                    f"candidate function declaration "
+                                    f"'{item.name}' is here"
+                                ),
+                                semantic=candidate.snapshot,
+                            )
+                            for candidate in candidates
+                        ),
+                    )
+                )
+                continue
+
+            candidate = candidates[0]
+            if (
+                candidate.snapshot is snapshot
+                and candidate.symbol.span in private_spans
+            ):
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"private function '{item.name}' cannot be exported",
+                        code="nova.private-export",
+                        source="nova",
+                        related_information=(
+                            DiagnosticRelatedInformation(
+                                snapshot.uri,
+                                candidate.symbol.span,
+                                (
+                                    f"private function declaration "
+                                    f"'{item.name}' is here"
+                                ),
+                                semantic=snapshot,
+                            ),
+                        ),
                     )
                 )
         return tuple(diagnostics)
