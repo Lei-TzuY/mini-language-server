@@ -2730,13 +2730,16 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         planned: dict[str, list[tuple[int, dict[str, Any]]]] = {}
         for snapshot in snapshots:
             tree = snapshot.symbols.syntax.tree
-            if not isinstance(tree, NovaFunctionSyntax) or not tree.imports:
+            if (
+                not isinstance(tree, NovaFunctionSyntax)
+                or (not tree.imports and not tree.wildcard_exports)
+            ):
                 continue
             importer_identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
             post_importer_uri = renamed.get(importer_identity, snapshot.uri)
             source = self._source_text(snapshot.symbols.syntax.document.text)
 
-            for item in tree.imports:
+            for item in self._nova_module_dependency_edges(tree):
                 target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
                 if target_uri is None:
                     continue
@@ -3053,7 +3056,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 for snapshot in snapshots
             }
             links: list[dict[str, Any]] = []
-            for item in semantics.symbols.syntax.tree.imports:
+            for item in self._nova_module_dependency_edges(
+                semantics.symbols.syntax.tree
+            ):
                 target_uri = self._nova_import_target_uri(semantics.uri, item.path)
                 if target_uri is None:
                     continue
