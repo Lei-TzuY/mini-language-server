@@ -598,3 +598,17 @@ def test_closed_importer_obeys_selective_alias_binding(tmp_path: Path) -> None:
     )
     assert server.documents.get(caller_uri) is None
     assert server.diagnostics.get(caller_uri) is None
+
+def test_selective_import_preserves_t_prefixed_selector_and_alias() -> None:
+    syntax = NovaFunctionAdapter.parse(
+        "import { transit as target } from ./provider.nova;\n"
+    )
+
+    assert len(syntax.imports) == 1
+    selected = syntax.imports[0].names
+    assert len(selected) == 1
+    assert selected[0].name == "transit"
+    assert selected[0].alias == "target"
+    assert selected[0].binding_name == "target"
+
+
