@@ -420,6 +420,7 @@ def test_workspace_folder_change_requests_inlay_hint_refresh() -> None:
     assert len(refresh) == 1
     assert refresh[0]["method"] == "workspace/inlayHint/refresh"
 
+
 def test_inlay_hints_follow_transitive_import_visibility() -> None:
     server = NovaProductLanguageServer()
     initialize(server)
