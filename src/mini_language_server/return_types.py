@@ -26,6 +26,7 @@ _RETURN_ANNOTATION = re.compile(rf"->\s*(?P<type>{_IDENTIFIER}|!)\s*$")
 _RETURN_TYPE_DIAGNOSTIC = "nova.return-type"
 _MISSING_RETURN_DIAGNOSTIC = "nova.missing-return"
 _VALUE_RETURN_TYPES = frozenset({"Int", "String", "Bool"})
+_EXPLICIT_CALL_RESULT_TYPES = frozenset({"Int", "String", "Bool", "Unit", "UInt"})
 
 
 _NeverReturnsResolver = Callable[
@@ -449,7 +450,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         literal_type = self._literal_type(expression)
         if literal_type is not None:
             return literal_type
-        call_type = self._function_call_return_type(expression)
+        call_type = self._function_call_return_type_for_semantic(
+            semantic,
+            expression,
+        )
         if call_type is not None:
             return call_type
         if re.fullmatch(_IDENTIFIER, expression) is None:
@@ -458,6 +462,52 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if target is None or target.kind not in {"parameter", "variable"}:
             return None
         return self._symbol_type(semantic, target)
+
+    def _visible_function_call_declaration(
+        self,
+        semantic: SemanticSnapshot,
+        expression: str,
+    ) -> Any | None:
+        """Resolve one direct call against the caller's exact import namespace."""
+        code = self.nova_adapter.code_view(expression)
+        match = _CALL_EXPRESSION.match(code)
+        if match is None:
+            return None
+        parsed = self._call_argument_bounds(expression, match.end("name"))
+        if parsed is None:
+            return None
+        closing = parsed[1]
+        if code[closing + 1 :].strip():
+            return None
+
+        snapshots = self.workspace_symbols.snapshots()
+        declarations = self._nova_visible_function_declarations(
+            semantic,
+            snapshots,
+            match.group("name"),
+        )
+        return declarations[0] if len(declarations) == 1 else None
+
+    def _function_call_return_type_for_semantic(
+        self,
+        semantic: SemanticSnapshot,
+        expression: str,
+        resolving: frozenset[tuple[int, int, int]] = frozenset(),
+    ) -> str | None:
+        """Resolve one explicit call result in the caller's import namespace."""
+        declaration = self._visible_function_call_declaration(semantic, expression)
+        if declaration is None:
+            return None
+        signature = self._function_signature(declaration)
+        annotation = _RETURN_ANNOTATION.search(signature)
+        if annotation is None:
+            return None
+        result_type = annotation.group("type")
+        return (
+            result_type
+            if result_type in _EXPLICIT_CALL_RESULT_TYPES
+            else None
+        )
 
     def _function_call_return_type(self, expression: str) -> str | None:
         """Resolve a bounded explicit result type from one exact workspace call."""
