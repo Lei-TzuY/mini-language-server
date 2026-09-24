@@ -1,14 +1,14 @@
 # Nova import-graph function visibility
 
-The Nova imported-symbol namespace gives bounded semantic meaning to existing top-level relative file imports without introducing package/module search paths.
+The Nova imported-symbol namespace gives bounded semantic meaning to top-level local-file imports without introducing a general package/module search path. Besides `./` / `../` relative imports, a scoped workspace may use `@/path.nova` to address a file under the importer's most-specific configured workspace folder.
 
 ## Visibility contract
 
 Function call lookup has two compatibility modes plus explicit declaration and module export controls:
 
 - a file with no explicit imports keeps the historical workspace-global function lookup for ordinary functions, while foreign `private fn` declarations are excluded;
-- once a file declares at least one supported relative import, same-file function declarations take precedence by name, and otherwise each directly imported module contributes its own bounded export view;
-- a selective `import { name, source as local, ... } from ./path.nova;` narrows that one import edge after the target module's private/export rules have been applied; an aliased entry looks up the canonical source name but installs the chosen binding name in the importing module, while `import {} from ./path.nova;` imports nothing and the existing bare relative-import form remains unchanged;
+- once a file declares at least one supported import, same-file function declarations take precedence by name, and otherwise each directly imported module contributes its own bounded export view; `@/path.nova` resolves only in configured local `file:` workspace scope, uses the most-specific containing folder, and rejects unscoped, escaping, cross-authority, query/fragment, or otherwise unsupported targets;
+- a selective `import { name, source as local, ... } from ./path.nova;` or `import { name, ... } from @/path.nova;` narrows that one import edge after the target module's private/export rules have been applied; an aliased entry looks up the canonical source name but installs the chosen binding name in the importing module, while an empty list imports nothing;
 - `private fn name(...) { ... }` remains fully visible inside its declaring module but is omitted from every foreign export view;
 - a top-level `export { name, ... };` list, when present, filters that module's outward function view to the named functions after local-first/import visibility has been computed; `export {};` explicitly exports nothing;
 - an export entry may select one uniquely visible imported binding, including an alias, so aliases can propagate only through the same existing module outward-view/export rules while their canonical declaration identity remains unchanged;
@@ -42,11 +42,11 @@ All request surfaces retain their existing exact workspace snapshot commit gates
 
 This phase does not claim a general Nova module system. It does not add:
 
-- package or module search paths;
+- package/module search lists beyond the bounded configured-workspace-root `@/` form;
 - wildcard import syntax or package-namespace alias graphs;
 - friend/package visibility, wildcard export forms, or declaration-level visibility beyond bounded `private fn` plus explicit function export lists;
 - non-function imported namespaces;
 - cross-authority or remote-provider module resolution;
 - a stable external package identity.
 
-Transitive visibility is intentionally limited to function declarations reachable through existing bare or selective relative-file import edges plus the bounded private-function and explicit export-list rules above; it does not imply package identity, wildcard namespaces, arbitrary exported alias API propagation, or non-function exports. Importer-private aliases remain independently renameable, and outward aliases are renameable only across the bounded exact relative-file graph described above; package namespaces and wildcard syntax remain outside that claim. Specialized later product layers that are not part of the shared call-resolution surfaces above remain future namespace-parity work and must not infer broader module semantics from this bounded contract.
+Transitive visibility is intentionally limited to function declarations reachable through existing bare or selective relative-file or scoped `@/` import edges plus the bounded private-function and explicit export-list rules above; it does not imply package identity, arbitrary search-path precedence, wildcard namespaces, or non-function exports. Importer-private aliases remain independently renameable, and outward aliases are renameable only across the bounded exact relative-file graph described above; package namespaces and wildcard syntax remain outside that claim. Specialized later product layers that are not part of the shared call-resolution surfaces above remain future namespace-parity work and must not infer broader module semantics from this bounded contract.
