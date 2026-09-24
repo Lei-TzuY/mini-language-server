@@ -158,6 +158,18 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 matching_unaliased: list[Any] = []
                 matching_selected: list[Any] = []
                 saw_bare_edge = False
+                saw_wildcard_export_edge = False
+                for wildcard in importer_tree.wildcard_exports:
+                    target_uri = self._nova_import_target_uri(
+                        importer.uri,
+                        wildcard.path,
+                    )
+                    if (
+                        target_uri is not None
+                        and WorkspaceFolderSet.uri_identity(target_uri)
+                        == current_identity
+                    ):
+                        saw_wildcard_export_edge = True
                 for imported in importer_tree.imports:
                     target_uri = self._nova_import_target_uri(
                         importer.uri,
@@ -179,6 +191,20 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         matching_selected.append(candidate)
                         if candidate.alias is None:
                             matching_unaliased.append(candidate)
+
+                if saw_wildcard_export_edge:
+                    if not outward_binding(importer):
+                        return None
+                    if new_name != old_name:
+                        outward = self._nova_visible_function_map(
+                            importer,
+                            snapshots,
+                            legacy_global=False,
+                            respect_root_exports=True,
+                        )
+                        if new_name in outward:
+                            return {}, new_name
+                    queue.append(importer)
 
                 if not matching_selected and not saw_bare_edge:
                     continue
