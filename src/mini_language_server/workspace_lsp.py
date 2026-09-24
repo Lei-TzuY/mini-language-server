@@ -1380,6 +1380,81 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 )
         return tuple(diagnostics)
 
+    def _nova_function_candidate_pairs(
+        self,
+        snapshot: SemanticSnapshot,
+        name: str,
+        candidates: tuple[tuple[SemanticSnapshot, Any], ...],
+    ) -> tuple[tuple[SemanticSnapshot, Any], ...]:
+        """Narrow function candidates using same-file and direct-import ownership."""
+        same_file = tuple(
+            candidate
+            for candidate in candidates
+            if candidate[0] is snapshot
+        )
+        if same_file:
+            return same_file
+        if len(candidates) <= 1:
+            return candidates
+
+        tree = snapshot.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax) or not tree.imports:
+            return candidates
+
+        imported_identities: set[WorkspaceUriIdentity] = set()
+        for item in tree.imports:
+            target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
+            if target_uri is not None:
+                imported_identities.add(
+                    WorkspaceFolderSet.uri_identity(target_uri)
+                )
+        if not imported_identities:
+            return candidates
+
+        imported = tuple(
+            candidate
+            for candidate in candidates
+            if WorkspaceFolderSet.uri_identity(candidate[0].uri)
+            in imported_identities
+        )
+        return imported or candidates
+
+    def _nova_function_declarations(
+        self,
+        snapshot: SemanticSnapshot,
+        name: str,
+        snapshots: tuple[SemanticSnapshot, ...],
+    ) -> tuple[Any, ...]:
+        """Return exact captured declarations after bounded import disambiguation."""
+        captured = {id(candidate) for candidate in snapshots}
+        declarations = tuple(
+            declaration
+            for declaration in self.workspace_symbols.declarations(name)
+            if declaration.symbol.kind == "function"
+            and id(declaration.snapshot) in captured
+        )
+        selected = self._nova_function_candidate_pairs(
+            snapshot,
+            name,
+            tuple(
+                (declaration.snapshot, declaration.symbol)
+                for declaration in declarations
+            ),
+        )
+        return tuple(
+            declaration
+            for declaration in declarations
+            if any(
+                declaration.snapshot is candidate_snapshot
+                and declaration.symbol is candidate_symbol
+                for candidate_snapshot, candidate_symbol in selected
+            )
+        )
+
+    @staticmethod
+    def _same_function_declaration(left: Any, right: Any) -> bool:
+        return left.snapshot is right.snapshot and left.symbol is right.symbol
+
     @staticmethod
     def _nova_relative_import_path(
         importer_uri: str,
@@ -1495,7 +1570,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 }
             ]
             for name, span in tree.calls:
-                candidates = functions.get(name, [])
+                candidates = self._nova_function_candidate_pairs(
+                    snapshot,
+                    name,
+                    tuple(functions.get(name, ())),
+                )
                 if not candidates:
                     diagnostics.append(
                         Diagnostic(
@@ -1634,10 +1713,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 }
             ]
             for name, span in tree.calls:
-                declarations = tuple(
-                    declaration
-                    for declaration in self.workspace_symbols.declarations(name)
-                    if declaration.symbol.kind == "function"
+                declarations = self._nova_function_declarations(
+                    snapshot,
+                    name,
+                    snapshots,
                 )
                 if len(declarations) == 0:
                     diagnostics.append(
@@ -1980,12 +2059,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if query is None:
             return self._result(request_id, [])
         semantics, name = query
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
         snapshots = self.workspace_symbols.snapshots()
+        declarations = self._nova_function_declarations(
+            semantics,
+            name,
+            snapshots,
+        )
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
@@ -2186,12 +2265,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return None
         semantics, name = query
 
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
         snapshots = self.workspace_symbols.snapshots()
+        declarations = self._nova_function_declarations(
+            semantics,
+            name,
+            snapshots,
+        )
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
@@ -2233,14 +2312,28 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         continue
                     source = self._source_text(snapshot.symbols.syntax.document.text)
                     for call_name, span in snapshot_tree.calls:
-                        if call_name == name:
-                            locations.append(
-                                (
-                                    snapshot.uri,
-                                    span.start,
-                                    self._location(snapshot.uri, source, span),
-                                )
+                        if call_name != name:
+                            continue
+                        resolved = self._nova_function_declarations(
+                            snapshot,
+                            name,
+                            snapshots,
+                        )
+                        if (
+                            len(resolved) != 1
+                            or not self._same_function_declaration(
+                                resolved[0],
+                                declaration,
                             )
+                        ):
+                            continue
+                        locations.append(
+                            (
+                                snapshot.uri,
+                                span.start,
+                                self._location(snapshot.uri, source, span),
+                            )
+                        )
                 locations.sort(key=lambda item: (item[0], item[1]))
                 result = [location for _, _, location in locations]
 
@@ -2285,12 +2378,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if call is None:
             return None
         name, call_span = call
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
         snapshots = self.workspace_symbols.snapshots()
+        declarations = self._nova_function_declarations(
+            semantics,
+            name,
+            snapshots,
+        )
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
@@ -2376,6 +2469,19 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 source = self._source_text(snapshot.symbols.syntax.document.text)
                 for call_name, span in snapshot_tree.calls:
                     if call_name != name:
+                        continue
+                    resolved = self._nova_function_declarations(
+                        snapshot,
+                        name,
+                        snapshots,
+                    )
+                    if (
+                        len(resolved) != 1
+                        or not self._same_function_declaration(
+                            resolved[0],
+                            declaration,
+                        )
+                    ):
                         continue
                     edits_by_uri.setdefault(snapshot.uri, []).append(
                         (
