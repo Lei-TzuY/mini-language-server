@@ -459,3 +459,37 @@ def test_closed_selective_namespace_reexport_uses_detached_graph(tmp_path: Path)
     assert "nova.unresolved-function" not in codes
     assert server.documents.get(root_uri) is None
     assert server.diagnostics.get(root_uri) is None
+
+
+def test_exported_selective_namespace_rename_stays_fail_closed() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    first_uri = "file:///workspace/first.nova"
+    second_uri = "file:///workspace/second.nova"
+    open_nova(server, provider_uri, "fn target() {}\nexport { target };\n")
+    open_nova(
+        server,
+        first_uri,
+        "import * as api from ./provider.nova;\nexport { api };\n",
+    )
+    second = (
+        "import { api as facade } from ./first.nova;\n"
+        "export { facade };\n"
+        "fn second() { facade::target(); }\n"
+    )
+    open_nova(server, second_uri, second)
+
+    prepared = server.handle(
+        request(
+            "textDocument/prepareRename",
+            80,
+            {
+                "textDocument": {"uri": second_uri},
+                "position": position(second, "facade::target", delta=1),
+            },
+        )
+    )
+
+    assert prepared is not None
+    assert prepared["result"] is None
