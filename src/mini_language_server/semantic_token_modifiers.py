@@ -261,10 +261,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             identity = self._token_identity(source, span, requested_span)
             if identity is None or identity in by_identity:
                 continue
-            declarations = tuple(
-                declaration
-                for declaration in self.workspace_symbols.declarations(name)
-                if declaration.symbol.kind == "function"
+            declarations = self._nova_visible_function_declarations(
+                semantics,
+                self.workspace_symbols.snapshots(),
+                name,
             )
             if len(declarations) != 1:
                 continue
