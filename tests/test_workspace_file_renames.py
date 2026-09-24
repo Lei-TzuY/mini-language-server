@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+import mini_language_server.workspace_files as workspace_files
 from mini_language_server import NovaProductLanguageServer
 from mini_language_server.semantic import SemanticError
 
@@ -732,4 +733,69 @@ def test_will_rename_rejects_unindexed_local_source_drift(
         "error": {"code": -32801, "message": "Content modified"},
     }
     assert not source.exists()
+    assert not destination.exists()
+
+
+def test_will_rename_rejects_destination_parent_without_mutation_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_dir = tmp_path / "source"
+    destination_dir = tmp_path / "destination"
+    source_dir.mkdir()
+    destination_dir.mkdir()
+    source = source_dir / "source.nova"
+    destination = destination_dir / "renamed.nova"
+    source.write_text("fn source() {}\n", encoding="utf-8")
+    server = initialized_closed_workspace_server(tmp_path)
+
+    def access(path: Path, mode: int) -> bool:
+        return Path(path) != destination_dir
+
+    monkeypatch.setattr(workspace_files.os, "access", access)
+
+    response = will_rename_files(
+        server,
+        (source.as_uri(), destination.as_uri()),
+        request_id=37,
+    )
+
+    assert response is not None
+    assert response["error"]["code"] == -32803
+    assert "rename destination parent is not writable/searchable" in response[
+        "error"
+    ]["message"]
+    assert source.exists()
+    assert not destination.exists()
+
+
+def test_will_rename_rejects_mutation_access_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.nova"
+    destination = tmp_path / "renamed.nova"
+    source.write_text("fn source() {}\n", encoding="utf-8")
+    server = initialized_closed_workspace_server(tmp_path)
+    calls = 0
+
+    def changing_access(path: Path, mode: int) -> bool:
+        nonlocal calls
+        calls += 1
+        return calls <= 2
+
+    monkeypatch.setattr(workspace_files.os, "access", changing_access)
+
+    response = will_rename_files(
+        server,
+        (source.as_uri(), destination.as_uri()),
+        request_id=38,
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 38,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert source.exists()
     assert not destination.exists()

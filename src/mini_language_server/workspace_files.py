@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 import urllib.parse
 import urllib.request
@@ -28,6 +29,21 @@ class LocalWorkspacePathEvidence:
     @property
     def exists(self) -> bool:
         return self.kind != "missing"
+
+
+@dataclass(frozen=True, slots=True)
+class LocalWorkspaceMutationEvidence:
+    """One exact local parent-directory mutation observation."""
+
+    uri: str
+    identity: WorkspaceUriIdentity
+    parent_kind: str
+    parent_signature: tuple[int, int, int, int, int, int] | None
+    parent_write_search: bool
+
+    @property
+    def can_mutate_parent(self) -> bool:
+        return self.parent_kind == "directory" and self.parent_write_search
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +115,48 @@ def probe_local_workspace_path(uri: str) -> LocalWorkspacePathEvidence | None:
             metadata.st_ctime_ns,
             metadata.st_ino,
             metadata.st_dev,
+        ),
+    )
+
+
+def probe_local_workspace_mutation(
+    uri: str,
+) -> LocalWorkspaceMutationEvidence | None:
+    """Capture immediate-parent mutation feasibility for one supported local URI."""
+    path = local_path_from_file_uri(uri)
+    if path is None:
+        return None
+    identity = WorkspaceFolderSet.uri_identity(uri)
+    parent = path.parent
+    try:
+        metadata = parent.lstat()
+    except OSError:
+        return None
+
+    mode = metadata.st_mode
+    if stat.S_ISDIR(mode):
+        kind = "directory"
+    elif stat.S_ISLNK(mode):
+        kind = "symlink"
+    elif stat.S_ISREG(mode):
+        kind = "file"
+    else:
+        kind = "other"
+    return LocalWorkspaceMutationEvidence(
+        uri=uri,
+        identity=identity,
+        parent_kind=kind,
+        parent_signature=(
+            mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+            metadata.st_ino,
+            metadata.st_dev,
+        ),
+        parent_write_search=(
+            kind == "directory"
+            and os.access(parent, os.W_OK | os.X_OK)
         ),
     )
 

@@ -21,9 +21,11 @@ from .syntax import SyntaxError
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
 from .workspace_files import (
     ClosedWorkspaceFile,
+    LocalWorkspaceMutationEvidence,
     LocalWorkspacePathEvidence,
     WorkspaceUriIdentity,
     local_path_from_file_uri,
+    probe_local_workspace_mutation,
     probe_local_workspace_path,
     read_closed_workspace_file,
     scan_closed_workspace_files,
@@ -453,6 +455,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for uri, identity in relevant
             if (evidence := probe_local_workspace_path(uri)) is not None
         }
+        captured_mutation = {
+            identity: evidence
+            for uri, identity in relevant
+            if (evidence := probe_local_workspace_mutation(uri)) is not None
+        }
 
         try:
             context = self.requests.start(request_id)
@@ -462,6 +469,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         validation_error: DocumentError | None = None
         stale_closed_inputs = False
         stale_local_inputs = False
+        stale_mutation_inputs = False
         try:
             self.requests.checkpoint(context)
             if not self._closed_workspace_snapshots_current(
@@ -471,9 +479,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 return self._error(request_id, -32801, "Content modified")
 
             def publish() -> dict[str, Any] | None:
-                nonlocal validation_error, stale_closed_inputs, stale_local_inputs
+                nonlocal validation_error, stale_closed_inputs
+                nonlocal stale_local_inputs, stale_mutation_inputs
                 if not self._local_workspace_path_evidence_current(captured_local):
                     stale_local_inputs = True
+                    return None
+                if not self._local_workspace_mutation_evidence_current(
+                    captured_mutation
+                ):
+                    stale_mutation_inputs = True
                     return None
                 if any(
                     self._closed_workspace_uris.get(identity) != uri
@@ -488,6 +502,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         captured_documents=captured_documents,
                         captured_closed=captured_closed,
                         captured_local=captured_local,
+                        captured_mutation=captured_mutation,
                     )
                 except DocumentError as exc:
                     validation_error = exc
@@ -499,6 +514,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     return None
                 if not self._local_workspace_path_evidence_current(captured_local):
                     stale_local_inputs = True
+                    return None
+                if not self._local_workspace_mutation_evidence_current(
+                    captured_mutation
+                ):
+                    stale_mutation_inputs = True
                     return None
                 self.requests.checkpoint(context)
                 return self._result(request_id, None)
@@ -522,7 +542,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             except (DocumentError, WorkspaceIndexError, WorkspaceFolderError):
                 return self._error(request_id, -32801, "Content modified")
 
-            if stale_closed_inputs or stale_local_inputs:
+            if stale_closed_inputs or stale_local_inputs or stale_mutation_inputs:
                 self._refresh_closed_workspace_files()
                 return self._error(request_id, -32801, "Content modified")
             if validation_error is not None:
@@ -546,12 +566,23 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         captured_documents: tuple[Document, ...],
         captured_closed: dict[WorkspaceUriIdentity, str],
         captured_local: dict[WorkspaceUriIdentity, LocalWorkspacePathEvidence],
+        captured_mutation: dict[
+            WorkspaceUriIdentity, LocalWorkspaceMutationEvidence
+        ],
     ) -> None:
         """Validate operation-specific invariants over one exact capture."""
+        if operation not in {"create", "delete"}:
+            raise DocumentError(f"unsupported file operation: {operation}")
+
+        for uri, identity in requested:
+            mutation = captured_mutation.get(identity)
+            if mutation is not None and not mutation.can_mutate_parent:
+                raise DocumentError(
+                    f"{operation} parent is not writable/searchable: {uri}"
+                )
+
         if operation == "delete":
             return
-        if operation != "create":
-            raise DocumentError(f"unsupported file operation: {operation}")
 
         open_by_identity = {
             WorkspaceFolderSet.uri_identity(document.uri): document.uri
@@ -610,14 +641,20 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         captured_local: dict[
             WorkspaceUriIdentity, LocalWorkspacePathEvidence
         ] = {}
+        captured_mutation: dict[
+            WorkspaceUriIdentity, LocalWorkspaceMutationEvidence
+        ] = {}
         for old_uri, new_uri in renames:
             for uri in (old_uri, new_uri):
                 identity = WorkspaceFolderSet.uri_identity(uri)
-                if identity in captured_local:
-                    continue
-                evidence = probe_local_workspace_path(uri)
-                if evidence is not None:
-                    captured_local[identity] = evidence
+                if identity not in captured_local:
+                    evidence = probe_local_workspace_path(uri)
+                    if evidence is not None:
+                        captured_local[identity] = evidence
+                if identity not in captured_mutation:
+                    mutation = probe_local_workspace_mutation(uri)
+                    if mutation is not None:
+                        captured_mutation[identity] = mutation
 
         try:
             context = self.requests.start(request_id)
@@ -627,6 +664,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         validation_error: DocumentError | None = None
         stale_closed_inputs = False
         stale_local_inputs = False
+        stale_mutation_inputs = False
         try:
             self.requests.checkpoint(context)
             if not self._closed_workspace_snapshots_current(
@@ -636,9 +674,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 return self._error(request_id, -32801, "Content modified")
 
             def publish() -> dict[str, Any] | None:
-                nonlocal validation_error, stale_closed_inputs, stale_local_inputs
+                nonlocal validation_error, stale_closed_inputs
+                nonlocal stale_local_inputs, stale_mutation_inputs
                 if not self._local_workspace_path_evidence_current(captured_local):
                     stale_local_inputs = True
+                    return None
+                if not self._local_workspace_mutation_evidence_current(
+                    captured_mutation
+                ):
+                    stale_mutation_inputs = True
                     return None
                 if any(
                     self._closed_workspace_uris.get(identity) != uri
@@ -653,6 +697,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         captured_documents=captured_documents,
                         captured_closed=captured_closed,
                         captured_local=captured_local,
+                        captured_mutation=captured_mutation,
                     )
                 except DocumentError as exc:
                     validation_error = exc
@@ -665,6 +710,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     return None
                 if not self._local_workspace_path_evidence_current(captured_local):
                     stale_local_inputs = True
+                    return None
+                if not self._local_workspace_mutation_evidence_current(
+                    captured_mutation
+                ):
+                    stale_mutation_inputs = True
                     return None
                 self.requests.checkpoint(context)
                 return self._result(request_id, None)
@@ -687,7 +737,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             except (DocumentError, WorkspaceIndexError, WorkspaceFolderError):
                 return self._error(request_id, -32801, "Content modified")
 
-            if stale_closed_inputs or stale_local_inputs:
+            if stale_closed_inputs or stale_local_inputs or stale_mutation_inputs:
                 self._refresh_closed_workspace_files()
                 return self._error(request_id, -32801, "Content modified")
             if validation_error is not None:
@@ -710,6 +760,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         captured_documents: tuple[Document, ...],
         captured_closed: dict[WorkspaceUriIdentity, str],
         captured_local: dict[WorkspaceUriIdentity, LocalWorkspacePathEvidence],
+        captured_mutation: dict[
+            WorkspaceUriIdentity, LocalWorkspaceMutationEvidence
+        ],
     ) -> None:
         """Validate canonical open/detached ownership for one rename batch."""
         source_identities = tuple(
@@ -726,6 +779,27 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             raise DocumentError("rename destination identities must be unique")
 
         moving_sources = set(source_identities)
+        for old_uri, source_identity in zip(
+            (old_uri for old_uri, _ in renames),
+            source_identities,
+            strict=True,
+        ):
+            mutation = captured_mutation.get(source_identity)
+            if mutation is not None and not mutation.can_mutate_parent:
+                raise DocumentError(
+                    f"rename source parent is not writable/searchable: {old_uri}"
+                )
+        for new_uri, destination_identity in zip(
+            (new_uri for _, new_uri in renames),
+            destination_identities,
+            strict=True,
+        ):
+            mutation = captured_mutation.get(destination_identity)
+            if mutation is not None and not mutation.can_mutate_parent:
+                raise DocumentError(
+                    f"rename destination parent is not writable/searchable: {new_uri}"
+                )
+
         open_by_identity = {
             WorkspaceFolderSet.uri_identity(document.uri): document.uri
             for document in captured_documents
@@ -768,6 +842,16 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         """Return whether every captured local path entry is byte-identity agnostic current."""
         return all(
             probe_local_workspace_path(evidence.uri) == evidence
+            for evidence in captured.values()
+        )
+
+    @staticmethod
+    def _local_workspace_mutation_evidence_current(
+        captured: dict[WorkspaceUriIdentity, LocalWorkspaceMutationEvidence],
+    ) -> bool:
+        """Return whether captured local mutation prerequisites remain exact-current."""
+        return all(
+            probe_local_workspace_mutation(evidence.uri) == evidence
             for evidence in captured.values()
         )
 

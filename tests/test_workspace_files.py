@@ -4,6 +4,7 @@ from pathlib import Path
 
 from mini_language_server.workspace_files import (
     local_path_from_file_uri,
+    probe_local_workspace_mutation,
     scan_closed_workspace_files,
 )
 from mini_language_server.workspace_folders import WorkspaceFolderSet
@@ -64,3 +65,26 @@ def test_scan_honors_file_limit_deterministically(tmp_path: Path) -> None:
         "a.nova",
         "b.nova",
     ]
+
+
+def test_probe_local_workspace_mutation_captures_parent_directory(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "new.nova"
+
+    evidence = probe_local_workspace_mutation(target.as_uri())
+
+    assert evidence is not None
+    assert evidence.uri == target.as_uri()
+    assert evidence.parent_kind == "directory"
+    assert evidence.parent_signature is not None
+    assert evidence.parent_write_search is True
+    assert evidence.can_mutate_parent is True
+
+
+def test_probe_local_workspace_mutation_does_not_invent_missing_parent_authority(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "missing" / "new.nova"
+
+    assert probe_local_workspace_mutation(target.as_uri()) is None
