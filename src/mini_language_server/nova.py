@@ -18,7 +18,8 @@ from .syntax import SyntaxError
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _SIMPLE_TYPE_REF = rf"(?:{_IDENTIFIER}|!)"
 _FUNCTION_DECLARATION = re.compile(
-    rf"\bfn\s+({_IDENTIFIER})\s*\(([^)]*)\)\s*(?:->\s*{_SIMPLE_TYPE_REF}\s*)?\{{"
+    rf"\b(?:private\s+)?fn\s+({_IDENTIFIER})\s*\(([^)]*)\)\s*"
+    rf"(?:->\s*{_SIMPLE_TYPE_REF}\s*)?\{{"
 )
 _CALL = re.compile(rf"\b({_IDENTIFIER})\s*(?=\()")
 _IMPORT_DECLARATION = re.compile(
@@ -57,6 +58,7 @@ class NovaFunctionSyntax:
 
     declarations: tuple[tuple[str, Span], ...]
     calls: tuple[tuple[str, Span], ...]
+    private_declarations: tuple[Span, ...] = ()
     imports: tuple[NovaImportSyntax, ...] = ()
     parameters: tuple[NovaScopedName, ...] = ()
     parameter_references: tuple[NovaScopedName, ...] = ()
@@ -68,7 +70,7 @@ class NovaFunctionSyntax:
 class NovaFunctionAdapter:
     """Analyze a bounded executable Nova subset without leaking rules into core stores.
 
-    The adapter owns named ``fn`` declarations, identifier calls, bare legacy or
+    The adapter owns named ``fn`` / ``private fn`` declarations, identifier calls, bare legacy or
     Nova-style typed parameters with simple identifier/never surface types, optional
     explicit simple return types, and function-scoped ``let``/``var`` variables.
     Parameter and local references resolve only inside the owning function body. A
@@ -114,6 +116,7 @@ class NovaFunctionAdapter:
     @classmethod
     def parse(cls, text: str) -> NovaFunctionSyntax:
         declarations: list[tuple[str, Span]] = []
+        private_declarations: list[Span] = []
         import_candidates = tuple(
             NovaImportSyntax(
                 match.group(1),
@@ -150,6 +153,8 @@ class NovaFunctionAdapter:
         for match in matches:
             owner = Span(match.start(1), match.end(1))
             declarations.append((match.group(1), owner))
+            if text[match.start() : match.start(1)].startswith("private"):
+                private_declarations.append(owner)
             declaration_spans.add(owner)
 
             scoped_parameters = cls._parameters(match.group(2), match.start(2), owner)
@@ -221,6 +226,7 @@ class NovaFunctionAdapter:
         return NovaFunctionSyntax(
             declarations=tuple(declarations),
             calls=calls,
+            private_declarations=tuple(private_declarations),
             imports=imports,
             parameters=tuple(parameters),
             parameter_references=tuple(parameter_references),
