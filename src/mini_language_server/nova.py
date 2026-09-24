@@ -47,6 +47,11 @@ _IMPORT_ALIAS_MARKER = re.compile(r"[ \t]+as[ \t]+")
 _EXPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*export[ \t]*\{([^}\r\n]*)\}[ \t]*;?[ \t]*\r?$"
 )
+_WILDCARD_EXPORT_DECLARATION = re.compile(
+    r"(?m)^[ \t]*export[ \t]+\*[ \t]+from[ \t]+"
+    r"((?:\./|\.\./|@/)(?:[A-Za-z0-9_.~%+-]+/)*"
+    r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
+)
 _EXPORT_NAME = re.compile(rf"(?:^|,)[ \t]*({_IDENTIFIER})[ \t]*(?=,|$)")
 _IDENTIFIER_MATCH = re.compile(rf"\b({_IDENTIFIER})\b")
 _PARAMETER_PART = re.compile(r"[^,]+")
@@ -107,6 +112,14 @@ class NovaExportSyntax:
 
 
 @dataclass(frozen=True, slots=True)
+class NovaWildcardExportSyntax:
+    """One exact outward wildcard function re-export edge."""
+
+    path: str
+    span: Span
+
+
+@dataclass(frozen=True, slots=True)
 class NovaFunctionSyntax:
     """Immutable syntax payload for Nova functions, calls, parameters, and locals."""
 
@@ -115,6 +128,7 @@ class NovaFunctionSyntax:
     private_declarations: tuple[Span, ...] = ()
     imports: tuple[NovaImportSyntax, ...] = ()
     exports: tuple[NovaExportSyntax, ...] = ()
+    wildcard_exports: tuple[NovaWildcardExportSyntax, ...] = ()
     has_export_list: bool = False
     parameters: tuple[NovaScopedName, ...] = ()
     parameter_references: tuple[NovaScopedName, ...] = ()
@@ -254,6 +268,16 @@ class NovaFunctionAdapter:
             for declaration in export_declarations
             for name in _EXPORT_NAME.finditer(declaration.group(1))
         )
+        wildcard_export_declarations = tuple(
+            _WILDCARD_EXPORT_DECLARATION.finditer(text)
+        )
+        wildcard_export_candidates = tuple(
+            NovaWildcardExportSyntax(
+                declaration.group(1),
+                Span(declaration.start(1), declaration.end(1)),
+            )
+            for declaration in wildcard_export_declarations
+        )
         parameters: list[NovaScopedName] = []
         parameter_references: list[NovaScopedName] = []
         locals_: list[NovaScopedName] = []
@@ -284,12 +308,23 @@ class NovaFunctionAdapter:
                 for extent in function_extents
             )
         )
+        wildcard_exports = tuple(
+            item
+            for item in wildcard_export_candidates
+            if not any(
+                extent.start <= item.span.start < extent.end
+                for extent in function_extents
+            )
+        )
         has_export_list = any(
             not any(
                 extent.start <= declaration.start() < extent.end
                 for extent in function_extents
             )
-            for declaration in export_declarations
+            for declaration in (
+                *export_declarations,
+                *wildcard_export_declarations,
+            )
         )
         namespace_aliases = {
             item.namespace
@@ -449,6 +484,7 @@ class NovaFunctionAdapter:
             private_declarations=tuple(private_declarations),
             imports=imports,
             exports=exports,
+            wildcard_exports=wildcard_exports,
             has_export_list=has_export_list,
             parameters=tuple(parameters),
             parameter_references=tuple(parameter_references),
