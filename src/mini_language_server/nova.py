@@ -70,7 +70,8 @@ class NovaFunctionSyntax:
 class NovaFunctionAdapter:
     """Analyze a bounded executable Nova subset without leaking rules into core stores.
 
-    The adapter owns named ``fn`` / ``private fn`` declarations, identifier calls, bare legacy or
+    The adapter owns named ``fn`` / ``private fn`` declarations, identifier calls,
+    bare legacy or
     Nova-style typed parameters with simple identifier/never surface types, optional
     explicit simple return types, and function-scoped ``let``/``var`` variables.
     Parameter and local references resolve only inside the owning function body. A
