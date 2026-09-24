@@ -44,7 +44,7 @@ All request surfaces retain their existing exact workspace snapshot commit gates
 This phase does not claim a general Nova module system. It does not add:
 
 - package/module search lists beyond the bounded configured-workspace-root `@/` form;
-- wildcard import syntax that merges names into the importer namespace, namespace re-export/member-completion/namespace-alias rename graphs beyond the bounded importer-local `* as ns` call form;
+- wildcard import syntax that merges names into the importer namespace, namespace re-export or namespace-alias rename graphs beyond the bounded importer-local `* as ns` call/member-completion form;
 - friend/package visibility, wildcard export forms, or declaration-level visibility beyond bounded `private fn` plus explicit function export lists;
 - non-function imported namespaces;
 - cross-authority or remote-provider module resolution;
