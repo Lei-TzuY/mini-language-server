@@ -489,3 +489,37 @@ def test_transitive_import_visibility_preserves_local_precedence() -> None:
     assert definition["result"][0]["targetUri"] == caller_uri
     assert definition["result"][0]["targetSelectionRange"]["start"]["line"] == 1
     assert "nova.ambiguous-function" not in diagnostic_codes(server, caller_uri)
+
+
+def test_transitive_import_visibility_preserves_intermediate_local_shadowing() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider-shadow.nova"
+    middle_uri = "file:///workspace/middle-shadow.nova"
+    caller_uri = "file:///workspace/caller-shadow.nova"
+    open_nova(server, provider_uri, "fn target(value: String) -> String { value }\n")
+    middle = (
+        "import ./provider-shadow.nova;\n"
+        "fn target(value: Int) -> Int { value }\n"
+    )
+    open_nova(server, middle_uri, middle)
+    caller = (
+        "import ./middle-shadow.nova;\n"
+        "fn caller() { target(1) }\n"
+    )
+    open_nova(server, caller_uri, caller)
+
+    assert "nova.ambiguous-function" not in diagnostic_codes(server, caller_uri)
+    assert "nova.argument-type" not in diagnostic_codes(server, caller_uri)
+    definition = server.handle(
+        request(
+            "textDocument/definition",
+            70,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": position(caller, "target", delta=1),
+            },
+        )
+    )
+    assert definition is not None
+    assert definition["result"][0]["targetUri"] == middle_uri
+    assert definition["result"][0]["targetSelectionRange"]["start"]["line"] == 1
