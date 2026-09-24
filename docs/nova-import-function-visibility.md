@@ -1,15 +1,15 @@
-# Nova direct-import function visibility
+# Nova import-graph function visibility
 
-The first Nova imported-symbol namespace slice gives bounded semantic meaning to existing top-level relative file imports without introducing package/module search paths.
+The Nova imported-symbol namespace gives bounded semantic meaning to existing top-level relative file imports without introducing package/module search paths.
 
 ## Visibility contract
 
 Function call lookup has two compatibility modes:
 
 - a file with no explicit imports keeps the historical workspace-global function lookup;
-- once a file declares at least one supported relative import, same-file function declarations take precedence by name, and otherwise only functions declared by directly imported exact workspace snapshots are visible.
+- once a file declares at least one supported relative import, same-file function declarations take precedence by name, and otherwise functions declared by exact workspace snapshots reachable through the explicit relative-import graph are visible.
 
-Direct imports are not transitive. Importing a file does not re-export the functions visible to that file. Duplicate import paths to the same canonical workspace identity do not duplicate candidates. Unresolved or unsupported imports contribute no declarations and continue to report the existing `nova.unresolved-import` diagnostic.
+Import traversal is transitive across actual supported import edges, canonical workspace identities are visited at most once, and cycles terminate without duplicating candidates. A file reached through multiple diamond paths contributes each declaration once. Unresolved or unsupported imports contribute no declarations and continue to report the existing `nova.unresolved-import` diagnostic.
 
 The local-first rule applies only after a file has opted into explicit imports. This preserves historical no-import behavior while allowing an importer to distinguish two same-named functions that live in different workspace files.
 
@@ -36,10 +36,9 @@ This phase does not claim a general Nova module system. It does not add:
 
 - package or module search paths;
 - import aliases or selective/wildcard imports;
-- transitive imports or re-export semantics;
 - visibility modifiers or exported/private declarations;
 - non-function imported namespaces;
 - cross-authority or remote-provider module resolution;
 - a stable external package identity.
 
-Specialized later product layers that are not part of the shared call-resolution surfaces above remain future namespace-parity work and must not infer broader module semantics from this bounded contract.
+Transitive visibility is intentionally limited to function declarations reachable through existing relative-file import edges; it does not imply a general export system, package identity, or non-function namespace. Specialized later product layers that are not part of the shared call-resolution surfaces above remain future namespace-parity work and must not infer broader module semantics from this bounded contract.
