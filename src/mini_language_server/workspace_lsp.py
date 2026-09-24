@@ -2104,7 +2104,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if method == "callHierarchy/incomingCalls":
                 result = self._incoming_calls(declaration, snapshots)
             else:
-                result = self._outgoing_calls(declaration)
+                result = self._outgoing_calls(declaration, snapshots)
             self.requests.checkpoint(context)
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
@@ -2125,6 +2125,17 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for snapshot in snapshots:
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
+                continue
+            resolved = self._nova_visible_function_declarations(
+                snapshot,
+                snapshots,
+                target_name,
+            )
+            if (
+                len(resolved) != 1
+                or resolved[0].snapshot is not declaration.snapshot
+                or resolved[0].symbol is not declaration.symbol
+            ):
                 continue
             for call_name, span in tree.calls:
                 if call_name != target_name:
@@ -2149,7 +2160,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             )
         return result
 
-    def _outgoing_calls(self, declaration: Any) -> list[dict[str, Any]]:
+    def _outgoing_calls(
+        self,
+        declaration: Any,
+        snapshots: tuple[Any, ...],
+    ) -> list[dict[str, Any]]:
         snapshot = declaration.snapshot
         tree = snapshot.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
@@ -2160,10 +2175,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for call_name, span in tree.calls:
             if not (extent.start <= span.start < extent.end):
                 continue
-            targets = tuple(
-                target
-                for target in self.workspace_symbols.declarations(call_name)
-                if target.symbol.kind == "function"
+            targets = self._nova_visible_function_declarations(
+                snapshot,
+                snapshots,
+                call_name,
             )
             if len(targets) != 1:
                 continue
@@ -2267,12 +2282,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return None
         semantics, name = query
 
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
         snapshots = self.workspace_symbols.snapshots()
+        declarations = self._nova_visible_function_declarations(
+            semantics,
+            snapshots,
+            name,
+        )
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
