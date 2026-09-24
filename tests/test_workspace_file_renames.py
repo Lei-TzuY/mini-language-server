@@ -666,6 +666,7 @@ def test_will_rename_rejects_detached_disk_drift_and_refreshes_index(
     assert source.exists()
     assert not destination.exists()
 
+
 def test_will_rename_rejects_unindexed_local_destination_collision(
     tmp_path: Path,
 ) -> None:
