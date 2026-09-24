@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
@@ -12,7 +11,20 @@ from .workspace import WorkspaceIndexError
 from .workspace_folders import WorkspaceFolderSet
 
 
-_NOVA_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+def _is_nova_identifier(value: str) -> bool:
+    """Match the adapter's bounded ASCII identifier grammar."""
+    if not value:
+        return False
+    first = value[0]
+    if not (first == "_" or "A" <= first <= "Z" or "a" <= first <= "z"):
+        return False
+    return all(
+        character == "_"
+        or "A" <= character <= "Z"
+        or "a" <= character <= "z"
+        or "0" <= character <= "9"
+        for character in value[1:]
+    )
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -49,7 +61,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 except WorkspaceIndexError:
                     return self._error(request_id, -32801, "Content modified")
 
-            if _NOVA_IDENTIFIER.fullmatch(new_name) is None:
+            if not _is_nova_identifier(new_name):
                 return self._error(request_id, -32602, "Invalid params")
 
             if new_name == old_name:
