@@ -27,7 +27,8 @@ The visibility resolver is shared by the executable function-call surfaces in th
 - prepare-rename and exact workspace function rename;
 - reference CodeLens counts and the matching execute-command locations;
 - function-reference semantic tokens, including range/full/delta publication through the existing exact-workspace token gate;
-- parameter inlay hints and their existing workspace refresh lifecycle.
+- parameter inlay hints and their existing workspace refresh lifecycle;
+- argument-count and argument-type call-site quick-fix revalidation.
 
 References, rename edits, incoming calls, and CodeLens locations are included only when that caller's own exact import visibility resolves uniquely to the same declaration object. A same-named call in another module therefore cannot be attributed to the selected declaration merely because the spelling matches.
 

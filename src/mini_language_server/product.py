@@ -441,6 +441,10 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
         actions = super()._nova_code_actions(
             uri, document, source, diagnostics, start_offset, end_offset
         )
+        importer = self.workspace_symbols.get(uri)
+        if importer is None or importer.symbols.syntax.document is not document:
+            return actions
+        snapshots = self.workspace_symbols.snapshots()
         for diagnostic in diagnostics:
             if diagnostic.code != "nova.argument-count":
                 continue
@@ -455,10 +459,10 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
             if repair is None:
                 continue
             name, expected, _, _, _ = repair
-            declarations = tuple(
-                declaration
-                for declaration in self.workspace_symbols.declarations(name)
-                if declaration.symbol.kind == "function"
+            declarations = self._nova_visible_function_declarations(
+                importer,
+                snapshots,
+                name,
             )
             if len(declarations) != 1:
                 continue

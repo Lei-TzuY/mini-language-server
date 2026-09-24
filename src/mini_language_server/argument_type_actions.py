@@ -111,6 +111,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         tree = snapshot.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
             return None
+        snapshots = self.workspace_symbols.snapshots()
 
         matches: list[tuple[str, int, str, str]] = []
         for name, call_span in tree.calls:
@@ -121,10 +122,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             for argument_index, argument_span in enumerate(arguments):
                 if argument_span != diagnostic.span:
                     continue
-                declarations = tuple(
-                    declaration
-                    for declaration in self.workspace_symbols.declarations(name)
-                    if declaration.symbol.kind == "function"
+                declarations = self._nova_visible_function_declarations(
+                    snapshot,
+                    snapshots,
+                    name,
                 )
                 if len(declarations) != 1:
                     continue
