@@ -259,3 +259,22 @@ def test_argument_count_quick_fix_uses_versioned_edit_when_negotiated() -> None:
             ],
         }
     ]
+
+def test_argument_count_quick_fix_follows_transitive_import_visibility() -> None:
+    server = initialized_server()
+    helper = "file:///workspace/helper.nova"
+    middle = "file:///workspace/middle.nova"
+    other = "file:///workspace/other.nova"
+    caller = "file:///workspace/caller.nova"
+    open_nova(server, helper, "fn target(left: Int, right: Int) {}\n")
+    open_nova(server, middle, "import ./helper.nova;\nfn middle() {}\n")
+    open_nova(server, other, "fn target(flag: Bool) {}\n")
+    text = "import ./middle.nova;\nfn caller(value: Int) { target(value) }\n"
+    open_nova(server, caller, text)
+    start = text.splitlines()[1].index("target")
+
+    result = code_action(server, caller, 90, 1, start, start + len("target"))
+
+    action = result["result"][0]
+    assert action["title"] == "Adjust 'target' to 2 argument(s)"
+    assert action["edit"]["changes"][caller][0]["newText"] == "value, 0"
