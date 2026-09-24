@@ -41,7 +41,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         alias_target: tuple[Any, Any, Any],
         new_name: str,
     ) -> tuple[dict[str, list[tuple[int, dict[str, Any]]]], str | None] | None:
-        """Plan one bounded explicit selective/export alias API rename."""
+        """Plan one bounded alias API rename across explicit and implicit exports."""
         selected, declaration, _ = alias_target
         old_name = selected.binding_name
         tree = semantics.symbols.syntax.tree
@@ -180,17 +180,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         if candidate.alias is None:
                             matching_unaliased.append(candidate)
 
-                if saw_bare_edge:
-                    return None
-                if not matching_selected:
+                if not matching_selected and not saw_bare_edge:
                     continue
 
                 for candidate in matching_selected:
                     add_edit(importer, candidate.span)
 
-                if not matching_unaliased:
+                propagates_unaliased = saw_bare_edge or bool(matching_unaliased)
+                if not propagates_unaliased:
                     continue
-                if len(matching_unaliased) != 1:
+                if len(matching_unaliased) > 1:
                     return None
                 previous_owner = unaliased_owner.get(importer_identity)
                 if previous_owner is not None and previous_owner != current_identity:
@@ -199,32 +198,31 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
                 if not exact_binding(importer, old_name):
                     return None
-                selected_here = matching_unaliased[0]
-                if binding_conflict(importer, frozenset({id(selected_here)})):
+                ignored = frozenset(id(item) for item in matching_unaliased)
+                if binding_conflict(importer, ignored):
                     return {}, new_name
 
                 for call_name, span in importer_tree.calls:
                     if call_name == old_name:
                         add_edit(importer, span)
 
-                if not importer_tree.has_export_list:
-                    return None
-                matching_exports = [
-                    item
-                    for item in importer_tree.exports
-                    if item.name == old_name
-                ]
-                if not matching_exports:
-                    continue
-                if len(matching_exports) != 1:
-                    return None
-                if new_name != old_name and any(
-                    item.name == new_name
-                    for item in importer_tree.exports
-                    if item is not matching_exports[0]
-                ):
-                    return {}, new_name
-                add_edit(importer, matching_exports[0].span)
+                if importer_tree.has_export_list:
+                    matching_exports = [
+                        item
+                        for item in importer_tree.exports
+                        if item.name == old_name
+                    ]
+                    if not matching_exports:
+                        continue
+                    if len(matching_exports) != 1:
+                        return None
+                    if new_name != old_name and any(
+                        item.name == new_name
+                        for item in importer_tree.exports
+                        if item is not matching_exports[0]
+                    ):
+                        return {}, new_name
+                    add_edit(importer, matching_exports[0].span)
                 queue.append(importer)
 
         return edits_by_uri, None
@@ -237,7 +235,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         alias_target: tuple[Any, Any, Any],
         new_name: str,
     ) -> dict[str, Any]:
-        """Rename one explicit outward alias across a bounded re-export graph."""
+        """Rename one outward alias across a bounded explicit/implicit graph."""
         selected, _, _ = alias_target
         old_name = selected.binding_name
 
