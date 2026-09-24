@@ -31,7 +31,8 @@ _SELECTIVE_IMPORT_DECLARATION = re.compile(
     r"((?:\./|\.\./)(?:[A-Za-z0-9_.~%+-]+/)*"
     r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
 )
-_IMPORT_NAME = re.compile(
+_IMPORT_NAME = re.compile(rf"(?:^|,)[ \\t]*({_IDENTIFIER})[ \\t]*(?=,|$)")
+_ALIASED_IMPORT_NAME = re.compile(
     rf"(?:^|,)[ \\t]*({_IDENTIFIER})(?:[ \\t]+as[ \\t]+({_IDENTIFIER}))?[ \\t]*(?=,|$)"
 )
 _EXPORT_DECLARATION = re.compile(
@@ -183,17 +184,25 @@ class NovaFunctionAdapter:
                             declaration.start(1) + name.start(1),
                             declaration.start(1) + name.end(1),
                         ),
-                        alias=name.group(2),
+                        alias=(
+                            name.group(2)
+                            if name.re is _ALIASED_IMPORT_NAME
+                            else None
+                        ),
                         alias_span=(
                             None
-                            if name.group(2) is None
+                            if name.re is _IMPORT_NAME or name.group(2) is None
                             else Span(
                                 declaration.start(1) + name.start(2),
                                 declaration.start(1) + name.end(2),
                             )
                         ),
                     )
-                    for name in _IMPORT_NAME.finditer(declaration.group(1))
+                    for name in (
+                        _ALIASED_IMPORT_NAME.finditer(declaration.group(1))
+                        if " as " in declaration.group(1)
+                        else _IMPORT_NAME.finditer(declaration.group(1))
+                    )
                 ),
                 has_name_list=True,
             )
