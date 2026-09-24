@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+import mini_language_server.workspace_files as workspace_files
 from mini_language_server import NovaProductLanguageServer
 
 
@@ -532,3 +533,93 @@ def test_will_delete_rejects_unindexed_local_path_drift(
         "error": {"code": -32801, "message": "Content modified"},
     }
     assert not source.exists()
+
+
+def test_will_create_rejects_missing_parent_directory(tmp_path: Path) -> None:
+    server = initialized_server(tmp_path, will_create=True)
+    target = tmp_path / "missing" / "new.nova"
+
+    response = file_preflight(
+        server,
+        "workspace/willCreateFiles",
+        target.as_uri(),
+        request_id=25,
+    )
+
+    assert response is not None
+    assert response["error"]["code"] == -32803
+    assert "create parent is not writable/searchable" in response["error"]["message"]
+    assert not target.exists()
+
+
+def test_will_create_rejects_parent_without_mutation_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = initialized_server(tmp_path, will_create=True)
+    target = tmp_path / "new.nova"
+    monkeypatch.setattr(workspace_files.os, "access", lambda path, mode: False)
+
+    response = file_preflight(
+        server,
+        "workspace/willCreateFiles",
+        target.as_uri(),
+        request_id=26,
+    )
+
+    assert response is not None
+    assert response["error"]["code"] == -32803
+    assert "create parent is not writable/searchable" in response["error"]["message"]
+    assert not target.exists()
+
+
+def test_will_delete_rejects_parent_without_mutation_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "closed.nova"
+    source.write_text("fn closed_target() {}\n", encoding="utf-8")
+    server = initialized_server(tmp_path, will_delete=True)
+    monkeypatch.setattr(workspace_files.os, "access", lambda path, mode: False)
+
+    response = file_preflight(
+        server,
+        "workspace/willDeleteFiles",
+        source.as_uri(),
+        request_id=27,
+    )
+
+    assert response is not None
+    assert response["error"]["code"] == -32803
+    assert "delete parent is not writable/searchable" in response["error"]["message"]
+    assert source.exists()
+
+
+def test_will_create_rejects_mutation_access_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = initialized_server(tmp_path, will_create=True)
+    target = tmp_path / "new.nova"
+    calls = 0
+
+    def changing_access(path: Path, mode: int) -> bool:
+        nonlocal calls
+        calls += 1
+        return calls == 1
+
+    monkeypatch.setattr(workspace_files.os, "access", changing_access)
+
+    response = file_preflight(
+        server,
+        "workspace/willCreateFiles",
+        target.as_uri(),
+        request_id=28,
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 28,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert not target.exists()
