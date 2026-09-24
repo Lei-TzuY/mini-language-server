@@ -56,6 +56,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self._file_create_support = False
         self._file_delete_support = False
         self._file_rename_support = False
+        self._file_will_create_support = False
+        self._file_will_delete_support = False
         self._file_will_rename_support = False
         self._watched_files_dynamic_registration = False
         self._watched_files_registration_attempted = False
@@ -78,6 +80,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             self._file_create_support = self._client_supports_file_create(params)
             self._file_delete_support = self._client_supports_file_delete(params)
             self._file_rename_support = self._client_supports_file_rename(params)
+            self._file_will_create_support = (
+                self._client_supports_file_will_create(params)
+            )
+            self._file_will_delete_support = (
+                self._client_supports_file_will_delete(params)
+            )
             self._file_will_rename_support = (
                 self._client_supports_file_will_rename(params)
             )
@@ -138,6 +146,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return None
 
         if "id" in message and self.state is ServerState.RUNNING:
+            if method == "workspace/willCreateFiles" and self._file_will_create_support:
+                return self._handle_workspace_will_create(
+                    message.get("id"), message.get("params")
+                )
+            if method == "workspace/willDeleteFiles" and self._file_will_delete_support:
+                return self._handle_workspace_will_delete(
+                    message.get("id"), message.get("params")
+                )
             if method == "workspace/willRenameFiles" and self._file_will_rename_support:
                 return self._handle_workspace_will_rename(
                     message.get("id"), message.get("params")
@@ -231,6 +247,21 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                                     }
                                 ]
                             }
+                if self._file_will_create_support:
+                    workspace_capabilities = capabilities.setdefault("workspace", {})
+                    if isinstance(workspace_capabilities, dict):
+                        file_operations = workspace_capabilities.setdefault(
+                            "fileOperations", {}
+                        )
+                        if isinstance(file_operations, dict):
+                            file_operations["willCreate"] = {
+                                "filters": [
+                                    {
+                                        "scheme": "file",
+                                        "pattern": {"glob": "**/*.nova"},
+                                    }
+                                ]
+                            }
                 if self._file_delete_support:
                     workspace_capabilities = capabilities.setdefault("workspace", {})
                     if isinstance(workspace_capabilities, dict):
@@ -239,6 +270,21 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         )
                         if isinstance(file_operations, dict):
                             file_operations["didDelete"] = {
+                                "filters": [
+                                    {
+                                        "scheme": "file",
+                                        "pattern": {"glob": "**/*.nova"},
+                                    }
+                                ]
+                            }
+                if self._file_will_delete_support:
+                    workspace_capabilities = capabilities.setdefault("workspace", {})
+                    if isinstance(workspace_capabilities, dict):
+                        file_operations = workspace_capabilities.setdefault(
+                            "fileOperations", {}
+                        )
+                        if isinstance(file_operations, dict):
+                            file_operations["willDelete"] = {
                                 "filters": [
                                     {
                                         "scheme": "file",
@@ -309,6 +355,199 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         except WorkspaceIndexError:
             return
         self._publish_workspace_diagnostics()
+
+    def _handle_workspace_will_create(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any]:
+        """Preflight one Nova create batch without mutating workspace state."""
+        return self._handle_workspace_file_preflight(
+            request_id,
+            params,
+            operation="create",
+        )
+
+    def _handle_workspace_will_delete(
+        self, request_id: Any, params: Any
+    ) -> dict[str, Any]:
+        """Preflight one Nova delete batch without mutating workspace state."""
+        return self._handle_workspace_file_preflight(
+            request_id,
+            params,
+            operation="delete",
+        )
+
+    def _handle_workspace_file_preflight(
+        self,
+        request_id: Any,
+        params: Any,
+        *,
+        operation: str,
+    ) -> dict[str, Any]:
+        """Validate one create/delete batch against exact server-known ownership."""
+        try:
+            uris = self._workspace_file_operation_uris(params)
+        except DocumentError:
+            return self._error(request_id, -32602, "Invalid params")
+        if not uris:
+            return self._result(request_id, None)
+
+        requested = tuple(
+            (uri, WorkspaceFolderSet.uri_identity(uri))
+            for uri in uris
+        )
+        document_snapshots = self.documents.snapshots()
+        open_nova_identities = {
+            WorkspaceFolderSet.uri_identity(document.uri)
+            for document in document_snapshots
+            if document.language_id == self.nova_adapter.language_id
+        }
+        relevant = tuple(
+            (uri, identity)
+            for uri, identity in requested
+            if (
+                identity in open_nova_identities
+                or self._workspace_file_affects_closed_index(uri)
+            )
+        )
+        if not relevant:
+            return self._result(request_id, None)
+
+        relevant_identities = tuple(identity for _, identity in relevant)
+        if len(set(relevant_identities)) != len(relevant_identities):
+            return self._error(
+                request_id,
+                -32803,
+                f"File {operation} preflight failed: "
+                f"{operation} identities must be unique",
+            )
+
+        affected_identities = frozenset(relevant_identities)
+        captured_documents = tuple(
+            document
+            for document in document_snapshots
+            if (
+                document.language_id == self.nova_adapter.language_id
+                and WorkspaceFolderSet.uri_identity(document.uri)
+                in affected_identities
+            )
+        )
+        captured_workspace = self.workspace_symbols.snapshots()
+        captured_folders = self.workspace_folders.snapshot()
+        captured_closed = {
+            identity: uri
+            for identity, uri in self._closed_workspace_uris.items()
+            if identity in affected_identities
+        }
+        captured_closed_snapshots = tuple(
+            snapshot
+            for snapshot in captured_workspace
+            if (
+                identity := WorkspaceFolderSet.uri_identity(snapshot.uri)
+            ) in captured_closed
+            and captured_closed[identity] == snapshot.uri
+        )
+
+        try:
+            context = self.requests.start(request_id)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        validation_error: DocumentError | None = None
+        stale_closed_inputs = False
+        try:
+            self.requests.checkpoint(context)
+            if not self._closed_workspace_snapshots_current(
+                captured_closed_snapshots
+            ):
+                self._refresh_closed_workspace_files()
+                return self._error(request_id, -32801, "Content modified")
+
+            def publish() -> dict[str, Any] | None:
+                nonlocal validation_error, stale_closed_inputs
+                if any(
+                    self._closed_workspace_uris.get(identity) != uri
+                    for identity, uri in captured_closed.items()
+                ):
+                    stale_closed_inputs = True
+                    return None
+                try:
+                    self._validate_workspace_file_preflight(
+                        operation,
+                        relevant,
+                        captured_documents=captured_documents,
+                        captured_closed=captured_closed,
+                    )
+                except DocumentError as exc:
+                    validation_error = exc
+                    return None
+                if not self._closed_workspace_snapshots_current(
+                    captured_closed_snapshots
+                ):
+                    stale_closed_inputs = True
+                    return None
+                self.requests.checkpoint(context)
+                return self._result(request_id, None)
+
+            try:
+                response = self.documents.commit_matching_if_current(
+                    captured_documents,
+                    lambda document: (
+                        document.language_id == self.nova_adapter.language_id
+                        and WorkspaceFolderSet.uri_identity(document.uri)
+                        in affected_identities
+                    ),
+                    lambda: self.workspace_symbols.commit_snapshots_if_current(
+                        captured_workspace,
+                        lambda: self.workspace_folders.commit_if_current(
+                            captured_folders.generation,
+                            publish,
+                        ),
+                    ),
+                )
+            except (DocumentError, WorkspaceIndexError, WorkspaceFolderError):
+                return self._error(request_id, -32801, "Content modified")
+
+            if stale_closed_inputs:
+                self._refresh_closed_workspace_files()
+                return self._error(request_id, -32801, "Content modified")
+            if validation_error is not None:
+                return self._error(
+                    request_id,
+                    -32803,
+                    f"File {operation} preflight failed: {validation_error}",
+                )
+            assert response is not None
+            return response
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        finally:
+            self.requests.finish(context)
+
+    @staticmethod
+    def _validate_workspace_file_preflight(
+        operation: str,
+        requested: tuple[tuple[str, WorkspaceUriIdentity], ...],
+        *,
+        captured_documents: tuple[Document, ...],
+        captured_closed: dict[WorkspaceUriIdentity, str],
+    ) -> None:
+        """Validate operation-specific invariants over one exact capture."""
+        if operation == "delete":
+            return
+        if operation != "create":
+            raise DocumentError(f"unsupported file operation: {operation}")
+
+        open_by_identity = {
+            WorkspaceFolderSet.uri_identity(document.uri): document.uri
+            for document in captured_documents
+        }
+        for uri, identity in requested:
+            open_uri = open_by_identity.get(identity)
+            if open_uri is not None:
+                raise DocumentError(f"create target already open: {open_uri}")
+            closed_uri = captured_closed.get(identity)
+            if closed_uri is not None:
+                raise DocumentError(f"create target already indexed: {closed_uri}")
 
     def _handle_workspace_will_rename(
         self, request_id: Any, params: Any
@@ -1920,6 +2159,38 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(text_document, dict):
             return False
         return isinstance(text_document.get("moniker"), dict)
+
+    @staticmethod
+    def _client_supports_file_will_create(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        file_operations = workspace.get("fileOperations")
+        return (
+            isinstance(file_operations, dict)
+            and file_operations.get("willCreate") is True
+        )
+
+    @staticmethod
+    def _client_supports_file_will_delete(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        workspace = capabilities.get("workspace")
+        if not isinstance(workspace, dict):
+            return False
+        file_operations = workspace.get("fileOperations")
+        return (
+            isinstance(file_operations, dict)
+            and file_operations.get("willDelete") is True
+        )
 
     @staticmethod
     def _client_supports_file_create(params: Any) -> bool:
