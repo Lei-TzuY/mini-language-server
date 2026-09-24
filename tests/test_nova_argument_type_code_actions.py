@@ -225,3 +225,21 @@ def test_argument_type_quick_fix_honors_cancellation_checkpoint() -> None:
         "id": 2,
         "error": {"code": -32800, "message": "Request cancelled"},
     }
+
+def test_argument_type_quick_fix_follows_transitive_import_visibility() -> None:
+    server = initialized_server()
+    helper = "file:///workspace/helper.nova"
+    middle = "file:///workspace/middle.nova"
+    other = "file:///workspace/other.nova"
+    caller = "file:///workspace/caller.nova"
+    open_nova(server, helper, "fn target(value: String) {}\n")
+    open_nova(server, middle, "import ./helper.nova;\nfn middle() {}\n")
+    open_nova(server, other, "fn target(flag: Bool) {}\n")
+    text = "import ./middle.nova;\nfn caller() { target(1) }\n"
+    open_nova(server, caller, text)
+    literal = text.splitlines()[1].index("1")
+
+    action = single_action(code_action(server, caller, 90, 1, literal, literal + 1))
+
+    assert action["title"] == "Replace argument 1 to 'target' with String literal"
+    assert action["edit"]["changes"][caller][0]["newText"] == '""'
