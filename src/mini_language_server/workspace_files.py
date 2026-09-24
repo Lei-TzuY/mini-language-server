@@ -130,22 +130,8 @@ def probe_local_workspace_mutation(
     parent = path.parent
     try:
         metadata = parent.lstat()
-    except FileNotFoundError:
-        return LocalWorkspaceMutationEvidence(
-            uri=uri,
-            identity=identity,
-            parent_kind="missing",
-            parent_signature=None,
-            parent_write_search=False,
-        )
     except OSError:
-        return LocalWorkspaceMutationEvidence(
-            uri=uri,
-            identity=identity,
-            parent_kind="unavailable",
-            parent_signature=None,
-            parent_write_search=False,
-        )
+        return None
 
     mode = metadata.st_mode
     if stat.S_ISDIR(mode):
