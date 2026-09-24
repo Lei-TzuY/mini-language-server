@@ -37,10 +37,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             result: Any = None
             if call is not None:
                 name, opening, active_parameter = call
-                declarations = tuple(
-                    declaration
-                    for declaration in self.workspace_symbols.declarations(name)
-                    if declaration.symbol.kind == "function"
+                declarations = self._nova_visible_function_declarations(
+                    semantics,
+                    snapshots,
+                    name,
                 )
                 if len(declarations) == 1:
                     declaration = declarations[0]
