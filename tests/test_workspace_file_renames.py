@@ -665,3 +665,70 @@ def test_will_rename_rejects_detached_disk_drift_and_refreshes_index(
     assert refreshed.symbols.syntax.document.text == "fn after() {}\n"
     assert source.exists()
     assert not destination.exists()
+
+def test_will_rename_rejects_unindexed_local_destination_collision(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.nova"
+    destination = tmp_path / "external.nova"
+    source.write_text("fn source() {}\n", encoding="utf-8")
+    destination.write_bytes(b"\xff")
+    server = initialized_closed_workspace_server(tmp_path)
+    source_uri = source.as_uri()
+    destination_uri = destination.as_uri()
+    assert server.workspace_symbols.get(source_uri) is not None
+    assert server.workspace_symbols.get(destination_uri) is None
+
+    response = will_rename_files(
+        server,
+        (source_uri, destination_uri),
+        request_id=35,
+    )
+
+    assert response is not None
+    assert response["error"]["code"] == -32803
+    assert "rename destination already exists on disk" in response["error"]["message"]
+    assert source.exists()
+    assert destination.read_bytes() == b"\xff"
+
+
+def test_will_rename_rejects_unindexed_local_source_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "external.nova"
+    destination = tmp_path / "renamed.nova"
+    source.write_bytes(b"\xff")
+    server = initialized_closed_workspace_server(tmp_path)
+    source_uri = source.as_uri()
+    destination_uri = destination.as_uri()
+    assert server.workspace_symbols.get(source_uri) is None
+    original = server.workspace_symbols.commit_snapshots_if_current
+    removed = False
+
+    def remove_then_commit(snapshots, callback):
+        nonlocal removed
+        if not removed:
+            removed = True
+            source.unlink()
+        return original(snapshots, callback)
+
+    monkeypatch.setattr(
+        server.workspace_symbols,
+        "commit_snapshots_if_current",
+        remove_then_commit,
+    )
+
+    response = will_rename_files(
+        server,
+        (source_uri, destination_uri),
+        request_id=36,
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 36,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert not source.exists()
+    assert not destination.exists()
