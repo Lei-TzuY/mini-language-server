@@ -58,10 +58,6 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if len(origin_exports) != 1:
             return None
 
-        indexed = {
-            WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
-            for snapshot in snapshots
-        }
         edits_by_uri: dict[str, list[tuple[int, dict[str, Any]]]] = {}
         seen_edits: set[tuple[str, int, int]] = set()
 
