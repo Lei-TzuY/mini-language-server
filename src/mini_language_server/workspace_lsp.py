@@ -1566,7 +1566,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 for name, declarations in grouped.items()
             }
 
-        if not tree.imports and legacy_global:
+        if not tree.imports and not tree.wildcard_exports and legacy_global:
             return declaration_map(
                 tuple(snapshots),
                 include_private_for=importer,
@@ -1612,6 +1612,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             *,
             apply: bool,
             namespace_members: frozenset[str] = frozenset(),
+            wildcard_members: frozenset[str] = frozenset(),
         ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
             if not apply:
                 return visible
@@ -1623,6 +1624,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 return visible
             allowed = {item.name for item in snapshot_tree.exports}
             allowed.update(namespace_members)
+            allowed.update(wildcard_members)
             return {
                 name: declarations
                 for name, declarations in visible.items()
@@ -1656,7 +1658,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             snapshot_tree = snapshot.symbols.syntax.tree
             if not isinstance(snapshot_tree, NovaFunctionSyntax):
                 return local_exported
-            if not snapshot_tree.imports:
+            if not snapshot_tree.imports and not snapshot_tree.wildcard_exports:
                 return apply_export_list(
                     snapshot,
                     local_exported,
@@ -1768,10 +1770,32 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         }
                 imported_maps.append(target_visible)
 
+            wildcard_maps: list[
+                dict[str, tuple[WorkspaceDeclaration, ...]]
+            ] = []
+            if apply_exports:
+                for wildcard in snapshot_tree.wildcard_exports:
+                    target_uri = self._nova_import_target_uri(
+                        snapshot.uri,
+                        wildcard.path,
+                    )
+                    if target_uri is None:
+                        continue
+                    target = indexed.get(
+                        WorkspaceFolderSet.uri_identity(target_uri)
+                    )
+                    if target is None:
+                        continue
+                    wildcard_maps.append(exported(target, next_visiting))
+
             imported = merge_maps(tuple(imported_maps))
+            wildcard_reexported = merge_maps(tuple(wildcard_maps))
             for name in local_all:
                 imported.pop(name, None)
+                wildcard_reexported.pop(name, None)
             imported.update(local_exported)
+            if apply_exports:
+                imported = merge_maps((imported, wildcard_reexported))
 
             namespace_members: set[str] = set()
             if snapshot_tree.has_export_list:
@@ -1793,6 +1817,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 imported,
                 apply=apply_exports,
                 namespace_members=frozenset(namespace_members),
+                wildcard_members=frozenset(wildcard_reexported),
             )
 
         return exported(
