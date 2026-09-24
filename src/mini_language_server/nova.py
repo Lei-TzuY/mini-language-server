@@ -296,6 +296,12 @@ class NovaFunctionAdapter:
             for item in imports
             if item.namespace is not None
         }
+        namespace_aliases.update(
+            selected.binding_name
+            for item in imports
+            if item.has_name_list
+            for selected in item.names
+        )
         namespace_counts: dict[str, int] = {}
         for imported in imports:
             if imported.namespace is not None:
