@@ -140,6 +140,21 @@ def test_complete_snapshot_guard_rejects_remove_readd_same_snapshot_aba() -> Non
         index.commit_snapshots_if_current(captured, lambda: None)
 
 
+def test_complete_snapshot_guard_rejects_explicit_semantic_scope_invalidation() -> None:
+    index = WorkspaceSymbolIndex()
+    current = snapshot("file:///workspace/main.nova", "current")
+    index.replace(current)
+    captured = index.snapshots()
+    declarations = index.declarations("current")
+
+    index.invalidate_complete_queries()
+
+    assert index.get(current.uri) is current
+    assert index.commit_if_current(declarations, lambda: "subset") == "subset"
+    with pytest.raises(WorkspaceIndexError, match="generation changed"):
+        index.commit_snapshots_if_current(captured, lambda: None)
+
+
 def test_workspace_snapshot_capture_remains_tuple_compatible() -> None:
     index = WorkspaceSymbolIndex()
     first = snapshot("file:///workspace/a.nova", "alpha")

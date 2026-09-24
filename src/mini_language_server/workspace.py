@@ -64,6 +64,18 @@ class WorkspaceSymbolIndex:
         with self._lock:
             return self._snapshots.get(uri)
 
+    def invalidate_complete_queries(self) -> None:
+        """Advance complete-workspace identity without replacing snapshots.
+
+        Some workspace semantics depend on state outside individual semantic snapshots,
+        such as the active workspace-folder topology. Callers that captured a complete
+        WorkspaceSnapshotSet must become stale across those transitions even when every
+        indexed snapshot object remains current. Deliberately partial subset commits
+        continue to validate only their named snapshot identities.
+        """
+        with self._lock:
+            self._generation += 1
+
     def snapshots(self) -> WorkspaceSnapshotSet:
         """Return exact indexed snapshots plus the current workspace generation."""
         with self._lock:

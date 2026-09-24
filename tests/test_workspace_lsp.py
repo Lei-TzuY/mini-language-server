@@ -325,6 +325,61 @@ def test_workspace_symbol_rejects_scope_change_after_search_capture(
         "error": {"code": -32801, "message": "Content modified"},
     }
 
+def test_workspace_symbol_rejects_nested_scope_change_with_same_membership(
+    monkeypatch: Any,
+) -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize_with_folders(
+        server,
+        [{"uri": "file:///workspace", "name": "root"}],
+    )
+    uri = "file:///workspace/app/main.nova"
+    open_nova(server, uri, "fn alpha() {}\n")
+    original = server.workspace_symbols.get(uri)
+    captured = server.workspace_symbols.snapshots()
+    assert original is not None
+    real_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def add_nested_folder_after_search(context) -> None:
+        nonlocal calls
+        calls += 1
+        real_checkpoint(context)
+        if calls == 2:
+            server.handle(
+                notify(
+                    "workspace/didChangeWorkspaceFolders",
+                    {
+                        "event": {
+                            "added": [
+                                {
+                                    "uri": "file:///workspace/app",
+                                    "name": "app",
+                                }
+                            ],
+                            "removed": [],
+                        }
+                    },
+                )
+            )
+            assert server.workspace_symbols.get(uri) is original
+            current = server.workspace_symbols.snapshots()
+            assert tuple(current) == tuple(captured)
+            assert current.generation != captured.generation
+
+    monkeypatch.setattr(
+        server.requests,
+        "checkpoint",
+        add_nested_folder_after_search,
+    )
+
+    assert server.handle(request("workspace/symbol", 22, {"query": ""})) == {
+        "jsonrpc": "2.0",
+        "id": 22,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+
 def initialize_with_work_done(server: WorkspaceNovaLanguageServer) -> dict:
     result = server.handle(
         request(
