@@ -48,12 +48,12 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         else:
             return super()._handle_workspace_hover(request_id, params)
 
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
         snapshots = self.workspace_symbols.snapshots()
+        declarations = self._nova_visible_function_declarations(
+            semantics,
+            snapshots,
+            name,
+        )
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
