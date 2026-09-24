@@ -1739,6 +1739,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return True
         return any(exported.name == binding_name for exported in tree.exports)
 
+    @staticmethod
+    def _nova_import_diagnostic_code(code: str | None) -> bool:
+        """Whether one diagnostic is wholly recomputed from the import graph."""
+        return code in _NOVA_IMPORT_DIAGNOSTIC_CODES
+
     def _nova_import_cycle_edges(
         self,
         snapshots: tuple[SemanticSnapshot, ...],
