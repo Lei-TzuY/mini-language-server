@@ -310,8 +310,12 @@ def test_namespace_member_prepare_and_rename_preserve_prefix() -> None:
     caller_edits = changes[caller_uri]
     assert [edit["newText"] for edit in caller_edits] == ["renamed"]
     edit_range = caller_edits[0]["range"]
-    assert edit_range["start"]["character"] == caller.index("target")
-    assert edit_range["end"]["character"] == caller.index("target") + len("target")
+    expected = position(caller, "target")
+    assert edit_range["start"] == expected
+    assert edit_range["end"] == {
+        "line": expected["line"],
+        "character": expected["character"] + len("target"),
+    }
 
 
 def test_file_rename_rewrites_namespace_import_path(tmp_path: Path) -> None:
