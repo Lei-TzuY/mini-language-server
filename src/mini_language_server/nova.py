@@ -296,17 +296,38 @@ class NovaFunctionAdapter:
             for item in imports
             if item.namespace is not None
         }
+        namespace_counts: dict[str, int] = {}
+        for imported in imports:
+            if imported.namespace is not None:
+                namespace_counts[imported.namespace] = (
+                    namespace_counts.get(imported.namespace, 0) + 1
+                )
+        function_names = {match.group(1) for match in matches}
         qualified_call_matches = tuple(
             match
             for match in _QUALIFIED_CALL.finditer(text)
             if match.group(1) in namespace_aliases
         )
         namespace_references = tuple(
-            (
-                match.group(1),
-                Span(match.start(1), match.end(1)),
+            sorted(
+                (
+                    *(
+                        (
+                            match.group(1),
+                            Span(match.start(1), match.end(1)),
+                        )
+                        for match in qualified_call_matches
+                    ),
+                    *(
+                        (exported.name, exported.span)
+                        for exported in exports
+                        if namespace_counts.get(exported.name) == 1
+                        and exported.name not in {"Int", "UInt"}
+                        and exported.name not in function_names
+                    ),
+                ),
+                key=lambda item: item[1].start,
             )
-            for match in qualified_call_matches
         )
         qualified_member_spans = {
             Span(match.start(2), match.end(2))
