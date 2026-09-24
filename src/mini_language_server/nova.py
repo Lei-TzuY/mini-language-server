@@ -26,6 +26,10 @@ _IMPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*import[ \t]+((?:\./|\.\./)(?:[A-Za-z0-9_.~%+-]+/)*"
     r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
 )
+_EXPORT_DECLARATION = re.compile(
+    r"(?m)^[ \t]*export[ \t]*\{([^}\r\n]*)\}[ \t]*;?[ \t]*\r?$"
+)
+_EXPORT_NAME = re.compile(rf"(?:^|,)[ \t]*({_IDENTIFIER})[ \t]*(?=,|$)")
 _IDENTIFIER_MATCH = re.compile(rf"\b({_IDENTIFIER})\b")
 _PARAMETER_PART = re.compile(r"[^,]+")
 _PARAMETER = re.compile(
@@ -53,6 +57,14 @@ class NovaImportSyntax:
 
 
 @dataclass(frozen=True, slots=True)
+class NovaExportSyntax:
+    """One exact explicit function export name."""
+
+    name: str
+    span: Span
+
+
+@dataclass(frozen=True, slots=True)
 class NovaFunctionSyntax:
     """Immutable syntax payload for Nova functions, calls, parameters, and locals."""
 
@@ -60,6 +72,8 @@ class NovaFunctionSyntax:
     calls: tuple[tuple[str, Span], ...]
     private_declarations: tuple[Span, ...] = ()
     imports: tuple[NovaImportSyntax, ...] = ()
+    exports: tuple[NovaExportSyntax, ...] = ()
+    has_export_list: bool = False
     parameters: tuple[NovaScopedName, ...] = ()
     parameter_references: tuple[NovaScopedName, ...] = ()
     locals: tuple[NovaScopedName, ...] = ()
@@ -125,6 +139,18 @@ class NovaFunctionAdapter:
             )
             for match in _IMPORT_DECLARATION.finditer(text)
         )
+        export_declarations = tuple(_EXPORT_DECLARATION.finditer(text))
+        export_candidates = tuple(
+            NovaExportSyntax(
+                name.group(1),
+                Span(
+                    declaration.start(1) + name.start(1),
+                    declaration.start(1) + name.end(1),
+                ),
+            )
+            for declaration in export_declarations
+            for name in _EXPORT_NAME.finditer(declaration.group(1))
+        )
         parameters: list[NovaScopedName] = []
         parameter_references: list[NovaScopedName] = []
         locals_: list[NovaScopedName] = []
@@ -146,6 +172,21 @@ class NovaFunctionAdapter:
                 extent.start <= item.span.start < extent.end
                 for extent in function_extents
             )
+        )
+        exports = tuple(
+            item
+            for item in export_candidates
+            if not any(
+                extent.start <= item.span.start < extent.end
+                for extent in function_extents
+            )
+        )
+        has_export_list = any(
+            not any(
+                extent.start <= declaration.start() < extent.end
+                for extent in function_extents
+            )
+            for declaration in export_declarations
         )
         call_spans = {
             Span(match.start(1), match.end(1)) for match in _CALL.finditer(text)
@@ -229,6 +270,8 @@ class NovaFunctionAdapter:
             calls=calls,
             private_declarations=tuple(private_declarations),
             imports=imports,
+            exports=exports,
+            has_export_list=has_export_list,
             parameters=tuple(parameters),
             parameter_references=tuple(parameter_references),
             locals=tuple(locals_),
