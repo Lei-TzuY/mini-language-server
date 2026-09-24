@@ -20,6 +20,9 @@ _SIMPLE_TYPE_REF = rf"(?:{_IDENTIFIER}|!)"
 _FUNCTION_DECLARATION = re.compile(
     rf"\bfn\s+({_IDENTIFIER})\s*\(([^)]*)\)\s*(?:->\s*{_SIMPLE_TYPE_REF}\s*)?\{{"
 )
+_EXPORTED_FUNCTION_DECLARATION = re.compile(
+    rf"\bexport\s+fn\s+({_IDENTIFIER})\b"
+)
 _CALL = re.compile(rf"\b({_IDENTIFIER})\s*(?=\()")
 _IMPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*import[ \t]+((?:\./|\.\./)(?:[A-Za-z0-9_.~%+-]+/)*"
