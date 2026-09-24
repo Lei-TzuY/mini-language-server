@@ -73,6 +73,7 @@ class NovaFunctionSyntax:
     private_declarations: tuple[Span, ...] = ()
     imports: tuple[NovaImportSyntax, ...] = ()
     exports: tuple[NovaExportSyntax, ...] = ()
+    has_export_list: bool = False
     parameters: tuple[NovaScopedName, ...] = ()
     parameter_references: tuple[NovaScopedName, ...] = ()
     locals: tuple[NovaScopedName, ...] = ()
@@ -138,6 +139,7 @@ class NovaFunctionAdapter:
             )
             for match in _IMPORT_DECLARATION.finditer(text)
         )
+        export_declarations = tuple(_EXPORT_DECLARATION.finditer(text))
         export_candidates = tuple(
             NovaExportSyntax(
                 name.group(1),
@@ -146,7 +148,7 @@ class NovaFunctionAdapter:
                     declaration.start(1) + name.end(1),
                 ),
             )
-            for declaration in _EXPORT_DECLARATION.finditer(text)
+            for declaration in export_declarations
             for name in _EXPORT_NAME.finditer(declaration.group(1))
         )
         parameters: list[NovaScopedName] = []
@@ -178,6 +180,13 @@ class NovaFunctionAdapter:
                 extent.start <= item.span.start < extent.end
                 for extent in function_extents
             )
+        )
+        has_export_list = any(
+            not any(
+                extent.start <= declaration.start() < extent.end
+                for extent in function_extents
+            )
+            for declaration in export_declarations
         )
         call_spans = {
             Span(match.start(1), match.end(1)) for match in _CALL.finditer(text)
@@ -262,6 +271,7 @@ class NovaFunctionAdapter:
             private_declarations=tuple(private_declarations),
             imports=imports,
             exports=exports,
+            has_export_list=has_export_list,
             parameters=tuple(parameters),
             parameter_references=tuple(parameter_references),
             locals=tuple(locals_),
