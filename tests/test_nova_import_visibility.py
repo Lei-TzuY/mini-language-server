@@ -523,3 +523,162 @@ def test_transitive_import_visibility_preserves_intermediate_local_shadowing() -
     assert definition is not None
     assert definition["result"][0]["targetUri"] == middle_uri
     assert definition["result"][0]["targetSelectionRange"]["start"]["line"] == 1
+
+def test_explicit_exports_bound_direct_import_visibility() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider-exports.nova"
+    caller_uri = "file:///workspace/caller-exports.nova"
+    provider = (
+        "export fn public(value: Int) -> Int { value }\n"
+        "fn private(value: String) -> String { value }\n"
+        "fn internal() { private(\"x\") }\n"
+    )
+    caller = (
+        "import ./provider-exports.nova;\n"
+        "fn caller() { public(1) private(\"x\") }\n"
+    )
+    open_nova(server, provider_uri, provider)
+    open_nova(server, caller_uri, caller)
+
+    codes = diagnostic_codes(server, caller_uri)
+    assert codes.count("nova.unresolved-function") == 1
+    assert "nova.ambiguous-function" not in codes
+
+    public_definition = server.handle(
+        request(
+            "textDocument/definition",
+            80,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": position(caller, "public", delta=1),
+            },
+        )
+    )
+    assert public_definition is not None
+    assert public_definition["result"][0]["targetUri"] == provider_uri
+
+    private_definition = server.handle(
+        request(
+            "textDocument/definition",
+            81,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": position(caller, "private", delta=1),
+            },
+        )
+    )
+    assert private_definition is not None
+    assert private_definition["result"] is None
+
+    completion = server.handle(
+        request(
+            "textDocument/completion",
+            82,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": position(caller, "private"),
+            },
+        )
+    )
+    assert completion is not None
+    labels = {item["label"] for item in completion["result"]}
+    assert "public" in labels
+    assert "private" not in labels
+
+    references = server.handle(
+        request(
+            "textDocument/references",
+            83,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": position(caller, "public", delta=1),
+                "context": {"includeDeclaration": True},
+            },
+        )
+    )
+    assert references is not None
+    assert [item["uri"] for item in references["result"]] == [
+        caller_uri,
+        provider_uri,
+    ]
+
+    rename = server.handle(
+        request(
+            "textDocument/rename",
+            84,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": position(caller, "public", delta=1),
+                "newName": "renamed_public",
+            },
+        )
+    )
+    assert rename is not None
+    assert set(rename["result"]["changes"]) == {provider_uri, caller_uri}
+
+
+def test_explicit_exports_stop_legacy_transitive_reexport() -> None:
+    server = initialized_server()
+    leaf_uri = "file:///workspace/export-leaf.nova"
+    middle_uri = "file:///workspace/export-middle.nova"
+    root_uri = "file:///workspace/export-root.nova"
+
+    open_nova(server, leaf_uri, "fn deep(value: Int) -> Int { value }\n")
+    middle = (
+        "import ./export-leaf.nova;\n"
+        "export fn facade(value: Int) -> Int { deep(value) }\n"
+        "fn hidden() {}\n"
+    )
+    root = (
+        "import ./export-middle.nova;\n"
+        "fn root() { facade(1) deep(1) hidden() }\n"
+    )
+    open_nova(server, middle_uri, middle)
+    open_nova(server, root_uri, root)
+
+    assert "nova.unresolved-function" not in diagnostic_codes(server, middle_uri)
+    root_codes = diagnostic_codes(server, root_uri)
+    assert root_codes.count("nova.unresolved-function") == 2
+
+    facade_definition = server.handle(
+        request(
+            "textDocument/definition",
+            90,
+            {
+                "textDocument": {"uri": root_uri},
+                "position": position(root, "facade", delta=1),
+            },
+        )
+    )
+    assert facade_definition is not None
+    assert facade_definition["result"][0]["targetUri"] == middle_uri
+
+    for request_id, name in ((91, "deep"), (92, "hidden")):
+        missing = server.handle(
+            request(
+                "textDocument/definition",
+                request_id,
+                {
+                    "textDocument": {"uri": root_uri},
+                    "position": position(root, name, delta=1),
+                },
+            )
+        )
+        assert missing is not None
+        assert missing["result"] is None
+
+    completion = server.handle(
+        request(
+            "textDocument/completion",
+            93,
+            {
+                "textDocument": {"uri": root_uri},
+                "position": position(root, "deep"),
+            },
+        )
+    )
+    assert completion is not None
+    labels = {item["label"] for item in completion["result"]}
+    assert "facade" in labels
+    assert "deep" not in labels
+    assert "hidden" not in labels
