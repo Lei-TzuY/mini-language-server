@@ -343,3 +343,81 @@ def test_namespace_definition_does_not_depend_on_declaration_source_order() -> N
     assert [item["range"]["start"] for item in references["result"]] == [
         {"line": 0, "character": len("fn main() { ")}
     ]
+
+
+def test_namespace_is_published_as_semantic_symbol_and_reference() -> None:
+    server, _, caller_uri, caller = namespace_fixture()
+    semantics = server.semantics.get(caller_uri)
+    assert semantics is not None
+
+    namespaces = [
+        symbol
+        for symbol in semantics.symbols.symbols
+        if symbol.kind == "namespace"
+    ]
+    assert [(symbol.name, caller[symbol.span.start : symbol.span.end]) for symbol in namespaces] == [
+        ("api", "api")
+    ]
+    namespace = namespaces[0]
+    references = [
+        reference
+        for reference in semantics.references
+        if reference.target is namespace
+    ]
+    assert [
+        caller[reference.span.start : reference.span.end]
+        for reference in references
+    ] == ["api", "api"]
+
+
+def test_namespace_appears_in_document_and_workspace_symbols() -> None:
+    server, _, caller_uri, _ = namespace_fixture()
+
+    document = server.handle(
+        request(
+            "textDocument/documentSymbol",
+            70,
+            {"textDocument": {"uri": caller_uri}},
+        )
+    )
+    assert document is not None
+    assert any(
+        item["name"] == "api" and item["kind"] == 3
+        for item in document["result"]
+    )
+
+    workspace = server.handle(
+        request(
+            "workspace/symbol",
+            71,
+            {"query": "api"},
+        )
+    )
+    assert workspace is not None
+    assert any(
+        item["name"] == "api"
+        and item["kind"] == 3
+        and item["location"]["uri"] == caller_uri
+        for item in workspace["result"]
+    )
+
+
+def test_duplicate_and_reserved_namespaces_do_not_publish_semantic_symbols() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    caller_uri = "file:///workspace/caller.nova"
+    text = (
+        "import * as api from ./left.nova;\n"
+        "import * as api from ./right.nova;\n"
+        "import * as Int from ./numeric.nova;\n"
+        "fn main() { api::left(); Int::from(1); }\n"
+    )
+    open_nova(server, caller_uri, text)
+
+    semantics = server.semantics.get(caller_uri)
+    assert semantics is not None
+    assert [
+        (symbol.name, symbol.kind)
+        for symbol in semantics.symbols.symbols
+        if symbol.kind == "namespace"
+    ] == []
