@@ -430,6 +430,20 @@ class NovaFunctionAdapter:
         """Publish one exact Nova snapshot chain and its deterministic diagnostics."""
         parsed = self.parse(document.text)
         syntax = server.syntax.publish(document, parsed)
+
+        namespace_imports: dict[str, list[NovaImportSyntax]] = {}
+        for imported in parsed.imports:
+            if imported.namespace is None or imported.namespace_span is None:
+                continue
+            namespace_imports.setdefault(imported.namespace, []).append(imported)
+        namespace_symbols = tuple(
+            Symbol(name, "namespace", imports[0].namespace_span)
+            for name, imports in sorted(namespace_imports.items())
+            if len(imports) == 1
+            and name not in {"Int", "UInt"}
+            and imports[0].namespace_span is not None
+        )
+
         symbols = server.symbols.publish(
             syntax,
             (
@@ -437,6 +451,7 @@ class NovaFunctionAdapter:
                     Symbol(name, "function", span)
                     for name, span in parsed.declarations
                 ),
+                *namespace_symbols,
                 *(
                     Symbol(parameter.name, "parameter", parameter.span)
                     for parameter in parsed.parameters
@@ -449,10 +464,13 @@ class NovaFunctionAdapter:
         )
 
         functions_by_name: dict[str, list[Symbol]] = {}
+        namespaces_by_name: dict[str, Symbol] = {}
         symbols_by_span = {symbol.span: symbol for symbol in symbols.symbols}
         for symbol in symbols.symbols:
             if symbol.kind == "function":
                 functions_by_name.setdefault(symbol.name, []).append(symbol)
+            elif symbol.kind == "namespace":
+                namespaces_by_name[symbol.name] = symbol
 
         parameters_by_scope: dict[tuple[int, str], list[Symbol]] = {}
         for parameter in parsed.parameters:
@@ -560,6 +578,11 @@ class NovaFunctionAdapter:
             ]
             if len(candidates) == 1:
                 references.append(Reference(reference.span, candidates[0]))
+
+        for name, span in parsed.namespace_references:
+            namespace = namespaces_by_name.get(name)
+            if namespace is not None:
+                references.append(Reference(span, namespace))
 
         for unresolved in parsed.unresolved_names:
             diagnostics.append(
