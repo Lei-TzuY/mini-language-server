@@ -1161,6 +1161,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not changed:
             return
 
+        self.workspace_symbols.invalidate_complete_queries()
+
         for snapshot in tuple(before):
             if self.workspace_folders.contains(snapshot.uri):
                 continue
