@@ -3311,8 +3311,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if parsed is not None:
             semantics, offset, source = parsed
             if semantics is not None:
+                snapshots = self.workspace_symbols.snapshots()
                 namespace_target = self._nova_import_namespace_target(
                     semantics,
+                    snapshots,
                     offset,
                 )
                 if namespace_target is not None:
@@ -3321,7 +3323,6 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         semantics,
                         imported,
                     )
-                    snapshots = self.workspace_symbols.snapshots()
                     try:
                         context = self.requests.start(request_id, uri=semantics.uri)
                     except RequestError:
@@ -3329,7 +3330,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     try:
                         self.requests.checkpoint(context)
                         if method == "textDocument/definition":
-                            declaration = imported.namespace_span
+                            declaration = imported.span
                             result: Any = (
                                 None
                                 if declaration is None
@@ -3353,7 +3354,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                                 else tuple(
                                     span
                                     for span in spans
-                                    if span != imported.namespace_span
+                                    if span != imported.span
                                 )
                             )
                             result = [
