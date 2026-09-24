@@ -1276,3 +1276,73 @@ def test_closed_immutable_assignment_repair_fails_closed_on_shadowed_name(
         if item["diagnostics"][0]["code"] == "nova.immutable-assignment"
     ]
     assert immutable == []
+
+def test_closed_division_by_zero_repair_uses_null_version(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "division.nova"
+    text = "fn main() { let value = 10 / 0; }\n"
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(tmp_path, document_changes=True)
+    uri = source.absolute().as_uri()
+    start = text.index("0", text.index("/"))
+
+    result = closed_action(
+        server,
+        uri,
+        request_id=90,
+        start=start,
+        end=start + 1,
+    )["result"]
+
+    assert [item["title"] for item in result] == ["Replace zero divisor with 1"]
+    assert result[0]["edit"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": uri, "version": None},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": start},
+                        "end": {"line": 0, "character": start + 1},
+                    },
+                    "newText": "1",
+                }
+            ],
+        }
+    ]
+    assert server.documents.get(uri) is None
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_division_by_zero_repair_resolve_rejects_disk_drift(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "division.nova"
+    text = "fn main() { let value = 10 / 0; }\n"
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(
+        tmp_path,
+        document_changes=True,
+        resolve_edit=True,
+    )
+    uri = source.absolute().as_uri()
+    start = text.index("0", text.index("/"))
+
+    action = closed_action(
+        server,
+        uri,
+        request_id=91,
+        start=start,
+        end=start + 1,
+    )["result"][0]
+    assert action["title"] == "Replace zero divisor with 1"
+    assert "edit" not in action
+
+    replacement = "fn main() { let value = 10 / 2; }\n"
+    source.write_text(replacement, encoding="utf-8")
+
+    assert server.handle(request("codeAction/resolve", 92, action)) == {
+        "jsonrpc": "2.0",
+        "id": 92,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
