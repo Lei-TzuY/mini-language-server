@@ -99,3 +99,12 @@ def test_closed_assignment_semantics_precede_completion_and_definite_init() -> N
     definite = modules.index("mini_language_server.closed_definite_initialization")
 
     assert completion < assignment < definite
+
+def test_closed_scalar_diagnostics_precede_completion_and_assignments() -> None:
+    modules = [base.__module__ for base in NovaProductLanguageServer.__mro__]
+
+    completion = modules.index("mini_language_server.completion_pipeline")
+    scalar = modules.index("mini_language_server.closed_scalar_diagnostics")
+    assignment = modules.index("mini_language_server.closed_assignment_semantics")
+
+    assert completion < scalar < assignment
