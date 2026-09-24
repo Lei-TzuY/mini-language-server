@@ -191,3 +191,20 @@ def test_comment_trivia_does_not_turn_compound_return_into_direct_call() -> None
     )
 
     assert diagnostics(server, uri, "nova.return-type") == []
+
+def test_return_call_type_follows_transitive_import_visibility() -> None:
+    server = initialized_server()
+    helper = "file:///workspace/helper.nova"
+    middle = "file:///workspace/middle.nova"
+    other = "file:///workspace/other.nova"
+    caller = "file:///workspace/caller.nova"
+    open_nova(server, helper, 'fn target() -> String { return "value"; }\n')
+    open_nova(server, middle, "import ./helper.nova;\nfn middle() {}\n")
+    open_nova(server, other, "fn target() -> Bool { return true; }\n")
+    text = "import ./middle.nova;\nfn main() -> Int { return target(); }\n"
+    open_nova(server, caller, text)
+
+    mismatches = diagnostics(server, caller, "nova.return-type")
+    assert len(mismatches) == 1
+    assert mismatches[0].message == "return type mismatch: expected 'Int', got 'String'"
+    assert text[mismatches[0].span.start : mismatches[0].span.end] == "target()"
