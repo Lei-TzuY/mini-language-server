@@ -49,6 +49,19 @@ _CLOSED_WORKSPACE_WATCH_REGISTRATION_ID = (
     "mini-language-server.closed-workspace.didChangeWatchedFiles"
 )
 _CLOSED_WORKSPACE_WATCH_KIND = 7
+_NOVA_IMPORT_DIAGNOSTIC_CODES = frozenset(
+    {
+        "nova.unresolved-import",
+        "nova.import-cycle",
+        "nova.duplicate-import-name",
+        "nova.unresolved-import-name",
+        "nova.ambiguous-import-name",
+        "nova.duplicate-export",
+        "nova.unresolved-export",
+        "nova.ambiguous-export",
+        "nova.private-export",
+    }
+)
 
 
 class WorkspaceNovaLanguageServer(NovaLanguageServer):
@@ -1726,10 +1739,134 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return True
         return any(exported.name == binding_name for exported in tree.exports)
 
+    @staticmethod
+    def _nova_import_diagnostic_code(code: str | None) -> bool:
+        """Whether one diagnostic is wholly recomputed from the import graph."""
+        return code in _NOVA_IMPORT_DIAGNOSTIC_CODES
+
+    def _nova_import_cycle_edges(
+        self,
+        snapshots: tuple[SemanticSnapshot, ...],
+    ) -> dict[WorkspaceUriIdentity, frozenset[Span]]:
+        """Return resolved import edges that participate in one exact SCC cycle."""
+        indexed = {
+            WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
+            for snapshot in snapshots
+        }
+        adjacency: dict[
+            WorkspaceUriIdentity,
+            set[WorkspaceUriIdentity],
+        ] = {identity: set() for identity in indexed}
+        edges: dict[
+            WorkspaceUriIdentity,
+            list[tuple[Span, WorkspaceUriIdentity]],
+        ] = {identity: [] for identity in indexed}
+
+        for identity, snapshot in indexed.items():
+            tree = snapshot.symbols.syntax.tree
+            if not isinstance(tree, NovaFunctionSyntax):
+                continue
+            for item in tree.imports:
+                target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
+                if target_uri is None:
+                    continue
+                target_identity = WorkspaceFolderSet.uri_identity(target_uri)
+                if target_identity not in indexed:
+                    continue
+                adjacency[identity].add(target_identity)
+                edges[identity].append((item.span, target_identity))
+
+        index = 0
+        indexes: dict[WorkspaceUriIdentity, int] = {}
+        lowlinks: dict[WorkspaceUriIdentity, int] = {}
+        stack: list[WorkspaceUriIdentity] = []
+        on_stack: set[WorkspaceUriIdentity] = set()
+        components: list[tuple[WorkspaceUriIdentity, ...]] = []
+
+        def visit(node: WorkspaceUriIdentity) -> None:
+            nonlocal index
+            indexes[node] = index
+            lowlinks[node] = index
+            index += 1
+            stack.append(node)
+            on_stack.add(node)
+
+            for target in sorted(adjacency[node]):
+                if target not in indexes:
+                    visit(target)
+                    lowlinks[node] = min(lowlinks[node], lowlinks[target])
+                elif target in on_stack:
+                    lowlinks[node] = min(lowlinks[node], indexes[target])
+
+            if lowlinks[node] != indexes[node]:
+                return
+            component: list[WorkspaceUriIdentity] = []
+            while True:
+                member = stack.pop()
+                on_stack.remove(member)
+                component.append(member)
+                if member == node:
+                    break
+            components.append(tuple(sorted(component)))
+
+        for node in sorted(adjacency):
+            if node not in indexes:
+                visit(node)
+
+        component_by_node: dict[WorkspaceUriIdentity, int] = {}
+        cyclic_components: set[int] = set()
+        for component_index, component in enumerate(components):
+            for node in component:
+                component_by_node[node] = component_index
+            if len(component) > 1 or component[0] in adjacency[component[0]]:
+                cyclic_components.add(component_index)
+
+        cycle_edges: dict[WorkspaceUriIdentity, frozenset[Span]] = {}
+        for source, source_edges in edges.items():
+            component_index = component_by_node[source]
+            if component_index not in cyclic_components:
+                continue
+            spans = frozenset(
+                span
+                for span, target in source_edges
+                if component_by_node[target] == component_index
+            )
+            if spans:
+                cycle_edges[source] = spans
+        return cycle_edges
+
+    @staticmethod
+    def _nova_import_cycle_related_information(
+        target: SemanticSnapshot,
+        cycle_edges: dict[WorkspaceUriIdentity, frozenset[Span]],
+    ) -> tuple[DiagnosticRelatedInformation, ...]:
+        """Point at one deterministic continuation edge for a cross-file cycle."""
+        target_identity = WorkspaceFolderSet.uri_identity(target.uri)
+        target_spans = cycle_edges.get(target_identity, frozenset())
+        if not target_spans:
+            return ()
+        tree = target.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return ()
+        for item in tree.imports:
+            if item.span not in target_spans:
+                continue
+            return (
+                DiagnosticRelatedInformation(
+                    target.uri,
+                    item.span,
+                    f"import cycle continues through '{item.path}'",
+                    semantic=target,
+                ),
+            )
+        return ()
+
     def _nova_import_diagnostics(
         self,
         snapshot: SemanticSnapshot,
         snapshots: Any,
+        *,
+        cycle_edges: dict[WorkspaceUriIdentity, frozenset[Span]] | None = None,
     ) -> tuple[Diagnostic, ...]:
         """Validate exact-workspace Nova imports, selections, and explicit exports."""
         tree = snapshot.symbols.syntax.tree
@@ -1740,6 +1877,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             WorkspaceFolderSet.uri_identity(candidate.uri): candidate
             for candidate in snapshot_tuple
         }
+        if cycle_edges is None:
+            cycle_edges = self._nova_import_cycle_edges(snapshot_tuple)
+        snapshot_identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
         diagnostics: list[Diagnostic] = []
         for item in tree.imports:
             target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
@@ -1758,6 +1898,23 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     )
                 )
                 continue
+            if item.span in cycle_edges.get(snapshot_identity, frozenset()):
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"import cycle includes '{item.path}'",
+                        code="nova.import-cycle",
+                        source="nova",
+                        related_information=(
+                            ()
+                            if target is snapshot
+                            else self._nova_import_cycle_related_information(
+                                target,
+                                cycle_edges,
+                            )
+                        ),
+                    )
+                )
             if not item.has_name_list:
                 continue
 
@@ -2056,6 +2213,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
     ) -> tuple[DiagnosticSnapshot, ...]:
         """Recompute closed-file diagnostics against exact import visibility."""
         rendered: list[DiagnosticSnapshot] = []
+        cycle_edges = self._nova_import_cycle_edges(snapshots)
         for snapshot in snapshots:
             identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
             if self._closed_workspace_uris.get(identity) != snapshot.uri:
@@ -2120,7 +2278,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     )
 
             diagnostics.extend(
-                self._nova_import_diagnostics(snapshot, snapshots)
+                self._nova_import_diagnostics(
+                    snapshot,
+                    snapshots,
+                    cycle_edges=cycle_edges,
+                )
             )
             diagnostics.extend(
                 self._closed_workspace_product_diagnostics(
@@ -2207,6 +2369,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
     def _publish_workspace_diagnostics(self) -> None:
         """Reconcile Nova call diagnostics against one exact workspace snapshot set."""
         snapshots = self.workspace_symbols.snapshots()
+        cycle_edges = self._nova_import_cycle_edges(tuple(snapshots))
         planned: list[tuple[Any, tuple[Diagnostic, ...]]] = []
         for snapshot in snapshots:
             tree = snapshot.symbols.syntax.tree
@@ -2222,8 +2385,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 not in {
                     "nova.unresolved-function",
                     "nova.ambiguous-function",
-                    "nova.unresolved-import",
                 }
+                and diagnostic.code not in _NOVA_IMPORT_DIAGNOSTIC_CODES
             ]
             visible = self._nova_visible_function_map(snapshot, snapshots)
             for name, span in tree.calls:
@@ -2247,7 +2410,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         )
                     )
             diagnostics.extend(
-                self._nova_import_diagnostics(snapshot, snapshots)
+                self._nova_import_diagnostics(
+                    snapshot,
+                    snapshots,
+                    cycle_edges=cycle_edges,
+                )
             )
             planned.append((snapshot, tuple(diagnostics)))
 

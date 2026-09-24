@@ -580,3 +580,149 @@ def test_will_rename_rejects_closed_importer_disk_drift(
         "id": 24,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+
+def test_relative_import_cycle_reports_each_cycle_edge() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        folders=[{"uri": "file:///workspace", "name": "root"}],
+    )
+    first_uri = "file:///workspace/first.nova"
+    second_uri = "file:///workspace/second.nova"
+
+    open_nova(
+        server,
+        first_uri,
+        "import ./second.nova;\nfn first() {}\n",
+    )
+    open_nova(
+        server,
+        second_uri,
+        "import ./first.nova;\nfn second() {}\n",
+    )
+
+    assert "nova.import-cycle" in diagnostic_codes(server, first_uri)
+    assert "nova.import-cycle" in diagnostic_codes(server, second_uri)
+
+
+def test_workspace_root_import_cycle_uses_same_graph() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        folders=[{"uri": "file:///workspace", "name": "root"}],
+    )
+    first_uri = "file:///workspace/first.nova"
+    second_uri = "file:///workspace/second.nova"
+
+    open_nova(
+        server,
+        first_uri,
+        "import @/second.nova;\nfn first() {}\n",
+    )
+    open_nova(
+        server,
+        second_uri,
+        "import @/first.nova;\nfn second() {}\n",
+    )
+
+    assert "nova.import-cycle" in diagnostic_codes(server, first_uri)
+    assert "nova.import-cycle" in diagnostic_codes(server, second_uri)
+
+
+def test_self_import_reports_cycle() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        folders=[{"uri": "file:///workspace", "name": "root"}],
+    )
+    uri = "file:///workspace/self.nova"
+    open_nova(
+        server,
+        uri,
+        "import ./self.nova;\nfn self_fn() {}\n",
+    )
+
+    snapshot = server.diagnostics.get(uri)
+    assert snapshot is not None
+    cycle = [
+        item
+        for item in snapshot.diagnostics
+        if item.code == "nova.import-cycle"
+    ]
+    assert len(cycle) == 1
+    assert cycle[0].message == "import cycle includes './self.nova'"
+
+
+def test_acyclic_import_diamond_does_not_report_cycle() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        folders=[{"uri": "file:///workspace", "name": "root"}],
+    )
+    root_uri = "file:///workspace/root.nova"
+    left_uri = "file:///workspace/left.nova"
+    right_uri = "file:///workspace/right.nova"
+    leaf_uri = "file:///workspace/leaf.nova"
+
+    open_nova(server, leaf_uri, "fn leaf() {}\n")
+    open_nova(
+        server,
+        left_uri,
+        "import ./leaf.nova;\nfn left() {}\n",
+    )
+    open_nova(
+        server,
+        right_uri,
+        "import ./leaf.nova;\nfn right() {}\n",
+    )
+    open_nova(
+        server,
+        root_uri,
+        (
+            "import ./left.nova;\n"
+            "import ./right.nova;\n"
+            "fn root() {}\n"
+        ),
+    )
+
+    for uri in (root_uri, left_uri, right_uri, leaf_uri):
+        assert "nova.import-cycle" not in diagnostic_codes(server, uri)
+
+
+def test_import_cycle_diagnostic_does_not_accumulate_on_republish() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        folders=[{"uri": "file:///workspace", "name": "root"}],
+    )
+    first_uri = "file:///workspace/first.nova"
+    second_uri = "file:///workspace/second.nova"
+    other_uri = "file:///workspace/other.nova"
+
+    open_nova(
+        server,
+        first_uri,
+        "import ./second.nova;\nfn first() {}\n",
+    )
+    open_nova(
+        server,
+        second_uri,
+        "import ./first.nova;\nfn second() {}\n",
+    )
+
+    open_nova(server, other_uri, "fn other() {}\n")
+    server.handle(
+        notify(
+            "textDocument/didClose",
+            {"textDocument": {"uri": other_uri}},
+        )
+    )
+
+    snapshot = server.diagnostics.get(first_uri)
+    assert snapshot is not None
+    assert [
+        item.code
+        for item in snapshot.diagnostics
+        if item.code == "nova.import-cycle"
+    ] == ["nova.import-cycle"]

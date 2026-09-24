@@ -114,6 +114,7 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
     def _publish_workspace_diagnostics(self) -> bool:
         """Publish exact-workspace diagnostics and report whether the exact commit won."""
         snapshots = self.workspace_symbols.snapshots()
+        cycle_edges = self._nova_import_cycle_edges(tuple(snapshots))
         planned: list[tuple[Any, tuple[Diagnostic, ...]]] = []
         for snapshot in snapshots:
             tree = snapshot.symbols.syntax.tree
@@ -132,8 +133,8 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
                     "nova.ambiguous-function",
                     "nova.argument-count",
                     "nova.argument-type",
-                    "nova.unresolved-import",
                 }
+                and not self._nova_import_diagnostic_code(diagnostic.code)
                 and not self._is_literal_unresolved_name(text, diagnostic)
             ]
             visible = self._nova_visible_function_map(snapshot, snapshots)
@@ -214,7 +215,11 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
                         )
                     )
             diagnostics.extend(
-                self._nova_import_diagnostics(snapshot, snapshots)
+                self._nova_import_diagnostics(
+                    snapshot,
+                    snapshots,
+                    cycle_edges=cycle_edges,
+                )
             )
             planned.append((snapshot, tuple(diagnostics)))
 
