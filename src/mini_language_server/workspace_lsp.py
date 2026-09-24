@@ -54,6 +54,8 @@ _NOVA_IMPORT_DIAGNOSTIC_CODES = frozenset(
         "nova.unresolved-import",
         "nova.import-cycle",
         "nova.duplicate-import-name",
+        "nova.duplicate-import-namespace",
+        "nova.reserved-import-namespace",
         "nova.unresolved-import-name",
         "nova.ambiguous-import-name",
         "nova.duplicate-export",
@@ -1560,6 +1562,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
             next_visiting = visiting | {identity}
             imported_maps: list[dict[str, tuple[WorkspaceDeclaration, ...]]] = []
+            namespace_counts: dict[str, int] = {}
+            for imported_item in snapshot_tree.imports:
+                if imported_item.namespace is not None:
+                    namespace_counts[imported_item.namespace] = (
+                        namespace_counts.get(imported_item.namespace, 0) + 1
+                    )
             for item in snapshot_tree.imports:
                 target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
                 if target_uri is None:
@@ -1568,7 +1576,18 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 if target is None:
                     continue
                 target_visible = exported(target, next_visiting)
-                if item.has_name_list:
+                if item.namespace is not None:
+                    if (
+                        not include_private_local
+                        or item.namespace in {"Int", "UInt"}
+                        or namespace_counts.get(item.namespace) != 1
+                    ):
+                        continue
+                    target_visible = {
+                        f"{item.namespace}::{name}": declarations
+                        for name, declarations in target_visible.items()
+                    }
+                elif item.has_name_list:
                     if any(selected.alias is not None for selected in item.names):
                         target_visible = merge_maps(
                             tuple(
@@ -1881,7 +1900,28 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             cycle_edges = self._nova_import_cycle_edges(snapshot_tuple)
         snapshot_identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
         diagnostics: list[Diagnostic] = []
+        seen_namespaces: set[str] = set()
         for item in tree.imports:
+            if item.namespace is not None and item.namespace_span is not None:
+                if item.namespace in {"Int", "UInt"}:
+                    diagnostics.append(
+                        Diagnostic(
+                            item.namespace_span,
+                            f"reserved import namespace '{item.namespace}'",
+                            code="nova.reserved-import-namespace",
+                            source="nova",
+                        )
+                    )
+                elif item.namespace in seen_namespaces:
+                    diagnostics.append(
+                        Diagnostic(
+                            item.namespace_span,
+                            f"duplicate import namespace '{item.namespace}'",
+                            code="nova.duplicate-import-namespace",
+                            source="nova",
+                        )
+                    )
+                seen_namespaces.add(item.namespace)
             target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
             target = (
                 None
@@ -1915,6 +1955,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         ),
                     )
                 )
+            if item.namespace is not None:
+                continue
             if not item.has_name_list:
                 continue
 
