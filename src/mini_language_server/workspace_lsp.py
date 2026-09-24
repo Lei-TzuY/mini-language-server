@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import posixpath
+import urllib.parse
 from contextlib import suppress
 from typing import Any
 
@@ -618,17 +620,48 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for old_uri, new_uri in renames
             for uri in (old_uri, new_uri)
         )
-        captured_documents = tuple(
-            document
+        captured_workspace = self.workspace_symbols.snapshots()
+        try:
+            import_changes = self._nova_import_rename_changes(
+                captured_workspace,
+                renames,
+            )
+        except DocumentError as exc:
+            return self._error(
+                request_id,
+                -32803,
+                f"File rename preflight failed: {exc}",
+            )
+        guarded_identities = affected_identities | frozenset(
+            WorkspaceFolderSet.uri_identity(uri)
+            for uri in import_changes
+        )
+        captured_document_by_identity = {
+            WorkspaceFolderSet.uri_identity(document.uri): document
             for document in self.documents.snapshots()
             if WorkspaceFolderSet.uri_identity(document.uri) in affected_identities
+        }
+        rewrite_identities = {
+            WorkspaceFolderSet.uri_identity(uri)
+            for uri in import_changes
+        }
+        for snapshot in captured_workspace:
+            identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
+            if identity not in rewrite_identities:
+                continue
+            if self.documents.get(snapshot.uri) is not None:
+                captured_document_by_identity[identity] = (
+                    snapshot.symbols.syntax.document
+                )
+        captured_documents = tuple(
+            captured_document_by_identity[identity]
+            for identity in sorted(captured_document_by_identity)
         )
-        captured_workspace = self.workspace_symbols.snapshots()
         captured_folders = self.workspace_folders.snapshot()
         captured_closed = {
             identity: uri
             for identity, uri in self._closed_workspace_uris.items()
-            if identity in affected_identities
+            if identity in guarded_identities
         }
         captured_closed_snapshots = tuple(
             snapshot
@@ -717,14 +750,22 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     stale_mutation_inputs = True
                     return None
                 self.requests.checkpoint(context)
-                return self._result(request_id, None)
+                if not import_changes:
+                    return self._result(request_id, None)
+                versions = self._workspace_edit_versions(tuple(captured_workspace))
+                workspace_edit = self._workspace_edit(
+                    import_changes,
+                    versions=versions,
+                    annotation_label="Update Nova imports for file rename",
+                )
+                return self._result(request_id, workspace_edit)
 
             try:
                 response = self.documents.commit_matching_if_current(
                     captured_documents,
                     lambda document: (
                         WorkspaceFolderSet.uri_identity(document.uri)
-                        in affected_identities
+                        in guarded_identities
                     ),
                     lambda: self.workspace_symbols.commit_snapshots_if_current(
                         captured_workspace,
@@ -1272,6 +1313,146 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             raise SemanticError("detached Nova diagnostics failed to publish")
         return semantic, diagnostics
 
+    @staticmethod
+    def _nova_import_target_uri(importer_uri: str, path: str) -> str | None:
+        """Resolve one bounded URI-relative Nova import without filesystem guesses."""
+        if not (path.startswith("./") or path.startswith("../")):
+            return None
+        if not path.endswith(".nova"):
+            return None
+        try:
+            importer = urllib.parse.urlsplit(importer_uri)
+            target_uri = urllib.parse.urljoin(importer_uri, path)
+            target = urllib.parse.urlsplit(target_uri)
+        except ValueError:
+            return None
+        if (
+            importer.scheme.lower() != "file"
+            or target.scheme.lower() != "file"
+            or importer.query
+            or importer.fragment
+            or target.query
+            or target.fragment
+        ):
+            return None
+        importer_identity = WorkspaceFolderSet.uri_identity(importer_uri)
+        target_identity = WorkspaceFolderSet.uri_identity(target_uri)
+        if importer_identity[:2] != target_identity[:2]:
+            return None
+        return target_uri
+
+    @classmethod
+    def _nova_import_diagnostics(
+        cls,
+        snapshot: SemanticSnapshot,
+        snapshots: Any,
+    ) -> tuple[Diagnostic, ...]:
+        """Validate exact-workspace Nova file dependencies."""
+        tree = snapshot.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return ()
+        known = {
+            WorkspaceFolderSet.uri_identity(candidate.uri)
+            for candidate in snapshots
+        }
+        diagnostics: list[Diagnostic] = []
+        for item in tree.imports:
+            target_uri = cls._nova_import_target_uri(snapshot.uri, item.path)
+            if (
+                target_uri is None
+                or WorkspaceFolderSet.uri_identity(target_uri) not in known
+            ):
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"unresolved import '{item.path}'",
+                        code="nova.unresolved-import",
+                        source="nova",
+                    )
+                )
+        return tuple(diagnostics)
+
+    @staticmethod
+    def _nova_relative_import_path(
+        importer_uri: str,
+        target_uri: str,
+    ) -> str | None:
+        """Return one relative Nova import path preserving URI path spelling."""
+        try:
+            importer = urllib.parse.urlsplit(importer_uri)
+            target = urllib.parse.urlsplit(target_uri)
+        except ValueError:
+            return None
+        importer_identity = WorkspaceFolderSet.uri_identity(importer_uri)
+        target_identity = WorkspaceFolderSet.uri_identity(target_uri)
+        if (
+            importer_identity[:2] != target_identity[:2]
+            or importer_identity[0] != "file"
+            or importer.query
+            or importer.fragment
+            or target.query
+            or target.fragment
+        ):
+            return None
+        base = posixpath.dirname(importer.path) or "/"
+        relative = posixpath.relpath(target.path, start=base)
+        if relative.startswith("../"):
+            return relative
+        return f"./{relative}"
+
+    def _nova_import_rename_changes(
+        self,
+        snapshots: Any,
+        renames: tuple[tuple[str, str], ...],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Plan exact import-path edits for one file-rename batch."""
+        renamed = {
+            WorkspaceFolderSet.uri_identity(old_uri): new_uri
+            for old_uri, new_uri in renames
+        }
+        planned: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+        for snapshot in snapshots:
+            tree = snapshot.symbols.syntax.tree
+            if not isinstance(tree, NovaFunctionSyntax) or not tree.imports:
+                continue
+            importer_identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
+            post_importer_uri = renamed.get(importer_identity, snapshot.uri)
+            source = self._source_text(snapshot.symbols.syntax.document.text)
+
+            for item in tree.imports:
+                target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
+                if target_uri is None:
+                    continue
+                target_identity = WorkspaceFolderSet.uri_identity(target_uri)
+                if importer_identity not in renamed and target_identity not in renamed:
+                    continue
+                post_target_uri = renamed.get(target_identity, target_uri)
+                replacement = self._nova_relative_import_path(
+                    post_importer_uri,
+                    post_target_uri,
+                )
+                if replacement is None:
+                    raise DocumentError(
+                        f"rename cannot preserve Nova import '{item.path}' "
+                        f"from {snapshot.uri}"
+                    )
+                if replacement == item.path:
+                    continue
+                planned.setdefault(snapshot.uri, []).append(
+                    (
+                        item.span.start,
+                        {
+                            "range": self._range(source, item.span),
+                            "newText": replacement,
+                        },
+                    )
+                )
+
+        return {
+            uri: [edit for _, edit in sorted(items, key=lambda entry: entry[0])]
+            for uri, items in sorted(planned.items())
+        }
+
     def _closed_workspace_diagnostic_snapshots(
         self,
         snapshots: tuple[SemanticSnapshot, ...],
@@ -1338,6 +1519,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         )
                     )
 
+            diagnostics.extend(
+                self._nova_import_diagnostics(snapshot, snapshots)
+            )
             diagnostics.extend(
                 self._closed_workspace_product_diagnostics(
                     snapshot,
@@ -1435,7 +1619,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 diagnostic
                 for diagnostic in current.diagnostics
                 if diagnostic.code
-                not in {"nova.unresolved-function", "nova.ambiguous-function"}
+                not in {
+                    "nova.unresolved-function",
+                    "nova.ambiguous-function",
+                    "nova.unresolved-import",
+                }
             ]
             for name, span in tree.calls:
                 declarations = tuple(
@@ -1461,6 +1649,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                             source="nova",
                         )
                     )
+            diagnostics.extend(
+                self._nova_import_diagnostics(snapshot, snapshots)
+            )
             planned.append((snapshot, tuple(diagnostics)))
 
         def publish() -> None:
