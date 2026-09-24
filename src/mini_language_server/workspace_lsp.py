@@ -5,6 +5,7 @@ from __future__ import annotations
 import posixpath
 import urllib.parse
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import Any
 
 from .cancellation import RequestCancelled, RequestError, StaleRequest
@@ -64,6 +65,24 @@ _NOVA_IMPORT_DIAGNOSTIC_CODES = frozenset(
         "nova.private-export",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class NovaNamespaceBinding:
+    """One exact importer-local namespace identity backed by one import binding."""
+
+    imported: NovaImportSyntax
+    name: str
+    span: Span
+    selected: NovaImportNameSyntax | None = None
+
+    @property
+    def namespace(self) -> str:
+        return self.name
+
+    @property
+    def namespace_span(self) -> Span:
+        return self.span
 
 
 class WorkspaceNovaLanguageServer(NovaLanguageServer):
@@ -1405,6 +1424,46 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return None
         return target_uri
 
+    def _nova_direct_exported_namespace_targets(
+        self,
+        snapshot: SemanticSnapshot,
+        snapshots: tuple[SemanticSnapshot, ...],
+    ) -> dict[str, SemanticSnapshot]:
+        """Return explicit direct namespace exports without flattening member identity."""
+        tree = snapshot.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax) or not tree.has_export_list:
+            return {}
+
+        indexed = {
+            WorkspaceFolderSet.uri_identity(candidate.uri): candidate
+            for candidate in snapshots
+        }
+        exported_names = {item.name for item in tree.exports}
+        counts: dict[str, int] = {}
+        for imported in tree.imports:
+            if imported.namespace is None or imported.namespace_span is None:
+                continue
+            counts[imported.namespace] = counts.get(imported.namespace, 0) + 1
+
+        targets: dict[str, SemanticSnapshot] = {}
+        for imported in tree.imports:
+            namespace = imported.namespace
+            if (
+                namespace is None
+                or imported.namespace_span is None
+                or namespace in {"Int", "UInt"}
+                or namespace not in exported_names
+                or counts.get(namespace) != 1
+            ):
+                continue
+            target_uri = self._nova_import_target_uri(snapshot.uri, imported.path)
+            if target_uri is None:
+                continue
+            target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
+            if target is not None:
+                targets[namespace] = target
+        return targets
+
     def _nova_visible_function_map(
         self,
         importer: SemanticSnapshot,
@@ -1568,12 +1627,21 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 tuple[str, dict[str, tuple[WorkspaceDeclaration, ...]]]
             ] = []
             namespace_counts: dict[str, int] = {}
+            binding_counts: dict[str, int] = {}
             exported_names = {item.name for item in snapshot_tree.exports}
             for imported_item in snapshot_tree.imports:
                 if imported_item.namespace is not None:
                     namespace_counts[imported_item.namespace] = (
                         namespace_counts.get(imported_item.namespace, 0) + 1
                     )
+                    binding_counts[imported_item.namespace] = (
+                        binding_counts.get(imported_item.namespace, 0) + 1
+                    )
+                if imported_item.has_name_list:
+                    for selected in imported_item.names:
+                        binding_counts[selected.binding_name] = (
+                            binding_counts.get(selected.binding_name, 0) + 1
+                        )
             for item in snapshot_tree.imports:
                 target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
                 if target_uri is None:
@@ -1586,6 +1654,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     if (
                         item.namespace in {"Int", "UInt"}
                         or namespace_counts.get(item.namespace) != 1
+                        or binding_counts.get(item.namespace) != 1
                     ):
                         continue
                     if include_private_local and not respect_root_exports:
@@ -1599,6 +1668,36 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         namespace_targets.append((item.namespace, target_visible))
                     continue
                 if item.has_name_list:
+                    namespace_exports = self._nova_direct_exported_namespace_targets(
+                        target,
+                        snapshots,
+                    )
+                    namespace_selected = {
+                        selected.name
+                        for selected in item.names
+                        if selected.name in namespace_exports
+                    }
+                    if include_private_local and not respect_root_exports:
+                        target_identity = WorkspaceFolderSet.uri_identity(target.uri)
+                        for selected in item.names:
+                            namespace_target = namespace_exports.get(selected.name)
+                            if (
+                                namespace_target is None
+                                or selected.name in target_visible
+                                or selected.binding_name in {"Int", "UInt"}
+                                or binding_counts.get(selected.binding_name) != 1
+                            ):
+                                continue
+                            namespace_visible = exported(
+                                namespace_target,
+                                next_visiting | {target_identity},
+                            )
+                            imported_maps.append(
+                                {
+                                    f"{selected.binding_name}::{name}": declarations
+                                    for name, declarations in namespace_visible.items()
+                                }
+                            )
                     if any(selected.alias is not None for selected in item.names):
                         target_visible = merge_maps(
                             tuple(
@@ -1607,10 +1706,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                                 }
                                 for selected in item.names
                                 if selected.name in target_visible
+                                and selected.name not in namespace_selected
                             )
                         )
                     else:
-                        selected_names = {selected.name for selected in item.names}
+                        selected_names = {
+                            selected.name
+                            for selected in item.names
+                            if selected.name not in namespace_selected
+                        }
                         target_visible = {
                             name: declarations
                             for name, declarations in target_visible.items()
@@ -1732,27 +1836,107 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return None
         return selected, declaration
 
-    @staticmethod
-    def _nova_import_namespace_target(
+    def _nova_import_namespace_bindings(
+        self,
         importer: SemanticSnapshot,
+        snapshots: tuple[SemanticSnapshot, ...],
+    ) -> tuple[NovaNamespaceBinding, ...]:
+        """Resolve unique star/selective importer-local namespace identities."""
+        tree = importer.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return ()
+
+        indexed = {
+            WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
+            for snapshot in snapshots
+        }
+        binding_counts: dict[str, int] = {}
+        for imported in tree.imports:
+            if imported.namespace is not None:
+                binding_counts[imported.namespace] = (
+                    binding_counts.get(imported.namespace, 0) + 1
+                )
+            if imported.has_name_list:
+                for selected in imported.names:
+                    binding_counts[selected.binding_name] = (
+                        binding_counts.get(selected.binding_name, 0) + 1
+                    )
+
+        candidates: list[NovaNamespaceBinding] = []
+        for imported in tree.imports:
+            if (
+                imported.namespace is not None
+                and imported.namespace_span is not None
+                and imported.namespace not in {"Int", "UInt"}
+                and binding_counts.get(imported.namespace) == 1
+            ):
+                candidates.append(
+                    NovaNamespaceBinding(
+                        imported,
+                        imported.namespace,
+                        imported.namespace_span,
+                    )
+                )
+                continue
+            if not imported.has_name_list:
+                continue
+            target_uri = self._nova_import_target_uri(importer.uri, imported.path)
+            if target_uri is None:
+                continue
+            target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
+            if target is None:
+                continue
+            namespace_exports = self._nova_direct_exported_namespace_targets(
+                target,
+                snapshots,
+            )
+            if not namespace_exports:
+                continue
+            target_visible = self._nova_visible_function_map(
+                target,
+                snapshots,
+                legacy_global=False,
+                respect_root_exports=True,
+            )
+            for selected in imported.names:
+                binding_name = selected.binding_name
+                if (
+                    binding_name in {"Int", "UInt"}
+                    or binding_counts.get(binding_name) != 1
+                    or selected.name not in namespace_exports
+                    or selected.name in target_visible
+                ):
+                    continue
+                candidates.append(
+                    NovaNamespaceBinding(
+                        imported,
+                        binding_name,
+                        selected.binding_span,
+                        selected,
+                    )
+                )
+
+        candidates.sort(key=lambda item: item.span.start)
+        return tuple(candidates)
+
+    def _nova_import_namespace_target(
+        self,
+        importer: SemanticSnapshot,
+        snapshots: tuple[SemanticSnapshot, ...],
         offset: int,
-    ) -> tuple[NovaImportSyntax, Span] | None:
-        """Return one unique importer-local namespace binding addressed by exact syntax."""
+    ) -> tuple[NovaNamespaceBinding, Span] | None:
+        """Return one exact importer-local namespace binding addressed by syntax."""
         tree = importer.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
             return None
 
+        bindings = self._nova_import_namespace_bindings(importer, snapshots)
         addressed_name: str | None = None
         addressed_span: Span | None = None
-        for imported in tree.imports:
-            span = imported.namespace_span
-            if (
-                imported.namespace is not None
-                and span is not None
-                and span.start <= offset < span.end
-            ):
-                addressed_name = imported.namespace
-                addressed_span = span
+        for binding in bindings:
+            if binding.span.start <= offset < binding.span.end:
+                addressed_name = binding.name
+                addressed_span = binding.span
                 break
 
         if addressed_name is None:
@@ -1762,41 +1946,30 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     addressed_span = span
                     break
 
-        if (
-            addressed_name is None
-            or addressed_span is None
-            or addressed_name in {"Int", "UInt"}
-        ):
+        if addressed_name is None or addressed_span is None:
             return None
 
-        bindings = tuple(
-            imported
-            for imported in tree.imports
-            if imported.namespace == addressed_name
-            and imported.namespace_span is not None
+        matches = tuple(
+            binding for binding in bindings if binding.name == addressed_name
         )
-        if len(bindings) != 1:
+        if len(matches) != 1:
             return None
-        return bindings[0], addressed_span
+        return matches[0], addressed_span
 
     @staticmethod
     def _nova_import_namespace_spans(
         importer: SemanticSnapshot,
-        imported: NovaImportSyntax,
+        imported: NovaNamespaceBinding,
     ) -> tuple[Span, ...]:
         """Return declaration plus exact qualifier references for one local namespace."""
         tree = importer.symbols.syntax.tree
-        if (
-            not isinstance(tree, NovaFunctionSyntax)
-            or imported.namespace is None
-            or imported.namespace_span is None
-        ):
+        if not isinstance(tree, NovaFunctionSyntax):
             return ()
-        spans = [imported.namespace_span]
+        spans = [imported.span]
         spans.extend(
             span
             for namespace, span in tree.namespace_references
-            if namespace == imported.namespace
+            if namespace == imported.name
         )
         spans.sort(key=lambda span: span.start)
         return tuple(spans)
