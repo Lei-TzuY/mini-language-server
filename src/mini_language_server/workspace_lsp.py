@@ -1360,8 +1360,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         Files without explicit imports retain the legacy workspace-global function
         namespace. Once a file declares imports, same-file functions take precedence
         by name and otherwise functions reachable through the explicit import graph
-        are visible. Traversal follows only real import edges, deduplicates canonical
-        workspace identities, and terminates safely on cycles.
+        are visible. A module that declares any export function enters explicit-export
+        mode across import edges: only those marked local declarations are exported,
+        while the module itself still sees all local declarations and its imports.
+        Modules without explicit exports preserve the historical transitive re-export
+        behavior. Traversal deduplicates canonical declarations and terminates cycles.
         """
         tree = importer.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
@@ -1369,11 +1372,21 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
         def declaration_map(
             visible_snapshots: tuple[SemanticSnapshot, ...],
+            *,
+            exported_only: bool = False,
         ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
             grouped: dict[str, list[WorkspaceDeclaration]] = {}
             for snapshot in visible_snapshots:
+                snapshot_tree = snapshot.symbols.syntax.tree
+                exported_spans = (
+                    frozenset(snapshot_tree.exported_functions)
+                    if exported_only and isinstance(snapshot_tree, NovaFunctionSyntax)
+                    else None
+                )
                 for symbol in snapshot.symbols.symbols:
                     if symbol.kind != "function":
+                        continue
+                    if exported_spans is not None and symbol.span not in exported_spans:
                         continue
                     grouped.setdefault(symbol.name, []).append(
                         WorkspaceDeclaration(snapshot.uri, snapshot, symbol)
@@ -1404,8 +1417,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             maps: tuple[dict[str, tuple[WorkspaceDeclaration, ...]], ...],
         ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
             grouped: dict[str, list[WorkspaceDeclaration]] = {}
-            for visible in maps:
-                for name, declarations in visible.items():
+            for visible_map in maps:
+                for name, declarations in visible_map.items():
                     bucket = grouped.setdefault(name, [])
                     for declaration in declarations:
                         if any(
@@ -1429,7 +1442,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 for name, declarations in grouped.items()
             }
 
-        def exported(
+        def visible(
             snapshot: SemanticSnapshot,
             visiting: frozenset[Any],
         ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
@@ -1459,7 +1472,19 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             imported.update(local)
             return imported
 
-        return exported(importer, frozenset())
+        def exported(
+            snapshot: SemanticSnapshot,
+            visiting: frozenset[Any],
+        ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
+            snapshot_tree = snapshot.symbols.syntax.tree
+            if (
+                isinstance(snapshot_tree, NovaFunctionSyntax)
+                and snapshot_tree.exported_functions
+            ):
+                return declaration_map((snapshot,), exported_only=True)
+            return visible(snapshot, visiting)
+
+        return visible(importer, frozenset())
 
     @classmethod
     def _nova_visible_function_declarations(
