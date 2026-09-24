@@ -322,3 +322,21 @@ def test_unknown_namespace_fails_closed_but_uint_intrinsic_completion_survives()
     assert [item["label"] for item in completion_items(intrinsic_response)] == [
         "from"
     ]
+
+def test_import_namespace_filter_preserves_uint_conversion_constants() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    caller_uri = "file:///workspace/caller.nova"
+    open_nova(server, provider_uri, "fn helper() -> Unit { return (); }\n")
+    caller = (
+        "import * as api from ./provider.nova;\n"
+        "fn main(i: Int, u: UInt) -> Unit { Int::from_uint(U); }\n"
+    )
+    open_nova(server, caller_uri, caller)
+
+    response = completion(server, caller_uri, 10, caller, "Int::from_uint(U")
+    labels = [item["label"] for item in completion_items(response)]
+
+    assert labels == ["UInt::MAX", "UInt::MIN"]
+    assert all(not label.startswith("api::") for label in labels)
