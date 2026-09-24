@@ -1359,7 +1359,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
         Files without explicit imports retain the legacy workspace-global function
         namespace. Once a file declares imports, same-file functions take precedence
-        by name and otherwise only directly imported file functions are visible.
+        by name and otherwise functions reachable through the explicit import graph
+        are visible. Traversal follows only real import edges, deduplicates canonical
+        workspace identities, and terminates safely on cycles.
         """
         tree = importer.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
@@ -1397,20 +1399,35 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
             for snapshot in snapshots
         }
-        imported_identities = {
-            WorkspaceFolderSet.uri_identity(target_uri)
-            for item in tree.imports
-            if (
-                target_uri := cls._nova_import_target_uri(importer.uri, item.path)
-            )
-            is not None
-            and WorkspaceFolderSet.uri_identity(target_uri) in indexed
-        }
+        importer_identity = WorkspaceFolderSet.uri_identity(importer.uri)
+        visited = {importer_identity}
+        pending = [importer]
+        reachable: dict[tuple[str, str, str], SemanticSnapshot] = {}
+
+        while pending:
+            current = pending.pop()
+            current_tree = current.symbols.syntax.tree
+            if not isinstance(current_tree, NovaFunctionSyntax):
+                continue
+            for item in current_tree.imports:
+                target_uri = cls._nova_import_target_uri(current.uri, item.path)
+                if target_uri is None:
+                    continue
+                identity = WorkspaceFolderSet.uri_identity(target_uri)
+                target = indexed.get(identity)
+                if target is None or identity in visited:
+                    continue
+                visited.add(identity)
+                reachable[identity] = target
+                pending.append(target)
+
         imported = declaration_map(
             tuple(
                 snapshot
-                for identity, snapshot in indexed.items()
-                if identity in imported_identities and snapshot is not importer
+                for _, snapshot in sorted(
+                    reachable.items(),
+                    key=lambda item: item[1].uri,
+                )
             )
         )
         local = declaration_map((importer,))
