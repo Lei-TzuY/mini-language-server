@@ -2144,6 +2144,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             legacy_global=False,
         )
         private_spans = frozenset(tree.private_declarations)
+        namespace_bindings: dict[str, list[NovaImportSyntax]] = {}
+        for imported in tree.imports:
+            if imported.namespace is not None and imported.namespace_span is not None:
+                namespace_bindings.setdefault(imported.namespace, []).append(imported)
+
         seen: set[str] = set()
         for item in tree.exports:
             if item.name in seen:
@@ -2159,6 +2164,55 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             seen.add(item.name)
 
             candidates = visible.get(item.name, ())
+            namespaces = tuple(namespace_bindings.get(item.name, ()))
+            namespace_target: SemanticSnapshot | None = None
+            if (
+                len(namespaces) == 1
+                and item.name not in {"Int", "UInt"}
+            ):
+                target_uri = self._nova_import_target_uri(
+                    snapshot.uri,
+                    namespaces[0].path,
+                )
+                if target_uri is not None:
+                    namespace_target = indexed.get(
+                        WorkspaceFolderSet.uri_identity(target_uri)
+                    )
+
+            if len(namespaces) > 1 or (namespace_target is not None and candidates):
+                related: list[DiagnosticRelatedInformation] = [
+                    DiagnosticRelatedInformation(
+                        snapshot.uri,
+                        imported.namespace_span,
+                        f"candidate namespace binding '{item.name}' is here",
+                        semantic=snapshot,
+                    )
+                    for imported in namespaces
+                    if imported.namespace_span is not None
+                ]
+                related.extend(
+                    DiagnosticRelatedInformation(
+                        candidate.uri,
+                        candidate.symbol.span,
+                        f"candidate function declaration '{item.name}' is here",
+                        semantic=candidate.snapshot,
+                    )
+                    for candidate in candidates
+                )
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"ambiguous export '{item.name}'",
+                        code="nova.ambiguous-export",
+                        source="nova",
+                        related_information=tuple(related),
+                    )
+                )
+                continue
+
+            if namespace_target is not None:
+                continue
+
             if not candidates:
                 diagnostics.append(
                     Diagnostic(
