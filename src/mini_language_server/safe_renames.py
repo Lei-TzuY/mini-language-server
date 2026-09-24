@@ -320,6 +320,67 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return super()._handle_workspace_prepare_rename(request_id, params)
 
         snapshots = self.workspace_symbols.snapshots()
+        workspace_query = self._workspace_function_query(params)
+        if workspace_query is not None:
+            _, query_name = workspace_query
+            if "::" in query_name:
+                declarations = self._nova_visible_function_declarations(
+                    semantics,
+                    snapshots,
+                    query_name,
+                )
+                target_span = next(
+                    (
+                        span
+                        for call_name, span in tree.calls
+                        if call_name == query_name
+                        and span.start <= offset < span.end
+                    ),
+                    None,
+                )
+                if (
+                    target_span is not None
+                    and len(declarations) == 1
+                    and query_name.rsplit("::", 1)[1]
+                    == declarations[0].symbol.name
+                ):
+                    try:
+                        context = self.requests.start(request_id, uri=semantics.uri)
+                    except RequestError:
+                        return self._error(request_id, -32602, "Invalid params")
+                    try:
+                        self.requests.checkpoint(context)
+                        result = {
+                            "range": self._range(source, target_span),
+                            "placeholder": declarations[0].symbol.name,
+                        }
+                        self.requests.checkpoint(context)
+                        try:
+                            return self.workspace_symbols.commit_snapshots_if_current(
+                                snapshots,
+                                lambda: self._result(request_id, result),
+                            )
+                        except WorkspaceIndexError:
+                            return self._error(
+                                request_id,
+                                -32801,
+                                "Content modified",
+                            )
+                    except RequestCancelled:
+                        return self._error(
+                            request_id,
+                            -32800,
+                            "Request cancelled",
+                        )
+                    except StaleRequest:
+                        return self._error(
+                            request_id,
+                            -32801,
+                            "Content modified",
+                        )
+                    finally:
+                        self.requests.finish(context)
+
         alias_target = self._nova_import_alias_target(
             semantics,
             snapshots,
