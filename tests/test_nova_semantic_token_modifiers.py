@@ -448,3 +448,28 @@ def test_workspace_folder_change_requests_semantic_token_refresh() -> None:
     refresh = server.drain_server_requests()
     assert len(refresh) == 1
     assert refresh[0]["method"] == "workspace/semanticTokens/refresh"
+
+def test_function_semantic_tokens_follow_transitive_import_visibility() -> None:
+    server = NovaProductLanguageServer()
+    legend = initialize(server, modifiers=[])
+    helper_uri = "file:///workspace/helper.nova"
+    middle_uri = "file:///workspace/middle.nova"
+    other_uri = "file:///workspace/other.nova"
+    caller_uri = "file:///workspace/caller.nova"
+    open_nova(server, helper_uri, "fn target(value: Int) {}\n")
+    open_nova(server, middle_uri, "import ./helper.nova;\nfn middle() {}\n")
+    open_nova(server, other_uri, "fn target(flag: Bool) {}\n")
+    caller = "import ./middle.nova;\nfn caller() { target(1) }\n"
+    open_nova(server, caller_uri, caller)
+
+    response = semantic_tokens(server, caller_uri, 90)
+    tokens = set(decode(response["result"]["data"], legend))
+    call_character = caller.splitlines()[1].index("target")
+
+    assert (
+        1,
+        call_character,
+        len("target"),
+        "function",
+        frozenset(),
+    ) in tokens
