@@ -2433,10 +2433,23 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             legacy_global=False,
         )
         private_spans = frozenset(tree.private_declarations)
-        namespace_bindings: dict[str, list[NovaImportSyntax]] = {}
+        namespace_bindings: dict[str, list[NovaNamespaceBinding]] = {}
+        for binding in self._nova_import_namespace_bindings(
+            snapshot,
+            snapshot_tuple,
+        ):
+            namespace_bindings.setdefault(binding.name, []).append(binding)
+        star_namespace_spans: dict[str, list[Span]] = {}
         for imported in tree.imports:
-            if imported.namespace is not None and imported.namespace_span is not None:
-                namespace_bindings.setdefault(imported.namespace, []).append(imported)
+            if imported.namespace is None or imported.namespace_span is None:
+                continue
+            star_namespace_spans.setdefault(imported.namespace, []).append(
+                imported.namespace_span
+            )
+        namespace_exports = self._nova_exported_namespace_targets(
+            snapshot,
+            snapshot_tuple,
+        )
 
         seen: set[str] = set()
         for item in tree.exports:
@@ -2454,30 +2467,25 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
             candidates = visible.get(item.name, ())
             namespaces = tuple(namespace_bindings.get(item.name, ()))
-            namespace_target: SemanticSnapshot | None = None
-            if (
-                len(namespaces) == 1
-                and item.name not in {"Int", "UInt"}
-            ):
-                target_uri = self._nova_import_target_uri(
-                    snapshot.uri,
-                    namespaces[0].path,
-                )
-                if target_uri is not None:
-                    namespace_target = indexed.get(
-                        WorkspaceFolderSet.uri_identity(target_uri)
-                    )
+            namespace_target = namespace_exports.get(item.name)
+            namespace_spans = list(star_namespace_spans.get(item.name, ()))
+            namespace_spans.extend(
+                binding.span
+                for binding in namespaces
+                if binding.span not in namespace_spans
+            )
 
-            if len(namespaces) > 1 or (namespace_target is not None and candidates):
+            if len(star_namespace_spans.get(item.name, ())) > 1 or (
+                namespace_target is not None and candidates
+            ):
                 related: list[DiagnosticRelatedInformation] = [
                     DiagnosticRelatedInformation(
                         snapshot.uri,
-                        imported.namespace_span,
+                        span,
                         f"candidate namespace binding '{item.name}' is here",
                         semantic=snapshot,
                     )
-                    for imported in namespaces
-                    if imported.namespace_span is not None
+                    for span in namespace_spans
                 ]
                 related.extend(
                     DiagnosticRelatedInformation(
