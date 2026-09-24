@@ -2075,6 +2075,16 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         return any(exported.name == binding_name for exported in tree.exports)
 
     @staticmethod
+    def _nova_import_namespace_is_outward(
+        tree: NovaFunctionSyntax,
+        binding_name: str,
+    ) -> bool:
+        """Whether one namespace binding is explicitly exported by its module."""
+        return tree.has_export_list and any(
+            exported.name == binding_name for exported in tree.exports
+        )
+
+    @staticmethod
     def _nova_import_diagnostic_code(code: str | None) -> bool:
         """Whether one diagnostic is wholly recomputed from the import graph."""
         return code in _NOVA_IMPORT_DIAGNOSTIC_CODES
