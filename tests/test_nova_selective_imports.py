@@ -613,3 +613,239 @@ def test_selective_import_preserves_t_prefixed_selector_and_alias() -> None:
     assert selected[0].binding_name == "target"
 
 
+
+def test_private_alias_prepare_and_rename_stays_importer_local() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    importer_uri = "file:///workspace/importer.nova"
+    provider = "fn source() {}\n"
+    importer = (
+        "import { source as local } from ./provider.nova;\n"
+        "export {};\n"
+        "fn caller() { local(); local(); }\n"
+    )
+    open_nova(server, provider_uri, provider)
+    open_nova(server, importer_uri, importer)
+
+    alias_position = position(importer, "local }", delta=1)
+    alias_prepare = server.handle(
+        request(
+            "textDocument/prepareRename",
+            80,
+            {
+                "textDocument": {"uri": importer_uri},
+                "position": alias_position,
+            },
+        )
+    )
+    assert alias_prepare is not None
+    assert alias_prepare["result"]["placeholder"] == "local"
+
+    call_position = position(importer, "local();", delta=1)
+    call_prepare = server.handle(
+        request(
+            "textDocument/prepareRename",
+            81,
+            {
+                "textDocument": {"uri": importer_uri},
+                "position": call_position,
+            },
+        )
+    )
+    assert call_prepare is not None
+    assert call_prepare["result"]["placeholder"] == "local"
+
+    renamed = server.handle(
+        request(
+            "textDocument/rename",
+            82,
+            {
+                "textDocument": {"uri": importer_uri},
+                "position": call_position,
+                "newName": "renamed",
+            },
+        )
+    )
+    assert renamed is not None
+    changes = renamed["result"]["changes"]
+    assert list(changes) == [importer_uri]
+    edits = changes[importer_uri]
+    assert [edit["newText"] for edit in edits] == [
+        "renamed",
+        "renamed",
+        "renamed",
+    ]
+
+    first_line = importer.splitlines()[0]
+    alias_start = first_line.index("local")
+    call_line = importer.splitlines()[2]
+    first_call = call_line.index("local")
+    second_call = call_line.index("local", first_call + 1)
+    assert [edit["range"] for edit in edits] == [
+        {
+            "start": {"line": 0, "character": alias_start},
+            "end": {"line": 0, "character": alias_start + len("local")},
+        },
+        {
+            "start": {"line": 2, "character": first_call},
+            "end": {"line": 2, "character": first_call + len("local")},
+        },
+        {
+            "start": {"line": 2, "character": second_call},
+            "end": {"line": 2, "character": second_call + len("local")},
+        },
+    ]
+
+
+def test_private_alias_rename_from_alias_syntax_uses_same_binding() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    importer_uri = "file:///workspace/importer.nova"
+    open_nova(server, provider_uri, "fn source() {}\n")
+    importer = (
+        "import { source as local } from ./provider.nova;\n"
+        "export {};\n"
+        "fn caller() { local(); }\n"
+    )
+    open_nova(server, importer_uri, importer)
+
+    renamed = server.handle(
+        request(
+            "textDocument/rename",
+            83,
+            {
+                "textDocument": {"uri": importer_uri},
+                "position": position(importer, "local }", delta=1),
+                "newName": "inside",
+            },
+        )
+    )
+
+    assert renamed is not None
+    edits = renamed["result"]["changes"][importer_uri]
+    assert [edit["newText"] for edit in edits] == ["inside", "inside"]
+
+
+def test_private_alias_rename_rejects_importer_binding_collision() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    importer_uri = "file:///workspace/importer.nova"
+    open_nova(server, provider_uri, "fn source() {}\n")
+    importer = (
+        "import { source as local } from ./provider.nova;\n"
+        "export {};\n"
+        "fn taken() {}\n"
+        "fn caller() { local(); }\n"
+    )
+    open_nova(server, importer_uri, importer)
+
+    response = server.handle(
+        request(
+            "textDocument/rename",
+            84,
+            {
+                "textDocument": {"uri": importer_uri},
+                "position": position(importer, "local();", delta=1),
+                "newName": "taken",
+            },
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 84,
+        "error": {
+            "code": -32803,
+            "message": "Rename would conflict with existing binding 'taken'",
+        },
+    }
+
+
+def test_outward_alias_rename_remains_fail_closed() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    importer_uri = "file:///workspace/importer.nova"
+    open_nova(server, provider_uri, "fn source() {}\n")
+    importer = (
+        "import { source as local } from ./provider.nova;\n"
+        "fn caller() { local(); }\n"
+    )
+    open_nova(server, importer_uri, importer)
+    call_position = position(importer, "local();", delta=1)
+
+    prepared = server.handle(
+        request(
+            "textDocument/prepareRename",
+            85,
+            {
+                "textDocument": {"uri": importer_uri},
+                "position": call_position,
+            },
+        )
+    )
+    assert prepared is not None
+    assert prepared["result"] is None
+
+    renamed = server.handle(
+        request(
+            "textDocument/rename",
+            86,
+            {
+                "textDocument": {"uri": importer_uri},
+                "position": call_position,
+                "newName": "inside",
+            },
+        )
+    )
+    assert renamed is not None
+    assert renamed["result"] is None
+
+
+def test_private_alias_rename_rejects_workspace_drift() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    importer_uri = "file:///workspace/importer.nova"
+    open_nova(server, provider_uri, "fn source() {}\n")
+    importer = (
+        "import { source as local } from ./provider.nova;\n"
+        "export {};\n"
+        "fn caller() { local(); }\n"
+    )
+    open_nova(server, importer_uri, importer)
+
+    original = server.workspace_symbols.get(provider_uri)
+    assert original is not None
+    real_commit = server.workspace_symbols.commit_snapshots_if_current
+    replaced = False
+
+    def replace_then_commit(snapshots, callback):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            document = server.documents.get(provider_uri)
+            assert document is not None
+            replacement = server.nova_adapter.publish(server, document)
+            server.workspace_symbols.replace(replacement, expected=original)
+        return real_commit(snapshots, callback)
+
+    server.workspace_symbols.commit_snapshots_if_current = replace_then_commit  # type: ignore[method-assign]
+
+    response = server.handle(
+        request(
+            "textDocument/rename",
+            87,
+            {
+                "textDocument": {"uri": importer_uri},
+                "position": position(importer, "local();", delta=1),
+                "newName": "inside",
+            },
+        )
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 87,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+
+

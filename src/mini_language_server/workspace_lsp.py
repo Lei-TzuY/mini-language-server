@@ -14,7 +14,7 @@ from .diagnostics import (
     DiagnosticSnapshot,
 )
 from .documents import Document, DocumentError
-from .nova import NovaFunctionSyntax, NovaLanguageServer
+from .nova import NovaFunctionSyntax, NovaImportNameSyntax, NovaLanguageServer
 from .semantic import SemanticError, SemanticSnapshot
 from .server import LanguageServer, ServerState
 from .source import Span
@@ -1580,6 +1580,117 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         )
 
     @classmethod
+    def _nova_import_alias_binding(
+        cls,
+        importer: SemanticSnapshot,
+        snapshots: tuple[SemanticSnapshot, ...],
+        binding_name: str,
+    ) -> tuple[NovaImportNameSyntax, WorkspaceDeclaration] | None:
+        """Resolve one importer-local alias to its canonical declaration."""
+        tree = importer.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return None
+        indexed = {
+            WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
+            for snapshot in snapshots
+        }
+        matches: list[tuple[NovaImportNameSyntax, WorkspaceDeclaration]] = []
+        for imported in tree.imports:
+            if not imported.has_name_list:
+                continue
+            target_uri = cls._nova_import_target_uri(importer.uri, imported.path)
+            if target_uri is None:
+                continue
+            target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
+            if target is None:
+                continue
+            target_visible = cls._nova_visible_function_map(
+                target,
+                snapshots,
+                legacy_global=False,
+                respect_root_exports=True,
+            )
+            for selected in imported.names:
+                if (
+                    selected.alias is None
+                    or selected.alias_span is None
+                    or selected.binding_name != binding_name
+                ):
+                    continue
+                candidates = target_visible.get(selected.name, ())
+                if len(candidates) != 1:
+                    return None
+                matches.append((selected, candidates[0]))
+        if len(matches) != 1:
+            return None
+
+        selected, declaration = matches[0]
+        visible = cls._nova_visible_function_map(importer, snapshots)
+        candidates = visible.get(binding_name, ())
+        if (
+            len(candidates) != 1
+            or candidates[0].snapshot is not declaration.snapshot
+            or candidates[0].symbol is not declaration.symbol
+        ):
+            return None
+        return selected, declaration
+
+    @classmethod
+    def _nova_import_alias_target(
+        cls,
+        importer: SemanticSnapshot,
+        snapshots: tuple[SemanticSnapshot, ...],
+        offset: int,
+    ) -> tuple[NovaImportNameSyntax, WorkspaceDeclaration, Span] | None:
+        """Return the exact alias binding addressed by syntax or one aliased call."""
+        tree = importer.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return None
+
+        for imported in tree.imports:
+            if not imported.has_name_list:
+                continue
+            for selected in imported.names:
+                alias_span = selected.alias_span
+                if (
+                    selected.alias is None
+                    or alias_span is None
+                    or not (alias_span.start <= offset < alias_span.end)
+                ):
+                    continue
+                binding = cls._nova_import_alias_binding(
+                    importer,
+                    snapshots,
+                    selected.binding_name,
+                )
+                if binding is None or binding[0] is not selected:
+                    return None
+                return selected, binding[1], alias_span
+
+        for call_name, span in tree.calls:
+            if not (span.start <= offset < span.end):
+                continue
+            binding = cls._nova_import_alias_binding(
+                importer,
+                snapshots,
+                call_name,
+            )
+            if binding is None:
+                return None
+            return binding[0], binding[1], span
+        return None
+
+    @staticmethod
+    def _nova_import_alias_is_outward(
+        tree: NovaFunctionSyntax,
+        binding_name: str,
+    ) -> bool:
+        """Whether one alias is part of the module's outward function view."""
+        if not tree.has_export_list:
+            return True
+        return any(exported.name == binding_name for exported in tree.exports)
+
+    @classmethod
     def _nova_import_diagnostics(
         cls,
         snapshot: SemanticSnapshot,
@@ -2684,6 +2795,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if semantics.definition_at(offset) is not None:
             return None
 
+        snapshots = self.workspace_symbols.snapshots()
+        alias_target = self._nova_import_alias_target(
+            semantics,
+            snapshots,
+            offset,
+        )
         call = next(
             (
                 (call_name, span)
@@ -2692,15 +2809,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             ),
             None,
         )
-        if call is None:
+        if alias_target is None and call is None:
             return None
-        name, call_span = call
-        snapshots = self.workspace_symbols.snapshots()
-        declarations = self._nova_visible_function_declarations(
-            semantics,
-            snapshots,
-            name,
-        )
+
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
@@ -2709,14 +2820,29 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         try:
             self.requests.checkpoint(context)
             result: Any = None
-            if (
-                len(declarations) == 1
-                and declarations[0].symbol.name == name
-            ):
-                result = {
-                    "range": self._range(source, call_span),
-                    "placeholder": name,
-                }
+            if alias_target is not None:
+                selected, _, target_span = alias_target
+                binding_name = selected.binding_name
+                if not self._nova_import_alias_is_outward(tree, binding_name):
+                    result = {
+                        "range": self._range(source, target_span),
+                        "placeholder": binding_name,
+                    }
+            elif call is not None:
+                name, call_span = call
+                declarations = self._nova_visible_function_declarations(
+                    semantics,
+                    snapshots,
+                    name,
+                )
+                if (
+                    len(declarations) == 1
+                    and declarations[0].symbol.name == name
+                ):
+                    result = {
+                        "range": self._range(source, call_span),
+                        "placeholder": name,
+                    }
             self.requests.checkpoint(context)
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
