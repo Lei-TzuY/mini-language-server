@@ -284,7 +284,24 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             code = self.nova_adapter.code_view(text)
             span = self._completion_identifier_span(code, offset)
             prefix = self._completion_identifier_prefix(code, offset)
-            namespace = self._completion_namespace_context(code, span.start)
+            raw_namespace = self._completion_namespace_context(code, span.start)
+            tree = semantics.symbols.syntax.tree
+            namespace = (
+                raw_namespace
+                if isinstance(tree, NovaFunctionSyntax)
+                and self._completion_import_namespace(tree, raw_namespace)
+                else None
+            )
+            if (
+                raw_namespace is not None
+                and namespace is None
+                and raw_namespace not in {"Int", "UInt"}
+            ):
+                self.requests.checkpoint(request_context)
+                return self._current_semantic_result(semantics, request_id, [])
+            if raw_namespace is not None and namespace is None:
+                self.requests.checkpoint(request_context)
+                return self._current_semantic_result(semantics, request_id, [])
             if not prefix and namespace is None:
                 self.requests.checkpoint(request_context)
                 return self._current_semantic_result(semantics, request_id, [])
@@ -389,7 +406,19 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             code = self.nova_adapter.code_view(text)
             span = self._completion_identifier_span(code, offset)
             prefix = self._completion_identifier_prefix(code, offset)
-            namespace = self._completion_namespace_context(code, span.start)
+            raw_namespace = self._completion_namespace_context(code, span.start)
+            tree = semantics.symbols.syntax.tree
+            namespace = (
+                raw_namespace
+                if isinstance(tree, NovaFunctionSyntax)
+                and self._completion_import_namespace(tree, raw_namespace)
+                else None
+            )
+            invalid_qualified = (
+                raw_namespace is not None
+                and namespace is None
+                and raw_namespace not in {"Int", "UInt"}
+            )
             if (
                 (self._completion_insert_replace or self._completion_list_edit_range)
                 and source is not None
@@ -398,9 +427,13 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
                 replace_range = self._range(source, span)
 
         def publish() -> dict[str, Any]:
-            items = self._completion_namespace_items(
-                response["result"],
-                namespace,
+            items = (
+                []
+                if invalid_qualified
+                else self._completion_namespace_items(
+                    response["result"],
+                    namespace,
+                )
             )
 
             if self._function_completion_snippets and semantics is not None:
@@ -528,6 +561,22 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             item["label"] = member
             projected.append(item)
         return projected
+
+    @staticmethod
+    def _completion_import_namespace(
+        tree: NovaFunctionSyntax,
+        namespace: str | None,
+    ) -> bool:
+        if namespace is None or namespace in {"Int", "UInt"}:
+            return False
+        return (
+            sum(
+                1
+                for imported in tree.imports
+                if imported.namespace == namespace
+            )
+            == 1
+        )
 
     @classmethod
     def _completion_namespace_context(
