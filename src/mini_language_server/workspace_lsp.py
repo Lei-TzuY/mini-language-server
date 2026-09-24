@@ -2443,6 +2443,41 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         )
                     )
 
+        for item in tree.wildcard_exports:
+            target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
+            target = (
+                None
+                if target_uri is None
+                else indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
+            )
+            if target is None:
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"unresolved wildcard export target '{item.path}'",
+                        code="nova.unresolved-export-target",
+                        source="nova",
+                    )
+                )
+                continue
+            if item.span in cycle_edges.get(snapshot_identity, frozenset()):
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"import cycle includes wildcard export '{item.path}'",
+                        code="nova.import-cycle",
+                        source="nova",
+                        related_information=(
+                            ()
+                            if target is snapshot
+                            else self._nova_import_cycle_related_information(
+                                target,
+                                cycle_edges,
+                            )
+                        ),
+                    )
+                )
+
         if not tree.has_export_list:
             return tuple(diagnostics)
 
