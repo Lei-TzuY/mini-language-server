@@ -156,16 +156,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         try:
             self.requests.checkpoint(context)
             source = self._source_text(semantic.symbols.syntax.document.text)
+            visible = self._nova_visible_function_map(semantic, snapshots)
             pending: list[tuple[dict[str, Any], str]] = []
             for symbol in semantic.symbols.symbols:
                 if symbol.kind != "function":
                     continue
-                declarations = tuple(
-                    declaration
-                    for declaration in self.workspace_symbols.declarations(symbol.name)
-                    if declaration.symbol.kind == "function"
-                )
-                if len(declarations) != 1 or declarations[0].snapshot is not semantic:
+                declarations = visible.get(symbol.name, ())
+                if (
+                    len(declarations) != 1
+                    or declarations[0].snapshot is not semantic
+                    or declarations[0].symbol is not symbol
+                ):
                     continue
                 pending.append(
                     (
@@ -246,7 +247,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         try:
             self.requests.checkpoint(context)
-            references = self._workspace_call_locations(record.name, record.workspace)
+            references = self._workspace_call_locations(
+                record.name,
+                record.workspace,
+                target_snapshot=record.semantic,
+            )
             count = len(references)
             suffix = "reference" if count == 1 else "references"
             resolved = dict(params)
@@ -290,14 +295,24 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if not isinstance(uri, str) or not uri or not isinstance(name, str) or not name:
             return self._error(request_id, -32602, "Invalid params")
 
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
-        if len(declarations) != 1 or declarations[0].uri != uri:
-            return self._result(request_id, [])
         snapshots = self.workspace_symbols.snapshots()
+        target_snapshot = next(
+            (snapshot for snapshot in snapshots if snapshot.uri == uri),
+            None,
+        )
+        if target_snapshot is None:
+            return self._result(request_id, [])
+        declarations = self._nova_visible_function_declarations(
+            target_snapshot,
+            snapshots,
+            name,
+        )
+        if (
+            len(declarations) != 1
+            or declarations[0].snapshot is not target_snapshot
+            or declarations[0].uri != uri
+        ):
+            return self._result(request_id, [])
         try:
             context = self.requests.start(request_id, uri=uri)
         except RequestError:
@@ -305,7 +320,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         try:
             self.requests.checkpoint(context)
-            result = self._workspace_call_locations(name, snapshots)
+            result = self._workspace_call_locations(
+                name,
+                snapshots,
+                target_snapshot=target_snapshot,
+            )
             self.requests.checkpoint(context)
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
@@ -321,12 +340,36 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             self.requests.finish(context)
 
     def _workspace_call_locations(
-        self, name: str, snapshots: tuple[Any, ...]
+        self,
+        name: str,
+        snapshots: tuple[Any, ...],
+        *,
+        target_snapshot: Any,
     ) -> list[dict[str, Any]]:
+        targets = self._nova_visible_function_declarations(
+            target_snapshot,
+            snapshots,
+            name,
+        )
+        if len(targets) != 1 or targets[0].snapshot is not target_snapshot:
+            return []
+        target = targets[0]
+
         locations: list[tuple[str, int, dict[str, Any]]] = []
         for snapshot in snapshots:
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
+                continue
+            resolved = self._nova_visible_function_declarations(
+                snapshot,
+                snapshots,
+                name,
+            )
+            if (
+                len(resolved) != 1
+                or resolved[0].snapshot is not target.snapshot
+                or resolved[0].symbol is not target.symbol
+            ):
                 continue
             source = self._source_text(snapshot.symbols.syntax.document.text)
             for call_name, span in tree.calls:
