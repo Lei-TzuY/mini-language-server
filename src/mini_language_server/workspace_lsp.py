@@ -3074,11 +3074,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     try:
                         self.requests.checkpoint(context)
                         if method == "textDocument/definition":
-                            declaration = (
-                                spans[0]
-                                if spans
-                                else imported.namespace_span
-                            )
+                            declaration = imported.namespace_span
                             result: Any = (
                                 None
                                 if declaration is None
@@ -3096,7 +3092,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                                     -32602,
                                     "Invalid params",
                                 )
-                            namespace_spans = spans if include_declaration else spans[1:]
+                            namespace_spans = (
+                                spans
+                                if include_declaration
+                                else tuple(
+                                    span
+                                    for span in spans
+                                    if span != imported.namespace_span
+                                )
+                            )
                             result = [
                                 self._location(
                                     semantics.uri,
