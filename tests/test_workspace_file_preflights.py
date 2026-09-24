@@ -437,7 +437,7 @@ def test_will_delete_rejects_detached_disk_drift_and_refreshes_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "closed.nova"
-    source.write_text("fn before() {}\n", encoding="utf-8")
+    source.write_bytes(b"fn before() {}\n")
     server = initialized_server(tmp_path, will_delete=True)
     uri = source.as_uri()
     original = server.workspace_symbols.commit_snapshots_if_current
@@ -447,7 +447,7 @@ def test_will_delete_rejects_detached_disk_drift_and_refreshes_index(
         nonlocal drifted
         if not drifted:
             drifted = True
-            source.write_text("fn after() {}\n", encoding="utf-8")
+            source.write_bytes(b"fn after() {}\n")
         return original(snapshots, callback)
 
     monkeypatch.setattr(
