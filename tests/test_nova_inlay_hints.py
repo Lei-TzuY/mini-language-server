@@ -419,3 +419,43 @@ def test_workspace_folder_change_requests_inlay_hint_refresh() -> None:
     refresh = server.drain_server_requests()
     assert len(refresh) == 1
     assert refresh[0]["method"] == "workspace/inlayHint/refresh"
+
+def test_inlay_hints_follow_transitive_import_visibility() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    helper_uri = "file:///workspace/helper.nova"
+    middle_uri = "file:///workspace/middle.nova"
+    other_uri = "file:///workspace/other.nova"
+    caller_uri = "file:///workspace/caller.nova"
+    open_nova(server, helper_uri, "fn target(value: Int) {}\n")
+    open_nova(server, middle_uri, "import ./helper.nova;\nfn middle() {}\n")
+    open_nova(server, other_uri, "fn target(flag: Bool) {}\n")
+    caller = "import ./middle.nova;\nfn caller() { target(1) }\n"
+    open_nova(server, caller_uri, caller)
+
+    response = server.handle(
+        request(
+            "textDocument/inlayHint",
+            90,
+            {
+                "textDocument": {"uri": caller_uri},
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 1, "character": len(caller.splitlines()[1])},
+                },
+            },
+        )
+    )
+
+    assert response is not None
+    assert response["result"] == [
+        {
+            "position": {
+                "line": 1,
+                "character": caller.splitlines()[1].index("1"),
+            },
+            "label": "value:",
+            "kind": 2,
+            "paddingRight": True,
+        }
+    ]
