@@ -183,3 +183,25 @@ def test_same_version_workspace_replacement_suppresses_stale_argument_type() -> 
         for item in notifications
         for diagnostic in item["params"]["diagnostics"]
     )
+
+def test_argument_call_result_follows_transitive_import_visibility() -> None:
+    server = initialized_server()
+    helper = "file:///workspace/helper.nova"
+    middle = "file:///workspace/middle.nova"
+    other = "file:///workspace/other.nova"
+    caller = "file:///workspace/caller.nova"
+    open_nova(server, helper, 'fn source() -> String { return "value"; }\n')
+    open_nova(server, middle, "import ./helper.nova;\nfn middle() {}\n")
+    open_nova(server, other, "fn source() -> Bool { return true; }\n")
+    text = (
+        "import ./middle.nova;\n"
+        "fn sink(value: Int) {}\n"
+        "fn main() { sink(source()); }\n"
+    )
+    open_nova(server, caller, text)
+
+    snapshot = server.diagnostics.get(caller)
+    assert snapshot is not None
+    items = [item for item in snapshot.diagnostics if item.code == "nova.argument-type"]
+    assert len(items) == 1
+    assert items[0].message == "argument 1 to 'sink' has type 'String'; expected 'Int'"
