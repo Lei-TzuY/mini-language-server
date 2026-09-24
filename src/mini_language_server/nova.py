@@ -23,12 +23,12 @@ _FUNCTION_DECLARATION = re.compile(
 )
 _CALL = re.compile(rf"\b({_IDENTIFIER})\s*(?=\()")
 _IMPORT_DECLARATION = re.compile(
-    r"(?m)^[ \t]*import[ \t]+((?:\./|\.\./)(?:[A-Za-z0-9_.~%+-]+/)*"
+    r"(?m)^[ \t]*import[ \t]+((?:\./|\.\./|@/)(?:[A-Za-z0-9_.~%+-]+/)*"
     r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
 )
 _SELECTIVE_IMPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*import[ \t]*\{([^}\r\n]*)\}[ \t]+from[ \t]+"
-    r"((?:\./|\.\./)(?:[A-Za-z0-9_.~%+-]+/)*"
+    r"((?:\./|\.\./|@/)(?:[A-Za-z0-9_.~%+-]+/)*"
     r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
 )
 _IMPORT_NAME = re.compile(rf"(?:^|,)[ \t]*({_IDENTIFIER})[ \t]*(?=,|$)")
@@ -80,7 +80,7 @@ class NovaImportNameSyntax:
 
 @dataclass(frozen=True, slots=True)
 class NovaImportSyntax:
-    """One exact URI-relative Nova file dependency declaration."""
+    """One exact relative or workspace-root Nova file dependency declaration."""
 
     path: str
     span: Span
