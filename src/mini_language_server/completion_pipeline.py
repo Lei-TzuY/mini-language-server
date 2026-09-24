@@ -284,13 +284,11 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             code = self.nova_adapter.code_view(text)
             span = self._completion_identifier_span(code, offset)
             prefix = self._completion_identifier_prefix(code, offset)
-            if not prefix:
+            namespace = self._completion_namespace_context(code, span.start)
+            if not prefix and namespace is None:
                 self.requests.checkpoint(request_context)
                 return self._current_semantic_result(semantics, request_id, [])
 
-            if code[max(0, span.start - 2) : span.start] == "::":
-                self.requests.checkpoint(request_context)
-                return self._current_semantic_result(semantics, request_id, [])
             if _direct_conversion_operand(code, offset) is not None:
                 self.requests.checkpoint(request_context)
                 return self._current_semantic_result(semantics, request_id, [])
@@ -302,27 +300,36 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
                 snapshots=snapshots,
             )
             current_identifier = code[span.start : span.end]
+            namespace_prefix = None if namespace is None else f"{namespace}::"
 
             ranked: dict[str, tuple[int, dict[str, Any]]] = {}
             for item in candidates:
                 label = item.get("label")
                 detail = item.get("detail")
+                if not isinstance(label, str) or not isinstance(detail, str):
+                    continue
+                if namespace_prefix is not None:
+                    if not label.startswith(namespace_prefix):
+                        continue
+                    rendered_label = label[len(namespace_prefix) :]
+                else:
+                    if "::" in label:
+                        continue
+                    rendered_label = label
                 if (
-                    not isinstance(label, str)
-                    or not label.startswith(prefix)
-                    or label == current_identifier
-                    or not isinstance(detail, str)
+                    not rendered_label.startswith(prefix)
+                    or rendered_label == current_identifier
                 ):
                     continue
                 classification = self._completion_classification(detail)
                 rank = 3 if classification is None else classification[1]
                 rendered = {
-                    "insertText": label,
+                    "insertText": rendered_label,
                     "range": self._range(source, span),
                 }
-                previous = ranked.get(label)
+                previous = ranked.get(rendered_label)
                 if previous is None or rank < previous[0]:
-                    ranked[label] = (rank, rendered)
+                    ranked[rendered_label] = (rank, rendered)
 
             items = [
                 rendered
@@ -375,24 +382,26 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
 
         insert_range = None
         replace_range = None
-        if (
-            (self._completion_insert_replace or self._completion_list_edit_range)
-            and semantics is not None
-            and offset is not None
-            and source is not None
-        ):
-            text = semantics.symbols.syntax.document.text
-            span = self._completion_identifier_span(text, offset)
-            insert_range = self._range(source, Span(span.start, offset))
-            replace_range = self._range(source, span)
-
         prefix = None
+        namespace = None
         if semantics is not None and offset is not None:
             text = semantics.symbols.syntax.document.text
-            prefix = self._completion_identifier_prefix(text, offset)
+            code = self.nova_adapter.code_view(text)
+            span = self._completion_identifier_span(code, offset)
+            prefix = self._completion_identifier_prefix(code, offset)
+            namespace = self._completion_namespace_context(code, span.start)
+            if (
+                (self._completion_insert_replace or self._completion_list_edit_range)
+                and source is not None
+            ):
+                insert_range = self._range(source, Span(span.start, offset))
+                replace_range = self._range(source, span)
 
         def publish() -> dict[str, Any]:
-            items = response["result"]
+            items = self._completion_namespace_items(
+                response["result"],
+                namespace,
+            )
 
             if self._function_completion_snippets and semantics is not None:
                 for item in items:
@@ -491,6 +500,55 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             )
         except (SemanticError, WorkspaceIndexError):
             return self._error(request_id, -32801, "Content modified")
+
+    @staticmethod
+    def _completion_namespace_items(
+        items: list[Any],
+        namespace: str | None,
+    ) -> list[Any]:
+        """Project qualified workspace candidates into one member-only completion view."""
+        projected: list[Any] = []
+        namespace_prefix = None if namespace is None else f"{namespace}::"
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            label = item.get("label")
+            if not isinstance(label, str):
+                continue
+            if namespace_prefix is None:
+                if "::" in label:
+                    continue
+                projected.append(item)
+                continue
+            if not label.startswith(namespace_prefix):
+                continue
+            member = label[len(namespace_prefix) :]
+            if not member or "::" in member:
+                continue
+            item["label"] = member
+            projected.append(item)
+        return projected
+
+    @classmethod
+    def _completion_namespace_context(
+        cls,
+        text: str,
+        member_start: int,
+    ) -> str | None:
+        """Return the identifier immediately qualifying one completion member span."""
+        cursor = member_start
+        while cursor > 0 and text[cursor - 1] in " \t":
+            cursor -= 1
+        if cursor < 2 or text[cursor - 2 : cursor] != "::":
+            return None
+        cursor -= 2
+        while cursor > 0 and text[cursor - 1] in " \t":
+            cursor -= 1
+        end = cursor
+        while cursor > 0 and cls._identifier_character(text[cursor - 1]):
+            cursor -= 1
+        namespace = text[cursor:end]
+        return namespace or None
 
     def _function_completion_detail(self, item: dict[str, Any]) -> str | None:
         detail = item.get("detail")
