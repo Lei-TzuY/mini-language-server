@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import replace
+from typing import Any
 
 from .constant_control_flow import proven_non_fallthrough_while_spans
 from .constant_values import bounded_boolean_constant_value
