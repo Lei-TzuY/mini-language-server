@@ -1355,7 +1355,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         importer: SemanticSnapshot,
         snapshots: tuple[SemanticSnapshot, ...],
     ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
-        """Return deterministic direct-import function visibility for one snapshot.
+        """Return deterministic function visibility for one exact importer snapshot.
 
         Files without explicit imports retain the legacy workspace-global function
         namespace. Once a file declares imports, same-file functions take precedence
@@ -1365,62 +1365,57 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(tree, NovaFunctionSyntax):
             return {}
 
+        def declaration_map(
+            visible_snapshots: tuple[SemanticSnapshot, ...],
+        ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
+            grouped: dict[str, list[WorkspaceDeclaration]] = {}
+            for snapshot in visible_snapshots:
+                for symbol in snapshot.symbols.symbols:
+                    if symbol.kind != "function":
+                        continue
+                    grouped.setdefault(symbol.name, []).append(
+                        WorkspaceDeclaration(snapshot.uri, snapshot, symbol)
+                    )
+            return {
+                name: tuple(
+                    sorted(
+                        declarations,
+                        key=lambda item: (
+                            item.uri,
+                            item.symbol.span.start,
+                            item.symbol.span.end,
+                        ),
+                    )
+                )
+                for name, declarations in grouped.items()
+            }
+
+        if not tree.imports:
+            return declaration_map(tuple(snapshots))
+
         indexed = {
             WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
             for snapshot in snapshots
         }
-        if tree.imports:
-            imported_identities = {
-                WorkspaceFolderSet.uri_identity(target_uri)
-                for item in tree.imports
-                if (
-                    target_uri := cls._nova_import_target_uri(importer.uri, item.path)
-                )
-                is not None
-                and WorkspaceFolderSet.uri_identity(target_uri) in indexed
-            }
-            visible_snapshots = tuple(
+        imported_identities = {
+            WorkspaceFolderSet.uri_identity(target_uri)
+            for item in tree.imports
+            if (
+                target_uri := cls._nova_import_target_uri(importer.uri, item.path)
+            )
+            is not None
+            and WorkspaceFolderSet.uri_identity(target_uri) in indexed
+        }
+        imported = declaration_map(
+            tuple(
                 snapshot
                 for identity, snapshot in indexed.items()
-                if identity in imported_identities
+                if identity in imported_identities and snapshot is not importer
             )
-        else:
-            visible_snapshots = tuple(snapshots)
-
-        local_by_name: dict[str, list[WorkspaceDeclaration]] = {}
-        imported_by_name: dict[str, list[WorkspaceDeclaration]] = {}
-
-        for symbol in importer.symbols.symbols:
-            if symbol.kind != "function":
-                continue
-            local_by_name.setdefault(symbol.name, []).append(
-                WorkspaceDeclaration(importer.uri, importer, symbol)
-            )
-
-        for snapshot in visible_snapshots:
-            if snapshot is importer:
-                continue
-            for symbol in snapshot.symbols.symbols:
-                if symbol.kind != "function":
-                    continue
-                imported_by_name.setdefault(symbol.name, []).append(
-                    WorkspaceDeclaration(snapshot.uri, snapshot, symbol)
-                )
-
-        names = set(imported_by_name) | set(local_by_name)
-        result: dict[str, tuple[WorkspaceDeclaration, ...]] = {}
-        for name in names:
-            declarations = local_by_name.get(name) or imported_by_name.get(name, [])
-            result[name] = tuple(
-                sorted(
-                    declarations,
-                    key=lambda item: (
-                        item.uri,
-                        item.symbol.span.start,
-                        item.symbol.span.end,
-                    ),
-                )
-            )
+        )
+        local = declaration_map((importer,))
+        result = dict(imported)
+        result.update(local)
         return result
 
     @classmethod
