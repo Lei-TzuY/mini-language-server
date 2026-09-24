@@ -535,7 +535,7 @@ def test_will_delete_rejects_unindexed_local_path_drift(
     assert not source.exists()
 
 
-def test_will_create_rejects_missing_parent_directory(tmp_path: Path) -> None:
+def test_will_create_preserves_missing_parent_nonauthority(tmp_path: Path) -> None:
     server = initialized_server(tmp_path, will_create=True)
     target = tmp_path / "missing" / "new.nova"
 
@@ -546,9 +546,7 @@ def test_will_create_rejects_missing_parent_directory(tmp_path: Path) -> None:
         request_id=25,
     )
 
-    assert response is not None
-    assert response["error"]["code"] == -32803
-    assert "create parent is not writable/searchable" in response["error"]["message"]
+    assert response == {"jsonrpc": "2.0", "id": 25, "result": None}
     assert not target.exists()
 
 
