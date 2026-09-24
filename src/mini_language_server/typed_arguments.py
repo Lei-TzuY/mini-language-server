@@ -132,6 +132,7 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
                     "nova.ambiguous-function",
                     "nova.argument-count",
                     "nova.argument-type",
+                    "nova.unresolved-import",
                 }
                 and not self._is_literal_unresolved_name(text, diagnostic)
             ]
@@ -215,6 +216,9 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
                             source="nova",
                         )
                     )
+            diagnostics.extend(
+                self._nova_import_diagnostics(snapshot, snapshots)
+            )
             planned.append((snapshot, tuple(diagnostics)))
 
         def publish() -> None:
