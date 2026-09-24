@@ -2425,7 +2425,6 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def _incoming_calls(self, declaration: Any, snapshots: tuple[Any, ...]) -> list[dict[str, Any]]:
         grouped: dict[tuple[str, int], tuple[Any, list[Span]]] = {}
-        target_name = declaration.symbol.name
         for snapshot in snapshots:
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
