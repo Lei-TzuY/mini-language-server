@@ -70,6 +70,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self._watched_files_registration_request: str | None = None
         self._watched_files_registration_active = False
         self._moniker_support = False
+        self._document_link_support = False
         self._closed_workspace_index_initialized = False
         self._closed_workspace_uris: dict[WorkspaceUriIdentity, str] = {}
         self._closed_workspace_base_diagnostics: dict[
@@ -99,6 +100,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 self._client_supports_watched_files_dynamic_registration(params)
             )
             self._moniker_support = self._client_supports_moniker(params)
+            self._document_link_support = self._client_supports_document_links(params)
             try:
                 self.workspace_folders.configure(params)
             except WorkspaceFolderError:
@@ -172,6 +174,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 return self._handle_project_function_moniker(
                     message.get("id"), message.get("params")
                 )
+            if method == "textDocument/documentLink" and self._document_link_support:
+                return self._handle_nova_document_links(
+                    message.get("id"), message.get("params")
+                )
             if method == "textDocument/completion":
                 workspace_result = self._handle_workspace_completion(
                     message.get("id"), message.get("params")
@@ -231,6 +237,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     capabilities["callHierarchyProvider"] = True
                 if self._moniker_support:
                     capabilities["monikerProvider"] = True
+                if self._document_link_support:
+                    capabilities["documentLinkProvider"] = {"resolveProvider": False}
                 if self._workspace_folder_change_support:
                     workspace_capabilities = capabilities.setdefault("workspace", {})
                     if isinstance(workspace_capabilities, dict):
@@ -1684,6 +1692,79 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 return semantics, call_name
         return None
 
+    def _handle_nova_document_links(
+        self,
+        request_id: Any,
+        params: Any,
+    ) -> dict[str, Any]:
+        """Return exact target links for resolved top-level Nova imports."""
+        uri = self._document_uri(params)
+        if uri is None:
+            return self._error(request_id, -32602, "Invalid params")
+
+        document = self.documents.get(uri)
+        semantics = self.semantics.get(uri)
+        if (
+            document is None
+            or document.language_id != self.nova_adapter.language_id
+            or semantics is None
+            or semantics.symbols.syntax.document is not document
+            or not isinstance(semantics.symbols.syntax.tree, NovaFunctionSyntax)
+        ):
+            return self._result(request_id, [])
+
+        snapshots = self.workspace_symbols.snapshots()
+        try:
+            context = self.requests.start(request_id, uri=uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            source = self._source_text(document.text)
+            indexed = {
+                WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot.uri
+                for snapshot in snapshots
+            }
+            links: list[dict[str, Any]] = []
+            for item in semantics.symbols.syntax.tree.imports:
+                target_uri = self._nova_import_target_uri(semantics.uri, item.path)
+                if target_uri is None:
+                    continue
+                indexed_uri = indexed.get(
+                    WorkspaceFolderSet.uri_identity(target_uri)
+                )
+                if indexed_uri is None:
+                    continue
+                links.append(
+                    {
+                        "range": self._range(source, item.span),
+                        "target": indexed_uri,
+                    }
+                )
+            self.requests.checkpoint(context)
+
+            def publish() -> dict[str, Any]:
+                self.requests.checkpoint(context)
+                return self._result(request_id, links)
+
+            try:
+                return self.semantics.commit_if_current(
+                    semantics,
+                    lambda: self.workspace_symbols.commit_snapshots_if_current(
+                        snapshots,
+                        publish,
+                    ),
+                )
+            except (SemanticError, WorkspaceIndexError):
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
     def _handle_project_function_moniker(
         self, request_id: Any, params: Any
     ) -> dict[str, Any]:
@@ -2480,6 +2561,18 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if isinstance(token, bool) or not isinstance(token, str | int):
             return False, None
         return True, token
+
+    @staticmethod
+    def _client_supports_document_links(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        capabilities = params.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return False
+        text_document = capabilities.get("textDocument")
+        if not isinstance(text_document, dict):
+            return False
+        return isinstance(text_document.get("documentLink"), dict)
 
     @staticmethod
     def _client_supports_moniker(params: Any) -> bool:
