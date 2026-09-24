@@ -394,6 +394,8 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
         replace_range = None
         prefix = None
         namespace = None
+        import_namespaces: frozenset[str] = frozenset()
+        invalid_qualified = False
         if semantics is not None and offset is not None:
             text = semantics.symbols.syntax.document.text
             code = self.nova_adapter.code_view(text)
