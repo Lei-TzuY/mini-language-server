@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import Any
 
@@ -90,50 +90,23 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
             expression = document.text[diagnostic.span.start : diagnostic.span.end]
             actual = self._return_expression_type(semantic, expression, diagnostic.span)
-            typed_repair: tuple[str, str] | None = None
-            if actual == "Int":
-                typed_repair = ("Compare Int condition with zero", f"({expression}) != 0")
-            elif actual == "String":
-                typed_repair = (
-                    "Compare String condition with empty string",
-                    f'({expression}) != ""',
-                )
-            if typed_repair is not None:
-                title, new_text = typed_repair
-                actions.append(
-                    {
-                        "title": title,
-                        "kind": "quickfix",
-                        "diagnostics": [self._diagnostic(source, diagnostic)],
-                        "edit": {
-                            "changes": {
-                                uri: [
-                                    {
-                                        "range": self._range(source, diagnostic.span),
-                                        "newText": new_text,
-                                    }
-                                ]
-                            }
-                        },
-                    }
-                )
-
+            if actual is None:
+                continue
+            typed_action = self._condition_preserving_action(
+                uri,
+                source,
+                diagnostic,
+                expression,
+                actual,
+            )
+            if typed_action is not None:
+                actions.append(typed_action)
             actions.append(
-                {
-                    "title": "Replace condition with Bool literal",
-                    "kind": "quickfix",
-                    "diagnostics": [self._diagnostic(source, diagnostic)],
-                    "edit": {
-                        "changes": {
-                            uri: [
-                                {
-                                    "range": self._range(source, diagnostic.span),
-                                    "newText": "false",
-                                }
-                            ]
-                        }
-                    },
-                }
+                self._condition_bool_literal_action(
+                    uri,
+                    source,
+                    diagnostic,
+                )
             )
         return actions
 
@@ -141,6 +114,21 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         self, semantic: SemanticSnapshot
     ) -> tuple[Diagnostic, ...]:
         text = semantic.symbols.syntax.document.text
+        return self._condition_type_diagnostics(
+            text,
+            lambda expression, span: self._return_expression_type(
+                semantic,
+                expression,
+                span,
+            ),
+        )
+
+    def _condition_type_diagnostics(
+        self,
+        text: str,
+        expression_type: Callable[[str, Span], str | None],
+    ) -> tuple[Diagnostic, ...]:
+        """Analyze condition syntax using one exact expression-type resolver."""
         code = self.nova_adapter.code_view(text)
         diagnostics: list[Diagnostic] = []
         for match in _CONTROL_FLOW_CONDITION.finditer(code):
@@ -153,7 +141,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             expression, span = self._trim_expression(expression, span)
             if not expression:
                 continue
-            actual = self._return_expression_type(semantic, expression, span)
+            actual = expression_type(expression, span)
             if actual is None or actual == "Bool":
                 continue
             diagnostics.append(
@@ -168,6 +156,74 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 )
             )
         return tuple(diagnostics)
+
+    def _condition_preserving_action(
+        self,
+        uri: str,
+        source: Any,
+        diagnostic: Diagnostic,
+        expression: str,
+        actual: str,
+    ) -> dict[str, Any] | None:
+        if actual == "Int":
+            title = "Compare Int condition with zero"
+            new_text = f"({expression}) != 0"
+        elif actual == "String":
+            title = "Compare String condition with empty string"
+            new_text = f'({expression}) != ""'
+        else:
+            return None
+        return {
+            "title": title,
+            "kind": "quickfix",
+            "diagnostics": [self._diagnostic(source, diagnostic)],
+            "edit": {
+                "changes": {
+                    uri: [
+                        {
+                            "range": self._range(source, diagnostic.span),
+                            "newText": new_text,
+                        }
+                    ]
+                }
+            },
+        }
+
+    def _condition_bool_literal_action(
+        self,
+        uri: str,
+        source: Any,
+        diagnostic: Diagnostic,
+    ) -> dict[str, Any]:
+        return {
+            "title": "Replace condition with Bool literal",
+            "kind": "quickfix",
+            "diagnostics": [self._diagnostic(source, diagnostic)],
+            "edit": {
+                "changes": {
+                    uri: [
+                        {
+                            "range": self._range(source, diagnostic.span),
+                            "newText": "false",
+                        }
+                    ]
+                }
+            },
+        }
+
+    @staticmethod
+    def _condition_actual_type_from_diagnostic(
+        diagnostic: Diagnostic,
+    ) -> str | None:
+        prefix = "condition type mismatch: expected 'Bool', got '"
+        suffix = "'"
+        message = diagnostic.message
+        if not message.startswith(prefix) or not message.endswith(suffix):
+            return None
+        actual = message[len(prefix) : -len(suffix)]
+        if not actual or "'" in actual:
+            return None
+        return actual
 
     def _nova_unreachable_code_diagnostics(
         self, semantic: SemanticSnapshot
