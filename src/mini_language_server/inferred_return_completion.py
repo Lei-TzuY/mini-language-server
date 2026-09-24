@@ -47,10 +47,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             ):
                 decorated.append(item)
                 continue
-            declarations = tuple(
-                declaration
-                for declaration in self.workspace_symbols.declarations(name)
-                if declaration.symbol.kind == "function"
+            declarations = self._nova_visible_function_declarations(
+                semantics,
+                snapshots,
+                name,
             )
             inferred = None
             if len(declarations) == 1:

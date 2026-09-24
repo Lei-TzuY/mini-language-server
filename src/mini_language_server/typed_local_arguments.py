@@ -323,21 +323,19 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 detail = f"{symbol.kind}: {symbol_type}"
             items[(symbol.name, symbol.kind)] = detail
 
-        for snapshot in snapshots:
-            if not isinstance(snapshot.symbols.syntax.tree, NovaFunctionSyntax):
-                continue
-            for symbol in snapshot.symbols.symbols:
-                if symbol.kind == "function":
-                    items.setdefault((symbol.name, symbol.kind), symbol.kind)
+        visible_functions = self._nova_visible_function_map(
+            semantics,
+            snapshots,
+        )
+        for declarations in visible_functions.values():
+            for declaration in declarations:
+                symbol = declaration.symbol
+                items.setdefault((symbol.name, symbol.kind), symbol.kind)
 
         for name, kind in tuple(items):
             if kind != "function":
                 continue
-            declarations = tuple(
-                declaration
-                for declaration in self.workspace_symbols.declarations(name)
-                if declaration.symbol.kind == "function"
-            )
+            declarations = visible_functions.get(name, ())
             if len(declarations) == 1:
                 items[(name, kind)] = self._function_signature(declarations[0])
 

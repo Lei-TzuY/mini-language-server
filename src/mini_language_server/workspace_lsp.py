@@ -20,7 +20,7 @@ from .server import LanguageServer, ServerState
 from .source import Span
 from .symbols import SymbolError
 from .syntax import SyntaxError
-from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
+from .workspace import WorkspaceDeclaration, WorkspaceIndexError, WorkspaceSymbolIndex
 from .workspace_files import (
     ClosedWorkspaceFile,
     LocalWorkspaceMutationEvidence,
@@ -1350,6 +1350,84 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         return target_uri
 
     @classmethod
+    def _nova_visible_function_map(
+        cls,
+        importer: SemanticSnapshot,
+        snapshots: tuple[SemanticSnapshot, ...],
+    ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
+        """Return deterministic function visibility for one exact importer snapshot.
+
+        Files without explicit imports retain the legacy workspace-global function
+        namespace. Once a file declares imports, same-file functions take precedence
+        by name and otherwise only directly imported file functions are visible.
+        """
+        tree = importer.symbols.syntax.tree
+        if not isinstance(tree, NovaFunctionSyntax):
+            return {}
+
+        def declaration_map(
+            visible_snapshots: tuple[SemanticSnapshot, ...],
+        ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
+            grouped: dict[str, list[WorkspaceDeclaration]] = {}
+            for snapshot in visible_snapshots:
+                for symbol in snapshot.symbols.symbols:
+                    if symbol.kind != "function":
+                        continue
+                    grouped.setdefault(symbol.name, []).append(
+                        WorkspaceDeclaration(snapshot.uri, snapshot, symbol)
+                    )
+            return {
+                name: tuple(
+                    sorted(
+                        declarations,
+                        key=lambda item: (
+                            item.uri,
+                            item.symbol.span.start,
+                            item.symbol.span.end,
+                        ),
+                    )
+                )
+                for name, declarations in grouped.items()
+            }
+
+        if not tree.imports:
+            return declaration_map(tuple(snapshots))
+
+        indexed = {
+            WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
+            for snapshot in snapshots
+        }
+        imported_identities = {
+            WorkspaceFolderSet.uri_identity(target_uri)
+            for item in tree.imports
+            if (
+                target_uri := cls._nova_import_target_uri(importer.uri, item.path)
+            )
+            is not None
+            and WorkspaceFolderSet.uri_identity(target_uri) in indexed
+        }
+        imported = declaration_map(
+            tuple(
+                snapshot
+                for identity, snapshot in indexed.items()
+                if identity in imported_identities and snapshot is not importer
+            )
+        )
+        local = declaration_map((importer,))
+        result = dict(imported)
+        result.update(local)
+        return result
+
+    @classmethod
+    def _nova_visible_function_declarations(
+        cls,
+        importer: SemanticSnapshot,
+        snapshots: tuple[SemanticSnapshot, ...],
+        name: str,
+    ) -> tuple[WorkspaceDeclaration, ...]:
+        return cls._nova_visible_function_map(importer, snapshots).get(name, ())
+
+    @classmethod
     def _nova_import_diagnostics(
         cls,
         snapshot: SemanticSnapshot,
@@ -1465,13 +1543,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self,
         snapshots: tuple[SemanticSnapshot, ...],
     ) -> tuple[DiagnosticSnapshot, ...]:
-        """Recompute closed-file base + function resolution diagnostics."""
-        functions: dict[str, list[tuple[SemanticSnapshot, Any]]] = {}
-        for snapshot in snapshots:
-            for symbol in snapshot.symbols.symbols:
-                if symbol.kind == "function":
-                    functions.setdefault(symbol.name, []).append((snapshot, symbol))
-
+        """Recompute closed-file diagnostics against exact import visibility."""
         rendered: list[DiagnosticSnapshot] = []
         for snapshot in snapshots:
             identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
@@ -1483,6 +1555,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
                 continue
+
+            visible = self._nova_visible_function_map(snapshot, snapshots)
+            functions = {
+                name: [
+                    (declaration.snapshot, declaration.symbol)
+                    for declaration in declarations
+                ]
+                for name, declarations in visible.items()
+            }
 
             diagnostics = [
                 diagnostic
@@ -1633,12 +1714,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     "nova.unresolved-import",
                 }
             ]
+            visible = self._nova_visible_function_map(snapshot, snapshots)
             for name, span in tree.calls:
-                declarations = tuple(
-                    declaration
-                    for declaration in self.workspace_symbols.declarations(name)
-                    if declaration.symbol.kind == "function"
-                )
+                declarations = visible.get(name, ())
                 if len(declarations) == 0:
                     diagnostics.append(
                         Diagnostic(
@@ -1868,12 +1946,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             items: set[tuple[str, str]] = {
                 (symbol.name, symbol.kind) for symbol in semantics.symbols.symbols
             }
-            for snapshot in snapshots:
-                if not isinstance(snapshot.symbols.syntax.tree, NovaFunctionSyntax):
-                    continue
-                for symbol in snapshot.symbols.symbols:
-                    if symbol.kind == "function":
-                        items.add((symbol.name, symbol.kind))
+            visible = self._nova_visible_function_map(semantics, snapshots)
+            for declarations in visible.values():
+                for declaration in declarations:
+                    items.add((declaration.symbol.name, declaration.symbol.kind))
 
             result = [
                 {"label": name, "detail": kind}
@@ -1980,12 +2056,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if query is None:
             return self._result(request_id, [])
         semantics, name = query
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
         snapshots = self.workspace_symbols.snapshots()
+        declarations = self._nova_visible_function_declarations(
+            semantics,
+            snapshots,
+            name,
+        )
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
@@ -2023,7 +2099,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if method == "callHierarchy/incomingCalls":
                 result = self._incoming_calls(declaration, snapshots)
             else:
-                result = self._outgoing_calls(declaration)
+                result = self._outgoing_calls(declaration, snapshots)
             self.requests.checkpoint(context)
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
@@ -2044,6 +2120,17 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for snapshot in snapshots:
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
+                continue
+            resolved = self._nova_visible_function_declarations(
+                snapshot,
+                snapshots,
+                target_name,
+            )
+            if (
+                len(resolved) != 1
+                or resolved[0].snapshot is not declaration.snapshot
+                or resolved[0].symbol is not declaration.symbol
+            ):
                 continue
             for call_name, span in tree.calls:
                 if call_name != target_name:
@@ -2068,7 +2155,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             )
         return result
 
-    def _outgoing_calls(self, declaration: Any) -> list[dict[str, Any]]:
+    def _outgoing_calls(
+        self,
+        declaration: Any,
+        snapshots: tuple[Any, ...],
+    ) -> list[dict[str, Any]]:
         snapshot = declaration.snapshot
         tree = snapshot.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
@@ -2079,10 +2170,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for call_name, span in tree.calls:
             if not (extent.start <= span.start < extent.end):
                 continue
-            targets = tuple(
-                target
-                for target in self.workspace_symbols.declarations(call_name)
-                if target.symbol.kind == "function"
+            targets = self._nova_visible_function_declarations(
+                snapshot,
+                snapshots,
+                call_name,
             )
             if len(targets) != 1:
                 continue
@@ -2136,12 +2227,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         else:
             return None
 
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
         snapshots = self.workspace_symbols.snapshots()
+        declarations = self._nova_visible_function_declarations(
+            semantics,
+            snapshots,
+            name,
+        )
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
@@ -2186,12 +2277,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return None
         semantics, name = query
 
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
         snapshots = self.workspace_symbols.snapshots()
+        declarations = self._nova_visible_function_declarations(
+            semantics,
+            snapshots,
+            name,
+        )
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
@@ -2230,6 +2321,17 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 for snapshot in snapshots:
                     snapshot_tree = snapshot.symbols.syntax.tree
                     if not isinstance(snapshot_tree, NovaFunctionSyntax):
+                        continue
+                    resolved = self._nova_visible_function_declarations(
+                        snapshot,
+                        snapshots,
+                        name,
+                    )
+                    if (
+                        len(resolved) != 1
+                        or resolved[0].snapshot is not declaration.snapshot
+                        or resolved[0].symbol is not declaration.symbol
+                    ):
                         continue
                     source = self._source_text(snapshot.symbols.syntax.document.text)
                     for call_name, span in snapshot_tree.calls:
@@ -2285,12 +2387,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if call is None:
             return None
         name, call_span = call
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
         snapshots = self.workspace_symbols.snapshots()
+        declarations = self._nova_visible_function_declarations(
+            semantics,
+            snapshots,
+            name,
+        )
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
@@ -2331,12 +2433,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if query is None:
             return None
         semantics, name = query
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
         snapshots = self.workspace_symbols.snapshots()
+        declarations = self._nova_visible_function_declarations(
+            semantics,
+            snapshots,
+            name,
+        )
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
@@ -2372,6 +2474,17 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for snapshot in snapshots:
                 snapshot_tree = snapshot.symbols.syntax.tree
                 if not isinstance(snapshot_tree, NovaFunctionSyntax):
+                    continue
+                resolved = self._nova_visible_function_declarations(
+                    snapshot,
+                    snapshots,
+                    name,
+                )
+                if (
+                    len(resolved) != 1
+                    or resolved[0].snapshot is not declaration.snapshot
+                    or resolved[0].symbol is not declaration.symbol
+                ):
                     continue
                 source = self._source_text(snapshot.symbols.syntax.document.text)
                 for call_name, span in snapshot_tree.calls:
