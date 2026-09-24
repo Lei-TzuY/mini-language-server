@@ -134,8 +134,8 @@ def test_closed_condition_diagnostics_use_captured_expression_types(
         (
             "condition type mismatch: expected 'Bool', got 'String'",
             {
-                "start": {"line": 0, "character": 32},
-                "end": {"line": 0, "character": 39},
+                "start": {"line": 0, "character": 33},
+                "end": {"line": 0, "character": 40},
             },
         ),
     ]
