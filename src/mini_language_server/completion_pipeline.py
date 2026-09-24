@@ -292,13 +292,6 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
                 and self._completion_import_namespace(tree, raw_namespace)
                 else None
             )
-            if (
-                raw_namespace is not None
-                and namespace is None
-                and raw_namespace not in {"Int", "UInt"}
-            ):
-                self.requests.checkpoint(request_context)
-                return self._current_semantic_result(semantics, request_id, [])
             if raw_namespace is not None and namespace is None:
                 self.requests.checkpoint(request_context)
                 return self._current_semantic_result(semantics, request_id, [])
