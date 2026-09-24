@@ -376,8 +376,8 @@ def test_transitive_import_visibility_aligns_resolution_surfaces() -> None:
     )
     assert references is not None
     assert [item["uri"] for item in references["result"]] == [
-        helper_uri,
         caller_uri,
+        helper_uri,
     ]
 
     rename = server.handle(
