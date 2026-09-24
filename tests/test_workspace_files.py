@@ -82,15 +82,9 @@ def test_probe_local_workspace_mutation_captures_parent_directory(
     assert evidence.can_mutate_parent is True
 
 
-def test_probe_local_workspace_mutation_rejects_missing_parent(
+def test_probe_local_workspace_mutation_does_not_invent_missing_parent_authority(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "missing" / "new.nova"
 
-    evidence = probe_local_workspace_mutation(target.as_uri())
-
-    assert evidence is not None
-    assert evidence.parent_kind == "missing"
-    assert evidence.parent_signature is None
-    assert evidence.parent_write_search is False
-    assert evidence.can_mutate_parent is False
+    assert probe_local_workspace_mutation(target.as_uri()) is None
