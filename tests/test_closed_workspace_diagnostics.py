@@ -2330,3 +2330,100 @@ def test_closed_parameter_assignment_is_not_immutable(
         for item in report["items"]
         if item["code"] in {"nova.immutable-assignment", "nova.assignment-type"}
     ] == ["nova.assignment-type"]
+
+def test_closed_scalar_diagnostics_reuse_exact_snapshot_analyzers(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "scalar.nova"
+    text = (
+        "fn main() -> Unit { "
+        "if (true) {} "
+        "let quotient = 10 / 0; "
+        "let converted = UInt::from(-1); "
+        "return (); "
+        "}\n"
+    )
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+
+    report = reports_by_uri(workspace_diagnostics(server))[uri]
+    scalar = [
+        item
+        for item in report["items"]
+        if item["code"]
+        in {
+            "nova.constant-condition",
+            "nova.division-by-zero",
+            "nova.conversion-range",
+        }
+    ]
+
+    assert [(item["code"], item["message"]) for item in scalar] == [
+        ("nova.constant-condition", "if condition is always true"),
+        ("nova.division-by-zero", "integer division by zero is invalid"),
+        (
+            "nova.conversion-range",
+            "checked conversion 'UInt::from' cannot represent constant Int value -1 as UInt",
+        ),
+    ]
+    assert server.documents.get(uri) is None
+    assert server.semantics.get(uri) is None
+    assert server.diagnostics.get(uri) is None
+
+
+def test_closed_scalar_diagnostics_match_live_analyzer_results(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "scalar.nova"
+    text = (
+        "fn main() -> Unit { "
+        "while (false) {} "
+        "let quotient = 10 % -0; "
+        "let converted = Int::from_uint(UInt::MAX); "
+        "return (); "
+        "}\n"
+    )
+    source.write_text(text, encoding="utf-8")
+    server = initialized_server(tmp_path)
+    uri = source.absolute().as_uri()
+
+    closed = reports_by_uri(workspace_diagnostics(server))[uri]
+    closed_scalar = [
+        (item["code"], item["message"])
+        for item in closed["items"]
+        if item["code"]
+        in {
+            "nova.constant-condition",
+            "nova.division-by-zero",
+            "nova.conversion-range",
+        }
+    ]
+
+    server.handle(
+        notify(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "nova",
+                    "version": 7,
+                    "text": text,
+                }
+            },
+        )
+    )
+    live = server.diagnostics.get(uri)
+    assert live is not None
+    live_scalar = [
+        (item.code, item.message)
+        for item in live.diagnostics
+        if item.code
+        in {
+            "nova.constant-condition",
+            "nova.division-by-zero",
+            "nova.conversion-range",
+        }
+    ]
+
+    assert live_scalar == closed_scalar
