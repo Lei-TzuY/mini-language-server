@@ -1510,6 +1510,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             visible: dict[str, tuple[WorkspaceDeclaration, ...]],
             *,
             apply: bool,
+            namespace_members: frozenset[str] = frozenset(),
         ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
             if not apply:
                 return visible
@@ -1520,6 +1521,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             ):
                 return visible
             allowed = {item.name for item in snapshot_tree.exports}
+            allowed.update(namespace_members)
             return {
                 name: declarations
                 for name, declarations in visible.items()
@@ -1562,7 +1564,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
             next_visiting = visiting | {identity}
             imported_maps: list[dict[str, tuple[WorkspaceDeclaration, ...]]] = []
+            namespace_targets: list[
+                tuple[str, dict[str, tuple[WorkspaceDeclaration, ...]]]
+            ] = []
             namespace_counts: dict[str, int] = {}
+            exported_names = {item.name for item in snapshot_tree.exports}
             for imported_item in snapshot_tree.imports:
                 if imported_item.namespace is not None:
                     namespace_counts[imported_item.namespace] = (
@@ -1578,16 +1584,21 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 target_visible = exported(target, next_visiting)
                 if item.namespace is not None:
                     if (
-                        not include_private_local
-                        or item.namespace in {"Int", "UInt"}
+                        item.namespace in {"Int", "UInt"}
                         or namespace_counts.get(item.namespace) != 1
                     ):
                         continue
-                    target_visible = {
-                        f"{item.namespace}::{name}": declarations
-                        for name, declarations in target_visible.items()
-                    }
-                elif item.has_name_list:
+                    if include_private_local and not respect_root_exports:
+                        imported_maps.append(
+                            {
+                                f"{item.namespace}::{name}": declarations
+                                for name, declarations in target_visible.items()
+                            }
+                        )
+                    else:
+                        namespace_targets.append((item.namespace, target_visible))
+                    continue
+                if item.has_name_list:
                     if any(selected.alias is not None for selected in item.names):
                         target_visible = merge_maps(
                             tuple(
@@ -1611,10 +1622,27 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for name in local_all:
                 imported.pop(name, None)
             imported.update(local_exported)
+
+            namespace_members: set[str] = set()
+            if snapshot_tree.has_export_list:
+                for namespace, target_visible in namespace_targets:
+                    if namespace not in exported_names:
+                        continue
+                    if namespace in local_all or namespace in imported:
+                        continue
+                    propagated = {
+                        name: declarations
+                        for name, declarations in target_visible.items()
+                        if name not in local_all
+                    }
+                    imported = merge_maps((imported, propagated))
+                    namespace_members.update(propagated)
+
             return apply_export_list(
                 snapshot,
                 imported,
                 apply=apply_exports,
+                namespace_members=frozenset(namespace_members),
             )
 
         return exported(
