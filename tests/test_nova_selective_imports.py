@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from mini_language_server import NovaProductLanguageServer
+from mini_language_server.nova import NovaFunctionAdapter
 
 
 def request(method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
@@ -323,3 +324,292 @@ def test_will_rename_rewrites_only_selective_import_path(tmp_path: Path) -> None
             ],
         }
     ]
+
+def test_selective_import_alias_parser_tracks_source_and_binding_spans() -> None:
+    server = NovaProductLanguageServer()
+    text = (
+        "import { source as local, plain } from ./provider.nova;\n"
+        "fn main() {}\n"
+    )
+
+    tree = server.nova_adapter.parse(text)
+
+    assert len(tree.imports) == 1
+    imported = tree.imports[0]
+    assert [item.name for item in imported.names] == ["source", "plain"]
+    assert [item.binding_name for item in imported.names] == ["local", "plain"]
+    first, second = imported.names
+    assert first.alias == "local"
+    assert first.alias_span is not None
+    assert text[first.span.start : first.span.end] == "source"
+    assert text[first.alias_span.start : first.alias_span.end] == "local"
+    assert second.alias is None
+    assert second.alias_span is None
+    assert second.binding_span == second.span
+
+
+def test_selective_import_alias_resolves_definition_completion_and_references() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    canonical_uri = "file:///workspace/canonical.nova"
+    alias_uri = "file:///workspace/alias.nova"
+    provider = "fn source() {}\n"
+    canonical = (
+        "import { source } from ./provider.nova;\n"
+        "fn canonical() { source(); }\n"
+    )
+    aliased = (
+        "import { source as local } from ./provider.nova;\n"
+        "fn aliased() { local(); }\n"
+    )
+    open_nova(server, provider_uri, provider)
+    open_nova(server, canonical_uri, canonical)
+    open_nova(server, alias_uri, aliased)
+
+    assert "nova.unresolved-function" not in diagnostic_codes(server, alias_uri)
+
+    definition = server.handle(
+        request(
+            "textDocument/definition",
+            50,
+            {
+                "textDocument": {"uri": alias_uri},
+                "position": position(aliased, "local();", delta=1),
+            },
+        )
+    )
+    assert definition is not None
+    assert definition["result"][0]["targetUri"] == provider_uri
+
+    completion = server.handle(
+        request(
+            "textDocument/completion",
+            51,
+            {
+                "textDocument": {"uri": alias_uri},
+                "position": position(aliased, "local();"),
+            },
+        )
+    )
+    assert completion is not None
+    labels = {item["label"] for item in completion["result"]}
+    assert "local" in labels
+    assert "source" not in labels
+
+    references = server.handle(
+        request(
+            "textDocument/references",
+            52,
+            {
+                "textDocument": {"uri": alias_uri},
+                "position": position(aliased, "local();", delta=1),
+                "context": {"includeDeclaration": True},
+            },
+        )
+    )
+    assert references is not None
+    assert [item["uri"] for item in references["result"]] == [
+        alias_uri,
+        canonical_uri,
+        provider_uri,
+    ]
+
+
+def test_selective_import_alias_reports_duplicate_local_binding() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    caller_uri = "file:///workspace/caller.nova"
+    open_nova(server, provider_uri, "fn left() {}\nfn right() {}\n")
+    caller = (
+        "import { left as shared, right as shared } from ./provider.nova;\n"
+        "fn caller() { shared(); }\n"
+    )
+    open_nova(server, caller_uri, caller)
+
+    codes = diagnostic_codes(server, caller_uri)
+    assert "nova.duplicate-import-name" in codes
+    assert "nova.ambiguous-function" in codes
+
+
+def test_selective_import_alias_can_be_reexported_without_changing_canonical_identity() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    middle_uri = "file:///workspace/middle.nova"
+    root_uri = "file:///workspace/root.nova"
+    open_nova(server, provider_uri, "fn source() {}\n")
+    open_nova(
+        server,
+        middle_uri,
+        (
+            "import { source as local } from ./provider.nova;\n"
+            "export { local };\n"
+        ),
+    )
+    root = "import ./middle.nova;\nfn root() { local(); }\n"
+    open_nova(server, root_uri, root)
+
+    assert "nova.unresolved-export" not in diagnostic_codes(server, middle_uri)
+    definition = server.handle(
+        request(
+            "textDocument/definition",
+            53,
+            {
+                "textDocument": {"uri": root_uri},
+                "position": position(root, "local();", delta=1),
+            },
+        )
+    )
+    assert definition is not None
+    assert definition["result"][0]["targetUri"] == provider_uri
+
+
+def test_canonical_rename_updates_alias_source_selector_but_preserves_alias_call() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    alias_uri = "file:///workspace/alias.nova"
+    canonical_uri = "file:///workspace/canonical.nova"
+    provider = "fn source() {}\nexport { source };\n"
+    aliased = (
+        "import { source as local } from ./provider.nova;\n"
+        "fn aliased() { local(); }\n"
+    )
+    canonical = (
+        "import { source } from ./provider.nova;\n"
+        "fn canonical() { source(); }\n"
+    )
+    open_nova(server, provider_uri, provider)
+    open_nova(server, alias_uri, aliased)
+    open_nova(server, canonical_uri, canonical)
+
+    renamed = server.handle(
+        request(
+            "textDocument/rename",
+            54,
+            {
+                "textDocument": {"uri": provider_uri},
+                "position": position(provider, "source", delta=1),
+                "newName": "renamed",
+            },
+        )
+    )
+    assert renamed is not None
+    changes = renamed["result"]["changes"]
+
+    provider_edits = changes[provider_uri]
+    assert provider_edits == [
+        {
+            "range": {
+                "start": {"line": 0, "character": 3},
+                "end": {"line": 0, "character": 9},
+            },
+            "newText": "renamed",
+        },
+        {
+            "range": {
+                "start": {"line": 1, "character": 9},
+                "end": {"line": 1, "character": 15},
+            },
+            "newText": "renamed",
+        },
+    ]
+
+    alias_edits = changes[alias_uri]
+    assert alias_edits == [
+        {
+            "range": {
+                "start": {"line": 0, "character": 9},
+                "end": {"line": 0, "character": 15},
+            },
+            "newText": "renamed",
+        }
+    ]
+
+    canonical_edits = changes[canonical_uri]
+    assert canonical_edits == [
+        {
+            "range": {
+                "start": {"line": 0, "character": 9},
+                "end": {"line": 0, "character": 15},
+            },
+            "newText": "renamed",
+        },
+        {
+            "range": {
+                "start": {"line": 1, "character": 17},
+                "end": {"line": 1, "character": 23},
+            },
+            "newText": "renamed",
+        },
+    ]
+
+    prepared = server.handle(
+        request(
+            "textDocument/prepareRename",
+            55,
+            {
+                "textDocument": {"uri": alias_uri},
+                "position": position(aliased, "local();", delta=1),
+            },
+        )
+    )
+    assert prepared is not None
+    assert prepared["result"] is None
+
+    alias_rename = server.handle(
+        request(
+            "textDocument/rename",
+            56,
+            {
+                "textDocument": {"uri": alias_uri},
+                "position": position(aliased, "local();", delta=1),
+                "newName": "other",
+            },
+        )
+    )
+    assert alias_rename is not None
+    assert alias_rename["result"] is None
+
+
+def test_closed_importer_obeys_selective_alias_binding(tmp_path: Path) -> None:
+    provider = tmp_path / "provider.nova"
+    caller = tmp_path / "caller.nova"
+    provider.write_text("fn source() {}\n", encoding="utf-8")
+    caller.write_text(
+        (
+            "import { source as local } from ./provider.nova;\n"
+            "fn caller() { local(); }\n"
+        ),
+        encoding="utf-8",
+    )
+    server = initialized_workspace_server(tmp_path)
+    caller_uri = caller.as_uri()
+
+    response = server.handle(
+        request(
+            "textDocument/diagnostic",
+            57,
+            {"textDocument": {"uri": caller_uri}},
+        )
+    )
+
+    assert response is not None
+    assert all(
+        item["code"] != "nova.unresolved-function"
+        for item in response["result"]["items"]
+    )
+    assert server.documents.get(caller_uri) is None
+    assert server.diagnostics.get(caller_uri) is None
+
+def test_selective_import_preserves_t_prefixed_selector_and_alias() -> None:
+    syntax = NovaFunctionAdapter.parse(
+        "import { transit as target } from ./provider.nova;\n"
+    )
+
+    assert len(syntax.imports) == 1
+    selected = syntax.imports[0].names
+    assert len(selected) == 1
+    assert selected[0].name == "transit"
+    assert selected[0].alias == "target"
+    assert selected[0].binding_name == "target"
+
+

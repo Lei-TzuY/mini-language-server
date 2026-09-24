@@ -154,3 +154,39 @@ def test_call_hierarchy_suppresses_same_version_workspace_replacement() -> None:
         "id": 2,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+def test_call_hierarchy_attributes_aliased_calls_to_canonical_function() -> None:
+    server = WorkspaceNovaLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    caller_uri = "file:///workspace/caller.nova"
+    provider = "fn source() {}\n"
+    caller = (
+        "import { source as local } from ./provider.nova;\n"
+        "fn caller() { local(); local(); }\n"
+    )
+    open_nova(server, provider_uri, provider)
+    open_nova(server, caller_uri, caller)
+
+    target = prepare(server, provider_uri, 0, 4)["result"][0]
+    incoming = server.handle(
+        request("callHierarchy/incomingCalls", 20, {"item": target})
+    )
+    assert incoming is not None
+    assert len(incoming["result"]) == 1
+    assert incoming["result"][0]["from"]["name"] == "caller"
+    assert [
+        item["start"] for item in incoming["result"][0]["fromRanges"]
+    ] == [
+        {"line": 1, "character": 14},
+        {"line": 1, "character": 23},
+    ]
+
+    caller_item = prepare(server, caller_uri, 1, 4, 21)["result"][0]
+    outgoing = server.handle(
+        request("callHierarchy/outgoingCalls", 22, {"item": caller_item})
+    )
+    assert outgoing is not None
+    assert len(outgoing["result"]) == 1
+    assert outgoing["result"][0]["to"]["name"] == "source"
+    assert len(outgoing["result"][0]["fromRanges"]) == 2

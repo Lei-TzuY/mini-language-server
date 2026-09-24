@@ -13,7 +13,7 @@ A function receives one moniker only when the current workspace index contains e
 
 The uniqueness claim is intentionally limited to the project. The server does not claim scheme-wide or global identity because Nova currently has no package/module namespace that could justify such a guarantee. The `local` kind likewise states only that the symbol is project-local; cross-file visibility inside the active project does not imply an exported external API.
 
-Unscoped sessions, documents outside configured workspace folders, ambiguous duplicate function names, non-function symbols, and unresolved calls return no moniker rather than guessing. This also keeps moniker semantics aligned with the existing conservative workspace navigation model.
+Unscoped sessions, documents outside configured workspace folders, ambiguous duplicate function names, non-function symbols, and unresolved calls return no moniker rather than guessing. A uniquely resolved selective-import alias reuses the canonical declaration's project moniker and identifier rather than minting a second identity for the local binding. This also keeps moniker semantics aligned with the existing conservative workspace navigation model.
 
 The request captures three independent generations before publication: the exact document semantic snapshot, the complete workspace symbol snapshot set, and the workspace-folder snapshot. Any same-version semantic replacement, cross-file symbol change, folder add/remove, close/reopen transition, or other captured-generation drift rejects publication with LSP `Content modified`. Normal request cancellation returns `Request cancelled`.
 

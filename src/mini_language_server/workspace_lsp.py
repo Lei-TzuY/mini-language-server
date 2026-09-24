@@ -1516,12 +1516,23 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     continue
                 target_visible = exported(target, next_visiting)
                 if item.has_name_list:
-                    selected = {name.name for name in item.names}
-                    target_visible = {
-                        name: declarations
-                        for name, declarations in target_visible.items()
-                        if name in selected
-                    }
+                    if any(selected.alias is not None for selected in item.names):
+                        target_visible = merge_maps(
+                            tuple(
+                                {
+                                    selected.binding_name: target_visible[selected.name]
+                                }
+                                for selected in item.names
+                                if selected.name in target_visible
+                            )
+                        )
+                    else:
+                        selected_names = {selected.name for selected in item.names}
+                        target_visible = {
+                            name: declarations
+                            for name, declarations in target_visible.items()
+                            if name in selected_names
+                        }
                 imported_maps.append(target_visible)
 
             imported = merge_maps(tuple(imported_maps))
@@ -1548,6 +1559,25 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         name: str,
     ) -> tuple[WorkspaceDeclaration, ...]:
         return cls._nova_visible_function_map(importer, snapshots).get(name, ())
+
+    @classmethod
+    def _nova_binding_names_for_declaration(
+        cls,
+        importer: SemanticSnapshot,
+        snapshots: tuple[SemanticSnapshot, ...],
+        declaration: WorkspaceDeclaration,
+    ) -> tuple[str, ...]:
+        """Return unique importer-local names that resolve to one declaration."""
+        visible = cls._nova_visible_function_map(importer, snapshots)
+        return tuple(
+            sorted(
+                name
+                for name, candidates in visible.items()
+                if len(candidates) == 1
+                and candidates[0].snapshot is declaration.snapshot
+                and candidates[0].symbol is declaration.symbol
+            )
+        )
 
     @classmethod
     def _nova_import_diagnostics(
@@ -1616,17 +1646,18 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
             seen_imports: set[str] = set()
             for selected in item.names:
-                if selected.name in seen_imports:
+                binding_name = selected.binding_name
+                if binding_name in seen_imports:
                     diagnostics.append(
                         Diagnostic(
-                            selected.span,
-                            f"duplicate imported function '{selected.name}'",
+                            selected.binding_span,
+                            f"duplicate imported binding '{binding_name}'",
                             code="nova.duplicate-import-name",
                             source="nova",
                         )
                     )
                     continue
-                seen_imports.add(selected.name)
+                seen_imports.add(binding_name)
 
                 candidates = target_visible.get(selected.name, ())
                 if not candidates:
@@ -2046,14 +2077,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(tree, NovaFunctionSyntax):
             return None
 
+        for call_name, span in tree.calls:
+            if span.start <= offset < span.end:
+                return semantics, call_name
         target = semantics.definition_at(offset)
         if target is not None:
             if target.kind != "function":
                 return None
             return semantics, target.name
-        for call_name, span in tree.calls:
-            if span.start <= offset < span.end:
-                return semantics, call_name
         return None
 
     def _handle_nova_document_links(
@@ -2146,10 +2177,19 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
         try:
             self.requests.checkpoint(context)
-            result = self._project_function_moniker(
+            declarations = self._nova_visible_function_declarations(
+                semantics,
+                snapshots,
                 name,
-                snapshots=snapshots,
-                folder_scope=folder_scope,
+            )
+            result = (
+                []
+                if len(declarations) != 1
+                else self._project_function_moniker(
+                    declarations[0],
+                    snapshots=snapshots,
+                    folder_scope=folder_scope,
+                )
             )
             self.requests.checkpoint(context)
 
@@ -2179,21 +2219,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def _project_function_moniker(
         self,
-        name: str,
+        declaration: WorkspaceDeclaration,
         *,
         snapshots: Any,
         folder_scope: WorkspaceFolderSnapshot,
     ) -> list[dict[str, str]]:
         """Return one conservative project-level moniker for an exact function."""
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
-        if len(declarations) != 1:
-            return []
-
-        declaration = declarations[0]
         if not any(snapshot is declaration.snapshot for snapshot in snapshots):
             return []
         project_uri = folder_scope.scope_uri_for(declaration.uri)
@@ -2203,7 +2234,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         return [
             {
                 "scheme": "nova",
-                "identifier": name,
+                "identifier": declaration.symbol.name,
                 "unique": "project",
                 "kind": "local",
             }
@@ -2233,9 +2264,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 (symbol.name, symbol.kind) for symbol in semantics.symbols.symbols
             }
             visible = self._nova_visible_function_map(semantics, snapshots)
-            for declarations in visible.values():
+            for binding_name, declarations in visible.items():
                 for declaration in declarations:
-                    items.add((declaration.symbol.name, declaration.symbol.kind))
+                    items.add((binding_name, declaration.symbol.kind))
 
             result = [
                 {"label": name, "detail": kind}
@@ -2402,24 +2433,19 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def _incoming_calls(self, declaration: Any, snapshots: tuple[Any, ...]) -> list[dict[str, Any]]:
         grouped: dict[tuple[str, int], tuple[Any, list[Span]]] = {}
-        target_name = declaration.symbol.name
         for snapshot in snapshots:
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
                 continue
-            resolved = self._nova_visible_function_declarations(
+            bindings = self._nova_binding_names_for_declaration(
                 snapshot,
                 snapshots,
-                target_name,
+                declaration,
             )
-            if (
-                len(resolved) != 1
-                or resolved[0].snapshot is not declaration.snapshot
-                or resolved[0].symbol is not declaration.symbol
-            ):
+            if not bindings:
                 continue
             for call_name, span in tree.calls:
-                if call_name != target_name:
+                if call_name not in bindings:
                     continue
                 caller = self._owning_function_declaration(snapshot, span.start)
                 if caller is None:
@@ -2608,20 +2634,16 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     snapshot_tree = snapshot.symbols.syntax.tree
                     if not isinstance(snapshot_tree, NovaFunctionSyntax):
                         continue
-                    resolved = self._nova_visible_function_declarations(
+                    bindings = self._nova_binding_names_for_declaration(
                         snapshot,
                         snapshots,
-                        name,
+                        declaration,
                     )
-                    if (
-                        len(resolved) != 1
-                        or resolved[0].snapshot is not declaration.snapshot
-                        or resolved[0].symbol is not declaration.symbol
-                    ):
+                    if not bindings:
                         continue
                     source = self._source_text(snapshot.symbols.syntax.document.text)
                     for call_name, span in snapshot_tree.calls:
-                        if call_name == name:
+                        if call_name in bindings:
                             locations.append(
                                 (
                                     snapshot.uri,
@@ -2687,7 +2709,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         try:
             self.requests.checkpoint(context)
             result: Any = None
-            if len(declarations) == 1:
+            if (
+                len(declarations) == 1
+                and declarations[0].symbol.name == name
+            ):
                 result = {
                     "range": self._range(source, call_span),
                     "placeholder": name,

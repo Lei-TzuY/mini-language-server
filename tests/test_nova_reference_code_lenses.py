@@ -550,3 +550,42 @@ def test_workspace_folder_add_requests_code_lens_refresh_and_expands_counts() ->
         lens_request_id=4,
         resolve_request_id=5,
     ) == "1 reference"
+
+def test_reference_code_lens_counts_aliased_calls() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    caller_uri = "file:///workspace/caller.nova"
+    open_nova(server, provider_uri, "fn source() {}\n")
+    open_nova(
+        server,
+        caller_uri,
+        (
+            "import { source as local } from ./provider.nova;\n"
+            "fn caller() { local(); local(); }\n"
+        ),
+    )
+
+    lens = lenses(server, provider_uri, 30)["result"][0]
+    resolved = resolve_lens(server, lens, 31)["result"]
+    assert resolved["command"]["title"] == "2 references"
+
+    locations = server.handle(
+        request(
+            "workspace/executeCommand",
+            32,
+            {
+                "command": resolved["command"]["command"],
+                "arguments": resolved["command"]["arguments"],
+            },
+        )
+    )
+    assert locations is not None
+    assert [item["uri"] for item in locations["result"]] == [
+        caller_uri,
+        caller_uri,
+    ]
+    assert [item["range"]["start"] for item in locations["result"]] == [
+        {"line": 1, "character": 14},
+        {"line": 1, "character": 23},
+    ]

@@ -32,6 +32,10 @@ _SELECTIVE_IMPORT_DECLARATION = re.compile(
     r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
 )
 _IMPORT_NAME = re.compile(rf"(?:^|,)[ \t]*({_IDENTIFIER})[ \t]*(?=,|$)")
+_ALIASED_IMPORT_NAME = re.compile(
+    rf"(?:^|,)[ \t]*({_IDENTIFIER})(?:[ \t]+as[ \t]+({_IDENTIFIER}))?[ \t]*(?=,|$)"
+)
+_IMPORT_ALIAS_MARKER = re.compile(r"[ \t]+as[ \t]+")
 _EXPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*export[ \t]*\{([^}\r\n]*)\}[ \t]*;?[ \t]*\r?$"
 )
@@ -56,10 +60,22 @@ class NovaScopedName:
 
 @dataclass(frozen=True, slots=True)
 class NovaImportNameSyntax:
-    """One exact selected function name in a relative Nova import."""
+    """One exact selected function name and optional importer-local alias."""
 
     name: str
     span: Span
+    alias: str | None = None
+    alias_span: Span | None = None
+
+    @property
+    def binding_name(self) -> str:
+        """Return the importer-local spelling for this selected declaration."""
+        return self.alias or self.name
+
+    @property
+    def binding_span(self) -> Span:
+        """Return the exact syntax span that owns the importer-local spelling."""
+        return self.alias_span or self.span
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,8 +185,25 @@ class NovaFunctionAdapter:
                             declaration.start(1) + name.start(1),
                             declaration.start(1) + name.end(1),
                         ),
+                        alias=(
+                            name.group(2)
+                            if name.re is _ALIASED_IMPORT_NAME
+                            else None
+                        ),
+                        alias_span=(
+                            None
+                            if name.re is _IMPORT_NAME or name.group(2) is None
+                            else Span(
+                                declaration.start(1) + name.start(2),
+                                declaration.start(1) + name.end(2),
+                            )
+                        ),
                     )
-                    for name in _IMPORT_NAME.finditer(declaration.group(1))
+                    for name in (
+                        _ALIASED_IMPORT_NAME.finditer(declaration.group(1))
+                        if _IMPORT_ALIAS_MARKER.search(declaration.group(1))
+                        else _IMPORT_NAME.finditer(declaration.group(1))
+                    )
                 ),
                 has_name_list=True,
             )

@@ -8,6 +8,7 @@ from .cancellation import RequestCancelled, RequestError, StaleRequest
 from .code_lenses import NovaProductLanguageServer as _NovaProductLanguageServer
 from .nova import NovaFunctionSyntax
 from .workspace import WorkspaceIndexError
+from .workspace_folders import WorkspaceFolderSet
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -47,6 +48,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 except WorkspaceIndexError:
                     return self._error(request_id, -32801, "Content modified")
 
+            declaration = declarations[0]
+            if declaration.symbol.name != name:
+                try:
+                    return self.workspace_symbols.commit_snapshots_if_current(
+                        snapshots, lambda: self._result(request_id, None)
+                    )
+                except WorkspaceIndexError:
+                    return self._error(request_id, -32801, "Content modified")
+
             if new_name == name:
                 self.requests.checkpoint(context)
                 try:
@@ -77,8 +87,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 except WorkspaceIndexError:
                     return self._error(request_id, -32801, "Content modified")
 
-            declaration = declarations[0]
             edits_by_uri: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+            indexed = {
+                WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
+                for snapshot in snapshots
+            }
             declaration_source = self._source_text(
                 declaration.snapshot.symbols.syntax.document.text
             )
@@ -98,25 +111,93 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 snapshot_tree = snapshot.symbols.syntax.tree
                 if not isinstance(snapshot_tree, NovaFunctionSyntax):
                     continue
+                source = self._source_text(snapshot.symbols.syntax.document.text)
+
                 resolved = self._nova_visible_function_declarations(
                     snapshot,
                     snapshots,
                     name,
                 )
                 if (
-                    len(resolved) != 1
-                    or resolved[0].snapshot is not declaration.snapshot
-                    or resolved[0].symbol is not declaration.symbol
+                    len(resolved) == 1
+                    and resolved[0].snapshot is declaration.snapshot
+                    and resolved[0].symbol is declaration.symbol
                 ):
-                    continue
-                source = self._source_text(snapshot.symbols.syntax.document.text)
-                for call_name, span in snapshot_tree.calls:
-                    if call_name != name:
+                    for call_name, span in snapshot_tree.calls:
+                        if call_name != name:
+                            continue
+                        edits_by_uri.setdefault(snapshot.uri, []).append(
+                            (
+                                span.start,
+                                {
+                                    "range": self._range(source, span),
+                                    "newText": new_name,
+                                },
+                            )
+                        )
+
+                for imported in snapshot_tree.imports:
+                    if not imported.has_name_list:
+                        continue
+                    target_uri = self._nova_import_target_uri(
+                        snapshot.uri,
+                        imported.path,
+                    )
+                    if target_uri is None:
+                        continue
+                    target = indexed.get(
+                        WorkspaceFolderSet.uri_identity(target_uri)
+                    )
+                    if target is None:
+                        continue
+                    target_visible = self._nova_visible_function_map(
+                        target,
+                        snapshots,
+                        legacy_global=False,
+                        respect_root_exports=True,
+                    )
+                    for selected in imported.names:
+                        if selected.name != name:
+                            continue
+                        candidates = target_visible.get(selected.name, ())
+                        if (
+                            len(candidates) != 1
+                            or candidates[0].snapshot is not declaration.snapshot
+                            or candidates[0].symbol is not declaration.symbol
+                        ):
+                            continue
+                        edits_by_uri.setdefault(snapshot.uri, []).append(
+                            (
+                                selected.span.start,
+                                {
+                                    "range": self._range(source, selected.span),
+                                    "newText": new_name,
+                                },
+                            )
+                        )
+
+                visible_before_exports = self._nova_visible_function_map(
+                    snapshot,
+                    snapshots,
+                    legacy_global=False,
+                )
+                for exported in snapshot_tree.exports:
+                    if exported.name != name:
+                        continue
+                    candidates = visible_before_exports.get(exported.name, ())
+                    if (
+                        len(candidates) != 1
+                        or candidates[0].snapshot is not declaration.snapshot
+                        or candidates[0].symbol is not declaration.symbol
+                    ):
                         continue
                     edits_by_uri.setdefault(snapshot.uri, []).append(
                         (
-                            span.start,
-                            {"range": self._range(source, span), "newText": new_name},
+                            exported.span.start,
+                            {
+                                "range": self._range(source, exported.span),
+                                "newText": new_name,
+                            },
                         )
                     )
 
