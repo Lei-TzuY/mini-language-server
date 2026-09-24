@@ -2169,10 +2169,19 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
         try:
             self.requests.checkpoint(context)
-            result = self._project_function_moniker(
+            declarations = self._nova_visible_function_declarations(
+                semantics,
+                snapshots,
                 name,
-                snapshots=snapshots,
-                folder_scope=folder_scope,
+            )
+            result = (
+                []
+                if len(declarations) != 1
+                else self._project_function_moniker(
+                    declarations[0],
+                    snapshots=snapshots,
+                    folder_scope=folder_scope,
+                )
             )
             self.requests.checkpoint(context)
 
@@ -2202,21 +2211,12 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def _project_function_moniker(
         self,
-        name: str,
+        declaration: WorkspaceDeclaration,
         *,
         snapshots: Any,
         folder_scope: WorkspaceFolderSnapshot,
     ) -> list[dict[str, str]]:
         """Return one conservative project-level moniker for an exact function."""
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(name)
-            if declaration.symbol.kind == "function"
-        )
-        if len(declarations) != 1:
-            return []
-
-        declaration = declarations[0]
         if not any(snapshot is declaration.snapshot for snapshot in snapshots):
             return []
         project_uri = folder_scope.scope_uri_for(declaration.uri)
@@ -2226,7 +2226,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         return [
             {
                 "scheme": "nova",
-                "identifier": name,
+                "identifier": declaration.symbol.name,
                 "unique": "project",
                 "kind": "local",
             }
