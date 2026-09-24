@@ -136,12 +136,9 @@ class NovaProductLanguageServer(SemanticTokenDeltaMixin, _NovaProductLanguageSer
                 }
                 and not self._is_literal_unresolved_name(text, diagnostic)
             ]
+            visible = self._nova_visible_function_map(snapshot, snapshots)
             for name, span in tree.calls:
-                declarations = tuple(
-                    declaration
-                    for declaration in self.workspace_symbols.declarations(name)
-                    if declaration.symbol.kind == "function"
-                )
+                declarations = visible.get(name, ())
                 if len(declarations) == 0:
                     diagnostics.append(
                         Diagnostic(
