@@ -523,15 +523,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     stale_mutation_inputs = True
                     return None
                 self.requests.checkpoint(context)
-                if not import_changes:
-                    return self._result(request_id, None)
-                versions = self._workspace_edit_versions(tuple(captured_workspace))
-                workspace_edit = self._workspace_edit(
-                    import_changes,
-                    versions=versions,
-                    annotation_label="Update Nova imports for file rename",
-                )
-                return self._result(request_id, workspace_edit)
+                return self._result(request_id, None)
 
             try:
                 response = self.documents.commit_matching_if_current(
