@@ -449,6 +449,7 @@ def test_workspace_folder_change_requests_semantic_token_refresh() -> None:
     assert len(refresh) == 1
     assert refresh[0]["method"] == "workspace/semanticTokens/refresh"
 
+
 def test_function_semantic_tokens_follow_transitive_import_visibility() -> None:
     server = NovaProductLanguageServer()
     legend = initialize(server, modifiers=[])
