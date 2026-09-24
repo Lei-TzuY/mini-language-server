@@ -21,6 +21,10 @@ _FUNCTION_DECLARATION = re.compile(
     rf"\bfn\s+({_IDENTIFIER})\s*\(([^)]*)\)\s*(?:->\s*{_SIMPLE_TYPE_REF}\s*)?\{{"
 )
 _CALL = re.compile(rf"\b({_IDENTIFIER})\s*(?=\()")
+_IMPORT_DECLARATION = re.compile(
+    r"(?m)^[ \t]*import[ \t]+((?:\./|\.\./)(?:[A-Za-z0-9_.~%+-]+/)*"
+    r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*$"
+)
 _IDENTIFIER_MATCH = re.compile(rf"\b({_IDENTIFIER})\b")
 _PARAMETER_PART = re.compile(r"[^,]+")
 _PARAMETER = re.compile(
@@ -40,11 +44,20 @@ class NovaScopedName:
 
 
 @dataclass(frozen=True, slots=True)
+class NovaImportSyntax:
+    """One exact URI-relative Nova file dependency declaration."""
+
+    path: str
+    span: Span
+
+
+@dataclass(frozen=True, slots=True)
 class NovaFunctionSyntax:
     """Immutable syntax payload for Nova functions, calls, parameters, and locals."""
 
     declarations: tuple[tuple[str, Span], ...]
     calls: tuple[tuple[str, Span], ...]
+    imports: tuple[NovaImportSyntax, ...] = ()
     parameters: tuple[NovaScopedName, ...] = ()
     parameter_references: tuple[NovaScopedName, ...] = ()
     locals: tuple[NovaScopedName, ...] = ()
@@ -101,6 +114,13 @@ class NovaFunctionAdapter:
     @classmethod
     def parse(cls, text: str) -> NovaFunctionSyntax:
         declarations: list[tuple[str, Span]] = []
+        imports = tuple(
+            NovaImportSyntax(
+                match.group(1),
+                Span(match.start(1), match.end(1)),
+            )
+            for match in _IMPORT_DECLARATION.finditer(text)
+        )
         parameters: list[NovaScopedName] = []
         parameter_references: list[NovaScopedName] = []
         locals_: list[NovaScopedName] = []
@@ -187,6 +207,7 @@ class NovaFunctionAdapter:
         return NovaFunctionSyntax(
             declarations=tuple(declarations),
             calls=calls,
+            imports=imports,
             parameters=tuple(parameters),
             parameter_references=tuple(parameter_references),
             locals=tuple(locals_),
