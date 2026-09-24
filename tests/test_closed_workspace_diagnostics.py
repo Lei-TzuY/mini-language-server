@@ -2427,3 +2427,64 @@ def test_closed_scalar_diagnostics_match_live_analyzer_results(
     ]
 
     assert live_scalar == closed_scalar
+
+
+def test_closed_import_cycle_reports_related_continuation(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.nova"
+    second = tmp_path / "second.nova"
+    first.write_text(
+        "import ./second.nova;\nfn first() {}\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        "import ./first.nova;\nfn second() {}\n",
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path, related_information=True)
+
+    reports = reports_by_uri(workspace_diagnostics(server))
+    first_uri = first.absolute().as_uri()
+    second_uri = second.absolute().as_uri()
+    first_cycle = [
+        item
+        for item in reports[first_uri]["items"]
+        if item["code"] == "nova.import-cycle"
+    ]
+    second_cycle = [
+        item
+        for item in reports[second_uri]["items"]
+        if item["code"] == "nova.import-cycle"
+    ]
+
+    assert reports[first_uri]["version"] is None
+    assert reports[second_uri]["version"] is None
+    assert len(first_cycle) == 1
+    assert len(second_cycle) == 1
+    assert first_cycle[0]["message"] == "import cycle includes './second.nova'"
+    assert second_cycle[0]["message"] == "import cycle includes './first.nova'"
+    assert first_cycle[0]["relatedInformation"] == [
+        {
+            "location": {
+                "uri": second_uri,
+                "range": {
+                    "start": {"line": 0, "character": 7},
+                    "end": {"line": 0, "character": 19},
+                },
+            },
+            "message": "import cycle continues through './first.nova'",
+        }
+    ]
+    assert second_cycle[0]["relatedInformation"] == [
+        {
+            "location": {
+                "uri": first_uri,
+                "range": {
+                    "start": {"line": 0, "character": 7},
+                    "end": {"line": 0, "character": 20},
+                },
+            },
+            "message": "import cycle continues through './second.nova'",
+        }
+    ]
