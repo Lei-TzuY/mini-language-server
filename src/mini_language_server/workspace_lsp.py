@@ -1399,41 +1399,67 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
             for snapshot in snapshots
         }
-        importer_identity = WorkspaceFolderSet.uri_identity(importer.uri)
-        visited = {importer_identity}
-        pending = [importer]
-        reachable: dict[tuple[str, str, str], SemanticSnapshot] = {}
 
-        while pending:
-            current = pending.pop()
-            current_tree = current.symbols.syntax.tree
-            if not isinstance(current_tree, NovaFunctionSyntax):
-                continue
-            for item in current_tree.imports:
-                target_uri = cls._nova_import_target_uri(current.uri, item.path)
+        def merge_maps(
+            maps: tuple[dict[str, tuple[WorkspaceDeclaration, ...]], ...],
+        ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
+            grouped: dict[str, list[WorkspaceDeclaration]] = {}
+            for visible in maps:
+                for name, declarations in visible.items():
+                    bucket = grouped.setdefault(name, [])
+                    for declaration in declarations:
+                        if any(
+                            existing.snapshot is declaration.snapshot
+                            and existing.symbol is declaration.symbol
+                            for existing in bucket
+                        ):
+                            continue
+                        bucket.append(declaration)
+            return {
+                name: tuple(
+                    sorted(
+                        declarations,
+                        key=lambda item: (
+                            item.uri,
+                            item.symbol.span.start,
+                            item.symbol.span.end,
+                        ),
+                    )
+                )
+                for name, declarations in grouped.items()
+            }
+
+        def exported(
+            snapshot: SemanticSnapshot,
+            visiting: frozenset[Any],
+        ) -> dict[str, tuple[WorkspaceDeclaration, ...]]:
+            identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
+            local = declaration_map((snapshot,))
+            if identity in visiting:
+                return local
+
+            snapshot_tree = snapshot.symbols.syntax.tree
+            if not isinstance(snapshot_tree, NovaFunctionSyntax):
+                return local
+            if not snapshot_tree.imports:
+                return local
+
+            next_visiting = visiting | {identity}
+            imported_maps: list[dict[str, tuple[WorkspaceDeclaration, ...]]] = []
+            for item in snapshot_tree.imports:
+                target_uri = cls._nova_import_target_uri(snapshot.uri, item.path)
                 if target_uri is None:
                     continue
-                identity = WorkspaceFolderSet.uri_identity(target_uri)
-                target = indexed.get(identity)
-                if target is None or identity in visited:
+                target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
+                if target is None:
                     continue
-                visited.add(identity)
-                reachable[identity] = target
-                pending.append(target)
+                imported_maps.append(exported(target, next_visiting))
 
-        imported = declaration_map(
-            tuple(
-                snapshot
-                for _, snapshot in sorted(
-                    reachable.items(),
-                    key=lambda item: item[1].uri,
-                )
-            )
-        )
-        local = declaration_map((importer,))
-        result = dict(imported)
-        result.update(local)
-        return result
+            imported = merge_maps(tuple(imported_maps))
+            imported.update(local)
+            return imported
+
+        return exported(importer, frozenset())
 
     @classmethod
     def _nova_visible_function_declarations(
