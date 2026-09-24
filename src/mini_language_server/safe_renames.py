@@ -532,11 +532,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         query = self._workspace_function_query(params)
         if query is None:
             return None
-        semantics, name = query
+        semantics, query_name = query
         declarations = self._nova_visible_function_declarations(
             semantics,
             snapshots,
-            name,
+            query_name,
         )
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
@@ -554,7 +554,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                     return self._error(request_id, -32801, "Content modified")
 
             declaration = declarations[0]
-            if declaration.symbol.name != name:
+            name = declaration.symbol.name
+            if "::" in query_name:
+                if query_name.rsplit("::", 1)[1] != name:
+                    try:
+                        return self.workspace_symbols.commit_snapshots_if_current(
+                            snapshots, lambda: self._result(request_id, None)
+                        )
+                    except WorkspaceIndexError:
+                        return self._error(request_id, -32801, "Content modified")
+            elif name != query_name:
                 try:
                     return self.workspace_symbols.commit_snapshots_if_current(
                         snapshots, lambda: self._result(request_id, None)
@@ -640,6 +649,32 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                                 },
                             )
                         )
+
+                for call_name, span in snapshot_tree.calls:
+                    if "::" not in call_name:
+                        continue
+                    if call_name.rsplit("::", 1)[1] != name:
+                        continue
+                    qualified = self._nova_visible_function_declarations(
+                        snapshot,
+                        snapshots,
+                        call_name,
+                    )
+                    if (
+                        len(qualified) != 1
+                        or qualified[0].snapshot is not declaration.snapshot
+                        or qualified[0].symbol is not declaration.symbol
+                    ):
+                        continue
+                    edits_by_uri.setdefault(snapshot.uri, []).append(
+                        (
+                            span.start,
+                            {
+                                "range": self._range(source, span),
+                                "newText": new_name,
+                            },
+                        )
+                    )
 
                 for imported in snapshot_tree.imports:
                     if not imported.has_name_list:
