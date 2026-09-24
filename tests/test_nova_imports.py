@@ -395,6 +395,46 @@ def test_will_rename_preserves_workspace_root_import_spelling(
     ]
 
 
+def test_will_rename_preserves_closed_workspace_root_import_with_null_version(
+    tmp_path: Path,
+) -> None:
+    importer = tmp_path / "main.nova"
+    target = tmp_path / "dep.nova"
+    importer.write_text("import @/dep.nova;\nfn main() {}\n")
+    target.write_text("fn dep() {}\n")
+    new_target = tmp_path / "renamed.nova"
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        folders=[{"uri": tmp_path.as_uri(), "name": "workspace"}],
+        will_rename=True,
+        document_changes=True,
+    )
+
+    response = will_rename(
+        server,
+        target.as_uri(),
+        new_target.as_uri(),
+        request_id=202,
+    )
+
+    assert response is not None
+    assert response["result"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": importer.as_uri(), "version": None},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": 7},
+                        "end": {"line": 0, "character": 17},
+                    },
+                    "newText": "@/renamed.nova",
+                }
+            ],
+        }
+    ]
+
+
 def test_will_rename_rewrites_closed_import_with_null_version(tmp_path: Path) -> None:
     importer = tmp_path / "main.nova"
     target = tmp_path / "dep.nova"
