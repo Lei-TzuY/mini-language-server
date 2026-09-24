@@ -1066,6 +1066,46 @@ def test_exported_alias_rename_rejects_downstream_binding_collision() -> None:
     }
 
 
+def test_exported_alias_rename_rejects_bare_import_binding_collision() -> None:
+    server = initialized_server()
+    provider_uri = "file:///workspace/provider.nova"
+    middle_uri = "file:///workspace/middle.nova"
+    consumer_uri = "file:///workspace/consumer.nova"
+    open_nova(server, provider_uri, "fn source() {}\n")
+    middle = (
+        "import { source as public } from ./provider.nova;\n"
+        "export { public };\n"
+        "fn middle() { public(); }\n"
+    )
+    consumer = (
+        "import ./middle.nova;\n"
+        "fn renamed() {}\n"
+        "fn consumer() { public(); }\n"
+    )
+    open_nova(server, middle_uri, middle)
+    open_nova(server, consumer_uri, consumer)
+
+    response = server.handle(
+        request(
+            "textDocument/rename",
+            1051,
+            {
+                "textDocument": {"uri": middle_uri},
+                "position": position(middle, "public();", delta=1),
+                "newName": "renamed",
+            },
+        )
+    )
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 1051,
+        "error": {
+            "code": -32803,
+            "message": "Rename would conflict with existing binding 'renamed'",
+        },
+    }
+
+
 def test_exported_alias_rename_versions_closed_downstream_as_null(
     tmp_path: Path,
 ) -> None:
