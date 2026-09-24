@@ -1516,15 +1516,23 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     continue
                 target_visible = exported(target, next_visiting)
                 if item.has_name_list:
-                    target_visible = merge_maps(
-                        tuple(
-                            {
-                                selected.binding_name: target_visible[selected.name]
-                            }
-                            for selected in item.names
-                            if selected.name in target_visible
+                    if any(selected.alias is not None for selected in item.names):
+                        target_visible = merge_maps(
+                            tuple(
+                                {
+                                    selected.binding_name: target_visible[selected.name]
+                                }
+                                for selected in item.names
+                                if selected.name in target_visible
+                            )
                         )
-                    )
+                    else:
+                        selected_names = {selected.name for selected in item.names}
+                        target_visible = {
+                            name: declarations
+                            for name, declarations in target_visible.items()
+                            if name in selected_names
+                        }
                 imported_maps.append(target_visible)
 
             imported = merge_maps(tuple(imported_maps))
@@ -2069,14 +2077,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not isinstance(tree, NovaFunctionSyntax):
             return None
 
+        for call_name, span in tree.calls:
+            if span.start <= offset < span.end:
+                return semantics, call_name
         target = semantics.definition_at(offset)
         if target is not None:
             if target.kind != "function":
                 return None
             return semantics, target.name
-        for call_name, span in tree.calls:
-            if span.start <= offset < span.end:
-                return semantics, call_name
         return None
 
     def _handle_nova_document_links(
@@ -2256,9 +2264,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 (symbol.name, symbol.kind) for symbol in semantics.symbols.symbols
             }
             visible = self._nova_visible_function_map(semantics, snapshots)
-            for declarations in visible.values():
+            for binding_name, declarations in visible.items():
                 for declaration in declarations:
-                    items.add((declaration.symbol.name, declaration.symbol.kind))
+                    items.add((binding_name, declaration.symbol.kind))
 
             result = [
                 {"label": name, "detail": kind}
