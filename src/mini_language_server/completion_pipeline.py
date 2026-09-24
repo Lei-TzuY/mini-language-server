@@ -401,10 +401,14 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             prefix = self._completion_identifier_prefix(code, offset)
             raw_namespace = self._completion_namespace_context(code, span.start)
             tree = semantics.symbols.syntax.tree
+            import_namespaces = (
+                self._completion_import_namespaces(tree)
+                if isinstance(tree, NovaFunctionSyntax)
+                else frozenset()
+            )
             namespace = (
                 raw_namespace
-                if isinstance(tree, NovaFunctionSyntax)
-                and self._completion_import_namespace(tree, raw_namespace)
+                if raw_namespace in import_namespaces
                 else None
             )
             invalid_qualified = (
@@ -426,6 +430,7 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
                 else self._completion_namespace_items(
                     response["result"],
                     namespace,
+                    import_namespaces,
                 )
             )
 
@@ -531,8 +536,9 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
     def _completion_namespace_items(
         items: list[Any],
         namespace: str | None,
+        import_namespaces: frozenset[str],
     ) -> list[Any]:
-        """Project qualified workspace candidates into one member-only completion view."""
+        """Project only importer namespace bindings while preserving other qualified items."""
         projected: list[Any] = []
         namespace_prefix = None if namespace is None else f"{namespace}::"
         for item in items:
@@ -542,7 +548,8 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
             if not isinstance(label, str):
                 continue
             if namespace_prefix is None:
-                if "::" in label:
+                qualifier, separator, _ = label.partition("::")
+                if separator and qualifier in import_namespaces:
                     continue
                 projected.append(item)
                 continue
@@ -556,20 +563,28 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
         return projected
 
     @staticmethod
+    def _completion_import_namespaces(
+        tree: NovaFunctionSyntax,
+    ) -> frozenset[str]:
+        counts: dict[str, int] = {}
+        for imported in tree.imports:
+            namespace = imported.namespace
+            if namespace is None or namespace in {"Int", "UInt"}:
+                continue
+            counts[namespace] = counts.get(namespace, 0) + 1
+        return frozenset(
+            namespace
+            for namespace, count in counts.items()
+            if count == 1
+        )
+
+    @classmethod
     def _completion_import_namespace(
+        cls,
         tree: NovaFunctionSyntax,
         namespace: str | None,
     ) -> bool:
-        if namespace is None or namespace in {"Int", "UInt"}:
-            return False
-        return (
-            sum(
-                1
-                for imported in tree.imports
-                if imported.namespace == namespace
-            )
-            == 1
-        )
+        return namespace in cls._completion_import_namespaces(tree)
 
     @classmethod
     def _completion_namespace_context(
