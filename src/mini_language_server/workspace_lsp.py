@@ -1323,37 +1323,75 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             raise SemanticError("detached Nova diagnostics failed to publish")
         return semantic, diagnostics
 
-    @staticmethod
-    def _nova_import_target_uri(importer_uri: str, path: str) -> str | None:
-        """Resolve one bounded URI-relative Nova import without filesystem guesses."""
-        if not (path.startswith("./") or path.startswith("../")):
-            return None
+    def _nova_import_target_uri(self, importer_uri: str, path: str) -> str | None:
+        """Resolve one bounded relative or workspace-root Nova file import."""
         if not path.endswith(".nova"):
             return None
         try:
             importer = urllib.parse.urlsplit(importer_uri)
-            target_uri = urllib.parse.urljoin(importer_uri, path)
-            target = urllib.parse.urlsplit(target_uri)
         except ValueError:
             return None
         if (
             importer.scheme.lower() != "file"
-            or target.scheme.lower() != "file"
             or importer.query
             or importer.fragment
-            or target.query
-            or target.fragment
         ):
             return None
+
+        if path.startswith("@/"):
+            relative = path[2:]
+            if not relative:
+                return None
+            if any(
+                urllib.parse.unquote(segment) in {".", ".."}
+                for segment in relative.split("/")
+            ):
+                return None
+            folder_uri = self.workspace_folders.scope_uri_for(importer_uri)
+            if folder_uri is None:
+                return None
+            try:
+                folder = urllib.parse.urlsplit(folder_uri)
+                target_uri = urllib.parse.urljoin(
+                    folder_uri.rstrip("/") + "/",
+                    relative,
+                )
+                target = urllib.parse.urlsplit(target_uri)
+            except ValueError:
+                return None
+            if (
+                folder.scheme.lower() != "file"
+                or folder.query
+                or folder.fragment
+                or target.scheme.lower() != "file"
+                or target.query
+                or target.fragment
+                or not WorkspaceFolderSet._contains(folder_uri, target_uri)
+            ):
+                return None
+        elif path.startswith("./") or path.startswith("../"):
+            try:
+                target_uri = urllib.parse.urljoin(importer_uri, path)
+                target = urllib.parse.urlsplit(target_uri)
+            except ValueError:
+                return None
+            if (
+                target.scheme.lower() != "file"
+                or target.query
+                or target.fragment
+            ):
+                return None
+        else:
+            return None
+
         importer_identity = WorkspaceFolderSet.uri_identity(importer_uri)
         target_identity = WorkspaceFolderSet.uri_identity(target_uri)
         if importer_identity[:2] != target_identity[:2]:
             return None
         return target_uri
 
-    @classmethod
     def _nova_visible_function_map(
-        cls,
+        self,
         importer: SemanticSnapshot,
         snapshots: tuple[SemanticSnapshot, ...],
         *,
@@ -1510,7 +1548,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             next_visiting = visiting | {identity}
             imported_maps: list[dict[str, tuple[WorkspaceDeclaration, ...]]] = []
             for item in snapshot_tree.imports:
-                target_uri = cls._nova_import_target_uri(snapshot.uri, item.path)
+                target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
                 if target_uri is None:
                     continue
                 target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
@@ -1553,24 +1591,22 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             include_private_local=True,
         )
 
-    @classmethod
     def _nova_visible_function_declarations(
-        cls,
+        self,
         importer: SemanticSnapshot,
         snapshots: tuple[SemanticSnapshot, ...],
         name: str,
     ) -> tuple[WorkspaceDeclaration, ...]:
-        return cls._nova_visible_function_map(importer, snapshots).get(name, ())
+        return self._nova_visible_function_map(importer, snapshots).get(name, ())
 
-    @classmethod
     def _nova_binding_names_for_declaration(
-        cls,
+        self,
         importer: SemanticSnapshot,
         snapshots: tuple[SemanticSnapshot, ...],
         declaration: WorkspaceDeclaration,
     ) -> tuple[str, ...]:
         """Return unique importer-local names that resolve to one declaration."""
-        visible = cls._nova_visible_function_map(importer, snapshots)
+        visible = self._nova_visible_function_map(importer, snapshots)
         return tuple(
             sorted(
                 name
@@ -1581,9 +1617,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             )
         )
 
-    @classmethod
     def _nova_import_alias_binding(
-        cls,
+        self,
         importer: SemanticSnapshot,
         snapshots: tuple[SemanticSnapshot, ...],
         binding_name: str,
@@ -1600,13 +1635,13 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for imported in tree.imports:
             if not imported.has_name_list:
                 continue
-            target_uri = cls._nova_import_target_uri(importer.uri, imported.path)
+            target_uri = self._nova_import_target_uri(importer.uri, imported.path)
             if target_uri is None:
                 continue
             target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
             if target is None:
                 continue
-            target_visible = cls._nova_visible_function_map(
+            target_visible = self._nova_visible_function_map(
                 target,
                 snapshots,
                 legacy_global=False,
@@ -1627,7 +1662,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return None
 
         selected, declaration = matches[0]
-        visible = cls._nova_visible_function_map(importer, snapshots)
+        visible = self._nova_visible_function_map(importer, snapshots)
         candidates = visible.get(binding_name, ())
         if (
             len(candidates) != 1
@@ -1637,9 +1672,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return None
         return selected, declaration
 
-    @classmethod
     def _nova_import_alias_target(
-        cls,
+        self,
         importer: SemanticSnapshot,
         snapshots: tuple[SemanticSnapshot, ...],
         offset: int,
@@ -1660,7 +1694,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     or not (alias_span.start <= offset < alias_span.end)
                 ):
                     continue
-                binding = cls._nova_import_alias_binding(
+                binding = self._nova_import_alias_binding(
                     importer,
                     snapshots,
                     selected.binding_name,
@@ -1672,7 +1706,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for call_name, span in tree.calls:
             if not (span.start <= offset < span.end):
                 continue
-            binding = cls._nova_import_alias_binding(
+            binding = self._nova_import_alias_binding(
                 importer,
                 snapshots,
                 call_name,
@@ -1692,9 +1726,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return True
         return any(exported.name == binding_name for exported in tree.exports)
 
-    @classmethod
     def _nova_import_diagnostics(
-        cls,
+        self,
         snapshot: SemanticSnapshot,
         snapshots: Any,
     ) -> tuple[Diagnostic, ...]:
@@ -1709,7 +1742,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         }
         diagnostics: list[Diagnostic] = []
         for item in tree.imports:
-            target_uri = cls._nova_import_target_uri(snapshot.uri, item.path)
+            target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
             target = (
                 None
                 if target_uri is None
@@ -1728,7 +1761,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if not item.has_name_list:
                 continue
 
-            target_visible = cls._nova_visible_function_map(
+            target_visible = self._nova_visible_function_map(
                 target,
                 snapshot_tuple,
                 legacy_global=False,
@@ -1808,7 +1841,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if not tree.has_export_list:
             return tuple(diagnostics)
 
-        visible = cls._nova_visible_function_map(
+        visible = self._nova_visible_function_map(
             snapshot,
             snapshot_tuple,
             legacy_global=False,
@@ -1888,6 +1921,47 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 )
         return tuple(diagnostics)
 
+    def _nova_workspace_root_import_path(
+        self,
+        importer_uri: str,
+        target_uri: str,
+    ) -> str | None:
+        """Render one target relative to the importer's most-specific workspace root."""
+        folder_uri = self.workspace_folders.scope_uri_for(importer_uri)
+        if folder_uri is None or not WorkspaceFolderSet._contains(
+            folder_uri,
+            target_uri,
+        ):
+            return None
+        try:
+            folder = urllib.parse.urlsplit(folder_uri)
+            importer = urllib.parse.urlsplit(importer_uri)
+            target = urllib.parse.urlsplit(target_uri)
+        except ValueError:
+            return None
+        if (
+            folder.scheme.lower() != "file"
+            or importer.scheme.lower() != "file"
+            or target.scheme.lower() != "file"
+            or folder.query
+            or folder.fragment
+            or importer.query
+            or importer.fragment
+            or target.query
+            or target.fragment
+        ):
+            return None
+        importer_identity = WorkspaceFolderSet.uri_identity(importer_uri)
+        target_identity = WorkspaceFolderSet.uri_identity(target_uri)
+        if importer_identity[:2] != target_identity[:2]:
+            return None
+        root_path = WorkspaceFolderSet._normalized_path(folder_uri).rstrip("/") or "/"
+        target_path = WorkspaceFolderSet._normalized_path(target_uri)
+        relative = posixpath.relpath(target_path, start=root_path)
+        if relative == ".." or relative.startswith("../"):
+            return None
+        return f"@/{relative}"
+
     @staticmethod
     def _nova_relative_import_path(
         importer_uri: str,
@@ -1943,9 +2017,16 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 if importer_identity not in renamed and target_identity not in renamed:
                     continue
                 post_target_uri = renamed.get(target_identity, target_uri)
-                replacement = self._nova_relative_import_path(
-                    post_importer_uri,
-                    post_target_uri,
+                replacement = (
+                    self._nova_workspace_root_import_path(
+                        post_importer_uri,
+                        post_target_uri,
+                    )
+                    if item.path.startswith("@/")
+                    else self._nova_relative_import_path(
+                        post_importer_uri,
+                        post_target_uri,
+                    )
                 )
                 if replacement is None:
                     raise DocumentError(
