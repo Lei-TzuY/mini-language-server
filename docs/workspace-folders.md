@@ -23,7 +23,9 @@ Out-of-scope documents remain open and retain their document/syntax/symbol/seman
 
 Workspace membership carries an independent generation. `WorkspaceSymbolIndex.snapshots()` returns a tuple-compatible capture containing both exact semantic snapshot identities and the workspace generation. Complete-workspace publications reject any generation transition, including the ABA case where a semantic snapshot is removed and later re-added unchanged.
 
-Workspace-folder scope has its own generation guard. Workspace diagnostics capture both the folder generation and the exact scoped document/diagnostic snapshots; a folder transition during a request returns `Content modified` rather than publishing a report for the previous universe.
+Workspace-folder topology is also part of that complete-workspace generation. Every effective folder-scope transition invalidates previously captured complete workspace queries even when the exact indexed URI set and every `SemanticSnapshot` object remain unchanged, such as adding a nested workspace folder around an already-indexed document. Deliberately partial subset commits continue to validate only their named snapshot identities; callers whose semantics depend on complete scope must use the complete snapshot guard.
+
+Workspace-folder scope retains its own generation guard as well. Workspace diagnostics capture both the folder generation and the exact scoped document/diagnostic snapshots; a folder transition during a request returns `Content modified` rather than publishing a report for the previous universe.
 
 Workspace-wide symbol search uses the complete workspace snapshot guard rather than only the declarations present in the result, so adding a previously unseen document invalidates an in-flight search even when existing result objects are still current.
 
