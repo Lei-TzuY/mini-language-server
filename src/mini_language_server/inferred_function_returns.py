@@ -39,6 +39,30 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return explicit
         return self._inferred_function_call_return_type(expression, frozenset())
 
+    def _function_call_return_type_for_semantic(
+        self,
+        semantic: Any,
+        expression: str,
+        resolving: frozenset[tuple[int, int, int]] = frozenset(),
+    ) -> str | None:
+        """Resolve explicit or inferred calls in the caller's import namespace."""
+        expression = self._unwrap_parenthesized_expression(expression)
+        explicit = super()._function_call_return_type_for_semantic(
+            semantic,
+            expression,
+            resolving,
+        )
+        if explicit is not None:
+            return explicit
+
+        declaration = self._visible_function_call_declaration(semantic, expression)
+        if declaration is None:
+            return None
+        signature = self._function_signature(declaration)
+        if _RETURN_ANNOTATION.search(self.nova_adapter.code_view(signature)) is not None:
+            return None
+        return self._bounded_function_return_type(declaration, resolving)
+
     def _inferred_function_call_return_type(
         self,
         expression: str,
@@ -194,9 +218,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 frozenset(),
             )
         if actual is None:
-            actual = super()._function_call_return_type(expression)
-        if actual is None:
-            actual = self._inferred_function_call_return_type(expression, resolving)
+            actual = self._function_call_return_type_for_semantic(
+                semantic,
+                expression,
+                resolving,
+            )
         if actual is not None:
             return actual
 
@@ -205,9 +231,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return None
         actual = self._literal_type(grouped)
         if actual is None:
-            actual = super()._function_call_return_type(grouped)
-        if actual is None:
-            actual = self._inferred_function_call_return_type(grouped, resolving)
+            actual = self._function_call_return_type_for_semantic(
+                semantic,
+                grouped,
+                resolving,
+            )
         return actual
 
     def _reference_return_type(
@@ -250,10 +278,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if _LOCAL_INITIALIZER_TAIL.match(expression_code[closing + 1 :]) is None:
                 return None
             call_expression = expression[: closing + 1]
-            explicit_call = super()._function_call_return_type(call_expression)
-            if explicit_call is not None:
-                return explicit_call
-            return self._inferred_function_call_return_type(call_expression, resolving)
+            return self._function_call_return_type_for_semantic(
+                semantic,
+                call_expression,
+                resolving,
+            )
 
         alias = _LOCAL_ALIAS_PREFIX.match(suffix)
         if alias is None:
