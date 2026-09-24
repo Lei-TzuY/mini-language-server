@@ -360,20 +360,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             tree = snapshot.symbols.syntax.tree
             if not isinstance(tree, NovaFunctionSyntax):
                 continue
-            resolved = self._nova_visible_function_declarations(
+            bindings = self._nova_binding_names_for_declaration(
                 snapshot,
                 snapshots,
-                name,
+                target,
             )
-            if (
-                len(resolved) != 1
-                or resolved[0].snapshot is not target.snapshot
-                or resolved[0].symbol is not target.symbol
-            ):
+            if not bindings:
                 continue
             source = self._source_text(snapshot.symbols.syntax.document.text)
             for call_name, span in tree.calls:
-                if call_name != name:
+                if call_name not in bindings:
                     continue
                 locations.append(
                     (
