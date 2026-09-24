@@ -294,3 +294,20 @@ def test_same_version_workspace_replacement_suppresses_stale_local_call_publicat
     refreshed = server.diagnostics.get(main_uri)
     assert refreshed is not None and refreshed is not original_diagnostics
     assert len(local_diagnostics(server, main_uri)) == 1
+
+def test_local_call_type_follows_transitive_import_visibility() -> None:
+    server = initialized_server()
+    helper = "file:///workspace/helper.nova"
+    middle = "file:///workspace/middle.nova"
+    other = "file:///workspace/other.nova"
+    caller = "file:///workspace/caller.nova"
+    open_nova(server, helper, 'fn target() -> String { return "value"; }\n')
+    open_nova(server, middle, "import ./helper.nova;\nfn middle() {}\n")
+    open_nova(server, other, "fn target() -> Bool { return true; }\n")
+    text = "import ./middle.nova;\nfn main() { let count: Int = target()\n}\n"
+    open_nova(server, caller, text)
+
+    items = local_diagnostics(server, caller)
+    assert len(items) == 1
+    assert items[0].message == "local type mismatch: expected 'Int', got 'String'"
+    assert text[items[0].span.start : items[0].span.end] == "target()"
