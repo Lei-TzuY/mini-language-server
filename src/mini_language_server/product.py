@@ -488,7 +488,8 @@ class NovaProductLanguageServer(WorkspaceNovaLanguageServer):
         if parsed_message is None:
             return None
         name, expected, actual = parsed_message
-        if document.text[diagnostic.span.start : diagnostic.span.end] != name:
+        source_name = name.rsplit("::", 1)[-1]
+        if document.text[diagnostic.span.start : diagnostic.span.end] != source_name:
             return None
         parsed = self._call_arguments(document.text, diagnostic.span.end)
         if parsed is None:
