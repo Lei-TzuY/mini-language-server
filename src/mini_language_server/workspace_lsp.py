@@ -2119,8 +2119,13 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
     def _nova_module_dependency_edges(
         tree: NovaFunctionSyntax,
     ) -> tuple[Any, ...]:
-        """Return exact local-file module edges that affect outward semantics."""
-        return (*tree.imports, *tree.wildcard_exports)
+        """Return exact local-file module edges in deterministic source order."""
+        return tuple(
+            sorted(
+                (*tree.imports, *tree.wildcard_exports),
+                key=lambda item: item.span.start,
+            )
+        )
 
     def _nova_import_cycle_edges(
         self,
@@ -2213,8 +2218,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 cycle_edges[source] = spans
         return cycle_edges
 
-    @staticmethod
     def _nova_import_cycle_related_information(
+        self,
         target: SemanticSnapshot,
         cycle_edges: dict[WorkspaceUriIdentity, frozenset[Span]],
     ) -> tuple[DiagnosticRelatedInformation, ...]:
