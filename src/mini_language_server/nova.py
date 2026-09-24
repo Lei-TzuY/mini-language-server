@@ -35,6 +35,7 @@ _IMPORT_NAME = re.compile(rf"(?:^|,)[ \\t]*({_IDENTIFIER})[ \\t]*(?=,|$)")
 _ALIASED_IMPORT_NAME = re.compile(
     rf"(?:^|,)[ \\t]*({_IDENTIFIER})(?:[ \\t]+as[ \\t]+({_IDENTIFIER}))?[ \\t]*(?=,|$)"
 )
+_IMPORT_ALIAS_MARKER = re.compile(r"[ \\t]+as[ \\t]+")
 _EXPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*export[ \t]*\{([^}\r\n]*)\}[ \t]*;?[ \t]*\r?$"
 )
@@ -200,7 +201,7 @@ class NovaFunctionAdapter:
                     )
                     for name in (
                         _ALIASED_IMPORT_NAME.finditer(declaration.group(1))
-                        if " as " in declaration.group(1)
+                        if _IMPORT_ALIAS_MARKER.search(declaration.group(1))
                         else _IMPORT_NAME.finditer(declaration.group(1))
                     )
                 ),
