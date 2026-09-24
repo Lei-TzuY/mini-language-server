@@ -306,6 +306,351 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         finally:
             self.requests.finish(context)
 
+    def _namespace_binding_target(
+        self,
+        importer: Any,
+        snapshots: tuple[Any, ...],
+        binding: Any,
+    ) -> Any | None:
+        """Resolve one local namespace binding to its canonical namespace object."""
+        indexed = {
+            WorkspaceFolderSet.uri_identity(snapshot.uri): snapshot
+            for snapshot in snapshots
+        }
+        target_uri = self._nova_import_target_uri(
+            importer.uri,
+            binding.imported.path,
+        )
+        if target_uri is None:
+            return None
+        target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
+        if target is None:
+            return None
+        if binding.selected is None:
+            return target
+        return self._nova_exported_namespace_targets(
+            target,
+            snapshots,
+        ).get(binding.selected.name)
+
+    def _outward_namespace_rename_plan(
+        self,
+        semantics: Any,
+        snapshots: tuple[Any, ...],
+        namespace_target: tuple[Any, Any],
+        new_name: str,
+    ) -> tuple[dict[str, list[tuple[int, dict[str, Any]]]], str | None] | None:
+        """Plan one bounded namespace API rename across exact selective edges."""
+        binding, _ = namespace_target
+        old_name = binding.name
+        tree = semantics.symbols.syntax.tree
+        if (
+            not isinstance(tree, NovaFunctionSyntax)
+            or not self._nova_import_namespace_is_outward(tree, old_name)
+            or (
+                binding.selected is not None
+                and binding.selected.alias is None
+            )
+        ):
+            return None
+
+        canonical_target = self._namespace_binding_target(
+            semantics,
+            snapshots,
+            binding,
+        )
+        if canonical_target is None:
+            return None
+
+        origin_exports = [
+            item for item in tree.exports if item.name == old_name
+        ]
+        if len(origin_exports) != 1:
+            return None
+
+        edits_by_uri: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+        seen_edits: set[tuple[str, int, int]] = set()
+
+        def add_edit(snapshot: Any, span: Any) -> None:
+            if new_name == old_name:
+                return
+            key = (snapshot.uri, span.start, span.end)
+            if key in seen_edits:
+                return
+            seen_edits.add(key)
+            source = self._source_text(snapshot.symbols.syntax.document.text)
+            edits_by_uri.setdefault(snapshot.uri, []).append(
+                (
+                    span.start,
+                    {
+                        "range": self._range(source, span),
+                        "newText": new_name,
+                    },
+                )
+            )
+
+        def exact_outward_namespace(snapshot: Any) -> bool:
+            exported = self._nova_exported_namespace_targets(
+                snapshot,
+                snapshots,
+            )
+            return exported.get(old_name) is canonical_target
+
+        def binding_conflict(
+            snapshot: Any,
+            ignored_binding: Any | None,
+            ignored_export: Any | None,
+        ) -> bool:
+            if new_name == old_name:
+                return False
+            snapshot_tree = snapshot.symbols.syntax.tree
+            if not isinstance(snapshot_tree, NovaFunctionSyntax):
+                return True
+            if new_name in {"Int", "UInt"}:
+                return True
+            if any(name == new_name for name, _ in snapshot_tree.declarations):
+                return True
+            for other in self._nova_import_namespace_bindings(
+                snapshot,
+                snapshots,
+            ):
+                if ignored_binding is not None and other is ignored_binding:
+                    continue
+                if other.name == new_name:
+                    return True
+            for imported in snapshot_tree.imports:
+                if not imported.has_name_list:
+                    continue
+                for selected in imported.names:
+                    if (
+                        ignored_binding is not None
+                        and ignored_binding.selected is selected
+                    ):
+                        continue
+                    if selected.binding_name == new_name:
+                        return True
+            return any(
+                exported is not ignored_export
+                and exported.name == new_name
+                for exported in snapshot_tree.exports
+            )
+
+        if binding_conflict(
+            semantics,
+            binding,
+            origin_exports[0],
+        ):
+            return {}, new_name
+
+        for span in self._nova_import_namespace_spans(
+            semantics,
+            binding,
+        ):
+            add_edit(semantics, span)
+        add_edit(semantics, origin_exports[0].span)
+
+        queue = [semantics]
+        seen_modules: set[Any] = set()
+
+        while queue:
+            current = queue.pop(0)
+            current_identity = WorkspaceFolderSet.uri_identity(current.uri)
+            if current_identity in seen_modules:
+                continue
+            seen_modules.add(current_identity)
+            if not exact_outward_namespace(current):
+                return None
+
+            for importer in snapshots:
+                importer_tree = importer.symbols.syntax.tree
+                if not isinstance(importer_tree, NovaFunctionSyntax):
+                    continue
+
+                target_imports: list[Any] = []
+                for imported in importer_tree.imports:
+                    if not imported.has_name_list:
+                        continue
+                    target_uri = self._nova_import_target_uri(
+                        importer.uri,
+                        imported.path,
+                    )
+                    if (
+                        target_uri is None
+                        or WorkspaceFolderSet.uri_identity(target_uri)
+                        != current_identity
+                    ):
+                        continue
+                    target_imports.append(imported)
+
+                if not target_imports:
+                    continue
+
+                unaliased: list[tuple[Any, Any]] = []
+                for imported in target_imports:
+                    target_namespaces = self._nova_exported_namespace_targets(
+                        current,
+                        snapshots,
+                    )
+                    if target_namespaces.get(old_name) is not canonical_target:
+                        continue
+                    for selected in imported.names:
+                        if selected.name != old_name:
+                            continue
+                        add_edit(importer, selected.span)
+                        if selected.alias is None:
+                            unaliased.append((imported, selected))
+
+                if not unaliased:
+                    continue
+                if len(unaliased) != 1:
+                    return None
+
+                imported_syntax, selected = unaliased[0]
+                matching_bindings = [
+                    candidate
+                    for candidate in self._nova_import_namespace_bindings(
+                        importer,
+                        snapshots,
+                    )
+                    if candidate.imported is imported_syntax
+                    and candidate.selected is selected
+                    and candidate.name == old_name
+                ]
+                if len(matching_bindings) != 1:
+                    return None
+                local_binding = matching_bindings[0]
+                if (
+                    self._namespace_binding_target(
+                        importer,
+                        snapshots,
+                        local_binding,
+                    )
+                    is not canonical_target
+                ):
+                    return None
+
+                matching_exports = [
+                    item
+                    for item in importer_tree.exports
+                    if item.name == old_name
+                ]
+                outward = self._nova_import_namespace_is_outward(
+                    importer_tree,
+                    old_name,
+                )
+                if outward and len(matching_exports) != 1:
+                    return None
+                ignored_export = matching_exports[0] if outward else None
+                if binding_conflict(
+                    importer,
+                    local_binding,
+                    ignored_export,
+                ):
+                    return {}, new_name
+
+                for namespace, span in importer_tree.namespace_references:
+                    if namespace == old_name:
+                        add_edit(importer, span)
+
+                if not outward:
+                    continue
+                add_edit(importer, matching_exports[0].span)
+                queue.append(importer)
+
+        return edits_by_uri, None
+
+    def _handle_outward_import_namespace_rename(
+        self,
+        request_id: Any,
+        semantics: Any,
+        snapshots: tuple[Any, ...],
+        namespace_target: tuple[Any, Any],
+        new_name: str,
+    ) -> dict[str, Any]:
+        """Rename one exported namespace across its exact selective graph."""
+        binding, _ = namespace_target
+        old_name = binding.name
+        try:
+            context = self.requests.start(request_id, uri=semantics.uri)
+        except RequestError:
+            return self._error(request_id, -32602, "Invalid params")
+
+        try:
+            self.requests.checkpoint(context)
+            if not _is_nova_identifier(new_name):
+                return self._error(request_id, -32602, "Invalid params")
+            if new_name in {"Int", "UInt"}:
+                return self._error(
+                    request_id,
+                    -32803,
+                    f"Rename would conflict with reserved namespace '{new_name}'",
+                )
+
+            planned = self._outward_namespace_rename_plan(
+                semantics,
+                snapshots,
+                namespace_target,
+                new_name,
+            )
+            if planned is None:
+                try:
+                    return self.workspace_symbols.commit_snapshots_if_current(
+                        snapshots,
+                        lambda: self._result(request_id, None),
+                    )
+                except WorkspaceIndexError:
+                    return self._error(request_id, -32801, "Content modified")
+
+            edits_by_uri, conflict = planned
+            if conflict is not None:
+                try:
+                    return self.workspace_symbols.commit_snapshots_if_current(
+                        snapshots,
+                        lambda: self._error(
+                            request_id,
+                            -32803,
+                            (
+                                "Rename would conflict with existing namespace "
+                                f"binding '{conflict}'"
+                            ),
+                        ),
+                    )
+                except WorkspaceIndexError:
+                    return self._error(request_id, -32801, "Content modified")
+
+            changes: dict[str, list[dict[str, Any]]] = {}
+            for uri in sorted(edits_by_uri):
+                ordered = sorted(
+                    edits_by_uri[uri],
+                    key=lambda item: item[0],
+                )
+                changes[uri] = [edit for _, edit in ordered]
+            workspace_edit = self._workspace_edit(
+                changes,
+                versions=self._workspace_edit_versions(snapshots),
+                annotation_label=(
+                    f"Rename exported namespace '{old_name}' to '{new_name}'"
+                ),
+            )
+
+            self.requests.checkpoint(context)
+            if not self._closed_workspace_snapshots_current(snapshots):
+                self._refresh_closed_workspace_files()
+                return self._error(request_id, -32801, "Content modified")
+            try:
+                return self.workspace_symbols.commit_snapshots_if_current(
+                    snapshots,
+                    lambda: self._result(request_id, workspace_edit),
+                )
+            except WorkspaceIndexError:
+                return self._error(request_id, -32801, "Content modified")
+        except RequestCancelled:
+            return self._error(request_id, -32800, "Request cancelled")
+        except StaleRequest:
+            return self._error(request_id, -32801, "Content modified")
+        finally:
+            self.requests.finish(context)
+
     def _handle_workspace_prepare_rename(
         self, request_id: Any, params: Any
     ) -> dict[str, Any] | None:
@@ -327,12 +672,23 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         )
         if namespace_target is not None:
             imported, target_span = namespace_target
-            if (
-                imported.selected is not None
-                and imported.selected.alias is None
-            ) or self._nova_import_namespace_is_outward(tree, imported.name):
+            if imported.selected is not None and imported.selected.alias is None:
                 return super()._handle_workspace_prepare_rename(request_id, params)
             old_name = imported.name
+            if (
+                self._nova_import_namespace_is_outward(tree, old_name)
+                and self._outward_namespace_rename_plan(
+                    semantics,
+                    snapshots,
+                    namespace_target,
+                    old_name,
+                )
+                is None
+            ):
+                return super()._handle_workspace_prepare_rename(
+                    request_id,
+                    params,
+                )
             try:
                 context = self.requests.start(request_id, uri=semantics.uri)
             except RequestError:
@@ -480,11 +836,16 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         tree = semantics.symbols.syntax.tree
         if not isinstance(tree, NovaFunctionSyntax):
             return self._result(request_id, None)
-        if (
-            imported.selected is not None
-            and imported.selected.alias is None
-        ) or self._nova_import_namespace_is_outward(tree, imported.name):
+        if imported.selected is not None and imported.selected.alias is None:
             return self._result(request_id, None)
+        if self._nova_import_namespace_is_outward(tree, imported.name):
+            return self._handle_outward_import_namespace_rename(
+                request_id,
+                semantics,
+                snapshots,
+                namespace_target,
+                new_name,
+            )
         old_name = imported.name
 
         try:

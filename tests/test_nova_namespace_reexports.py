@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from mini_language_server import NovaProductLanguageServer
 
 
@@ -18,14 +20,18 @@ def initialize(
     server: NovaProductLanguageServer,
     *,
     root: Path | None = None,
+    document_changes: bool = False,
 ) -> None:
+    workspace: dict[str, Any] = {"workspaceFolders": True}
+    if document_changes:
+        workspace["workspaceEdit"] = {"documentChanges": True}
     params: dict[str, Any] = {
         "capabilities": {
             "textDocument": {
                 "definition": {"linkSupport": True},
                 "diagnostic": {},
             },
-            "workspace": {"workspaceFolders": True},
+            "workspace": workspace,
         }
     }
     if root is not None:
@@ -461,7 +467,7 @@ def test_closed_selective_namespace_reexport_uses_detached_graph(tmp_path: Path)
     assert server.diagnostics.get(root_uri) is None
 
 
-def test_exported_selective_namespace_rename_stays_fail_closed() -> None:
+def test_exported_selective_namespace_alias_supports_prepare_rename() -> None:
     server = NovaProductLanguageServer()
     initialize(server)
     provider_uri = "file:///workspace/provider.nova"
@@ -492,4 +498,253 @@ def test_exported_selective_namespace_rename_stays_fail_closed() -> None:
     )
 
     assert prepared is not None
-    assert prepared["result"] is None
+    assert prepared["result"]["placeholder"] == "facade"
+    assert prepared["result"]["range"]["start"] == position(
+        second,
+        "facade::target",
+    )
+
+def test_exported_namespace_rename_propagates_unaliased_selective_edges() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    first_uri = "file:///workspace/first.nova"
+    second_uri = "file:///workspace/second.nova"
+    root_uri = "file:///workspace/root.nova"
+    provider = "fn target() {}\nexport { target };\n"
+    first = (
+        "import * as api from ./provider.nova;\n"
+        "export { api };\n"
+        "fn first() { api::target(); }\n"
+    )
+    second = (
+        "import { api } from ./first.nova;\n"
+        "export { api };\n"
+        "fn second() { api::target(); }\n"
+    )
+    root = (
+        "import { api } from ./second.nova;\n"
+        "fn root() { api::target(); }\n"
+    )
+    open_nova(server, provider_uri, provider)
+    open_nova(server, first_uri, first)
+    open_nova(server, second_uri, second)
+    open_nova(server, root_uri, root)
+
+    prepared = server.handle(
+        request(
+            "textDocument/prepareRename",
+            90,
+            {
+                "textDocument": {"uri": first_uri},
+                "position": position(first, "api from", delta=1),
+            },
+        )
+    )
+    assert prepared is not None
+    assert prepared["result"]["placeholder"] == "api"
+
+    renamed = server.handle(
+        request(
+            "textDocument/rename",
+            91,
+            {
+                "textDocument": {"uri": first_uri},
+                "position": position(first, "api from", delta=1),
+                "newName": "surface",
+            },
+        )
+    )
+    assert renamed is not None
+    changes = renamed["result"]["changes"]
+    assert set(changes) == {first_uri, second_uri, root_uri}
+    assert [edit["newText"] for edit in changes[first_uri]] == [
+        "surface",
+        "surface",
+        "surface",
+    ]
+    assert [edit["newText"] for edit in changes[second_uri]] == [
+        "surface",
+        "surface",
+        "surface",
+    ]
+    assert [edit["newText"] for edit in changes[root_uri]] == [
+        "surface",
+        "surface",
+    ]
+
+
+def test_exported_namespace_rename_stops_at_aliased_import_boundary() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    first_uri = "file:///workspace/first.nova"
+    second_uri = "file:///workspace/second.nova"
+    root_uri = "file:///workspace/root.nova"
+    open_nova(server, provider_uri, "fn target() {}\nexport { target };\n")
+    first = "import * as api from ./provider.nova;\nexport { api };\n"
+    second = (
+        "import { api as facade } from ./first.nova;\n"
+        "export { facade };\n"
+        "fn second() { facade::target(); }\n"
+    )
+    root = (
+        "import { facade as surface } from ./second.nova;\n"
+        "fn root() { surface::target(); }\n"
+    )
+    open_nova(server, first_uri, first)
+    open_nova(server, second_uri, second)
+    open_nova(server, root_uri, root)
+
+    renamed = server.handle(
+        request(
+            "textDocument/rename",
+            92,
+            {
+                "textDocument": {"uri": first_uri},
+                "position": position(first, "api from", delta=1),
+                "newName": "renamedApi",
+            },
+        )
+    )
+    assert renamed is not None
+    changes = renamed["result"]["changes"]
+    assert set(changes) == {first_uri, second_uri}
+    assert [edit["newText"] for edit in changes[first_uri]] == [
+        "renamedApi",
+        "renamedApi",
+    ]
+    assert [edit["newText"] for edit in changes[second_uri]] == ["renamedApi"]
+
+
+def test_exported_namespace_rename_rejects_downstream_binding_collision() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    first_uri = "file:///workspace/first.nova"
+    second_uri = "file:///workspace/second.nova"
+    open_nova(server, provider_uri, "fn target() {}\nexport { target };\n")
+    first = "import * as api from ./provider.nova;\nexport { api };\n"
+    second = (
+        "import { api } from ./first.nova;\n"
+        "fn surface() {}\n"
+        "export { api, surface };\n"
+    )
+    open_nova(server, first_uri, first)
+    open_nova(server, second_uri, second)
+
+    renamed = server.handle(
+        request(
+            "textDocument/rename",
+            93,
+            {
+                "textDocument": {"uri": first_uri},
+                "position": position(first, "api from", delta=1),
+                "newName": "surface",
+            },
+        )
+    )
+    assert renamed == {
+        "jsonrpc": "2.0",
+        "id": 93,
+        "error": {
+            "code": -32803,
+            "message": (
+                "Rename would conflict with existing namespace binding 'surface'"
+            ),
+        },
+    }
+
+
+def test_exported_namespace_rename_versions_closed_downstream_as_null(
+    tmp_path: Path,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    first = tmp_path / "first.nova"
+    second = tmp_path / "second.nova"
+    provider.write_text("fn target() {}\nexport { target };\n", encoding="utf-8")
+    first_text = "import * as api from ./provider.nova;\nexport { api };\n"
+    first.write_text(first_text, encoding="utf-8")
+    second.write_text(
+        (
+            "import { api } from ./first.nova;\n"
+            "export { api };\n"
+            "fn second() { api::target(); }\n"
+        ),
+        encoding="utf-8",
+    )
+    server = NovaProductLanguageServer()
+    initialize(server, root=tmp_path, document_changes=True)
+    first_uri = first.as_uri()
+    second_uri = second.as_uri()
+    open_nova(server, first_uri, first_text)
+
+    renamed = server.handle(
+        request(
+            "textDocument/rename",
+            94,
+            {
+                "textDocument": {"uri": first_uri},
+                "position": position(first_text, "api from", delta=1),
+                "newName": "surface",
+            },
+        )
+    )
+    assert renamed is not None
+    document_changes = renamed["result"]["documentChanges"]
+    versions = {
+        item["textDocument"]["uri"]: item["textDocument"]["version"]
+        for item in document_changes
+    }
+    assert versions[first_uri] == 1
+    assert versions[second_uri] is None
+
+
+def test_exported_namespace_rename_rejects_closed_downstream_disk_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = tmp_path / "provider.nova"
+    first = tmp_path / "first.nova"
+    second = tmp_path / "second.nova"
+    provider.write_text("fn target() {}\nexport { target };\n", encoding="utf-8")
+    first_text = "import * as api from ./provider.nova;\nexport { api };\n"
+    first.write_text(first_text, encoding="utf-8")
+    second.write_text(
+        "import { api } from ./first.nova;\nexport { api };\n",
+        encoding="utf-8",
+    )
+    server = NovaProductLanguageServer()
+    initialize(server, root=tmp_path)
+    first_uri = first.as_uri()
+    open_nova(server, first_uri, first_text)
+    original_checkpoint = server.requests.checkpoint
+    calls = 0
+
+    def mutate_before_commit(context: Any) -> None:
+        nonlocal calls
+        calls += 1
+        original_checkpoint(context)
+        if calls == 2:
+            second.write_text(
+                "import { api as changed } from ./first.nova;\nexport { changed };\n",
+                encoding="utf-8",
+            )
+
+    monkeypatch.setattr(server.requests, "checkpoint", mutate_before_commit)
+
+    assert server.handle(
+        request(
+            "textDocument/rename",
+            95,
+            {
+                "textDocument": {"uri": first_uri},
+                "position": position(first_text, "api from", delta=1),
+                "newName": "surface",
+            },
+        )
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 95,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
