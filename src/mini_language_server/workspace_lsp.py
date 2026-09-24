@@ -644,10 +644,26 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             WorkspaceFolderSet.uri_identity(uri)
             for uri in import_changes
         )
-        captured_documents = tuple(
-            document
+        captured_document_by_identity = {
+            WorkspaceFolderSet.uri_identity(document.uri): document
             for document in self.documents.snapshots()
-            if WorkspaceFolderSet.uri_identity(document.uri) in guarded_identities
+            if WorkspaceFolderSet.uri_identity(document.uri) in affected_identities
+        }
+        rewrite_identities = {
+            WorkspaceFolderSet.uri_identity(uri)
+            for uri in import_changes
+        }
+        for snapshot in captured_workspace:
+            identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
+            if identity not in rewrite_identities:
+                continue
+            if self.documents.get(snapshot.uri) is not None:
+                captured_document_by_identity[identity] = (
+                    snapshot.symbols.syntax.document
+                )
+        captured_documents = tuple(
+            captured_document_by_identity[identity]
+            for identity in sorted(captured_document_by_identity)
         )
         captured_folders = self.workspace_folders.snapshot()
         captured_closed = {
