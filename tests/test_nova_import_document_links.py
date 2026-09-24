@@ -134,6 +134,31 @@ def test_document_link_targets_exact_closed_workspace_snapshot(tmp_path: Path) -
     }
 
 
+def test_document_link_resolves_workspace_root_import(tmp_path: Path) -> None:
+    target = tmp_path / "dep.nova"
+    target.write_text("fn dep() {}\n")
+    server = NovaProductLanguageServer()
+    initialize(server, folder=tmp_path)
+
+    importer_uri = (tmp_path / "main.nova").as_uri()
+    source = "import @/dep.nova;\nfn main() {}\n"
+    open_nova(server, importer_uri, source)
+
+    assert document_links(server, importer_uri, request_id=101) == {
+        "jsonrpc": "2.0",
+        "id": 101,
+        "result": [
+            {
+                "range": {
+                    "start": {"line": 0, "character": 7},
+                    "end": {"line": 0, "character": 17},
+                },
+                "target": target.as_uri(),
+            }
+        ],
+    }
+
+
 def test_document_link_omits_unresolved_imports(tmp_path: Path) -> None:
     server = NovaProductLanguageServer()
     initialize(server, folder=tmp_path)
