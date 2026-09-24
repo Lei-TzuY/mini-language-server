@@ -421,3 +421,72 @@ def test_duplicate_and_reserved_namespaces_do_not_publish_semantic_symbols() -> 
         for symbol in semantics.symbols.symbols
         if symbol.kind == "namespace"
     ] == []
+
+
+def test_namespace_semantic_symbol_drives_hover_and_local_completion() -> None:
+    server, _, caller_uri, caller = namespace_fixture()
+
+    hover = server.handle(
+        request(
+            "textDocument/hover",
+            80,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": position(caller, "api::target", delta=1),
+            },
+        )
+    )
+    assert hover is not None
+    assert hover["result"]["contents"]["value"] == "namespace api"
+
+    completion = server.handle(
+        request(
+            "textDocument/completion",
+            81,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": {"line": 1, "character": len("fn main() { ")},
+            },
+        )
+    )
+    assert completion is not None
+    items = completion["result"]
+    assert isinstance(items, list)
+    labels = [item["label"] for item in items]
+    assert "api" in labels
+    assert "api::target" not in labels
+
+
+def test_namespace_member_completion_remains_member_only() -> None:
+    server, _, caller_uri, _ = namespace_fixture()
+    text = (
+        "import * as api from ./provider.nova;\n"
+        "fn main() { api:: }\n"
+    )
+    server.handle(
+        notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": caller_uri, "version": 2},
+                "contentChanges": [{"text": text}],
+            },
+        )
+    )
+
+    completion = server.handle(
+        request(
+            "textDocument/completion",
+            82,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": {
+                    "line": 1,
+                    "character": len("fn main() { api::"),
+                },
+            },
+        )
+    )
+    assert completion is not None
+    items = completion["result"]
+    assert isinstance(items, list)
+    assert [item["label"] for item in items] == ["target"]
