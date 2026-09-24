@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -13,6 +14,20 @@ MAX_CLOSED_WORKSPACE_FILES = 2048
 MAX_CLOSED_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024
 
 WorkspaceUriIdentity = tuple[str, str, str, str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class LocalWorkspacePathEvidence:
+    """One exact local path-entry observation used by file-operation preflight."""
+
+    uri: str
+    identity: WorkspaceUriIdentity
+    kind: str
+    signature: tuple[int, int, int, int, int, int] | None
+
+    @property
+    def exists(self) -> bool:
+        return self.kind != "missing"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +59,48 @@ def local_path_from_file_uri(uri: str) -> Path | None:
     if not path_text:
         return None
     return Path(path_text)
+
+
+def probe_local_workspace_path(uri: str) -> LocalWorkspacePathEvidence | None:
+    """Capture one supported local path entry without following symlink targets."""
+    path = local_path_from_file_uri(uri)
+    if path is None:
+        return None
+    identity = WorkspaceFolderSet.uri_identity(uri)
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return LocalWorkspacePathEvidence(
+            uri=uri,
+            identity=identity,
+            kind="missing",
+            signature=None,
+        )
+    except OSError:
+        return None
+
+    mode = metadata.st_mode
+    if stat.S_ISREG(mode):
+        kind = "file"
+    elif stat.S_ISDIR(mode):
+        kind = "directory"
+    elif stat.S_ISLNK(mode):
+        kind = "symlink"
+    else:
+        kind = "other"
+    return LocalWorkspacePathEvidence(
+        uri=uri,
+        identity=identity,
+        kind=kind,
+        signature=(
+            mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+            metadata.st_ino,
+            metadata.st_dev,
+        ),
+    )
 
 
 def read_closed_workspace_file(
