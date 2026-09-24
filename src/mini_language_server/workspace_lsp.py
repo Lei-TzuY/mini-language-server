@@ -1818,9 +1818,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for component_index, component in enumerate(components):
             for node in component:
                 component_by_node[node] = component_index
-            if len(component) > 1:
-                cyclic_components.add(component_index)
-            elif component[0] in adjacency[component[0]]:
+            if len(component) > 1 or component[0] in adjacency[component[0]]:
                 cyclic_components.add(component_index)
 
         cycle_edges: dict[WorkspaceUriIdentity, frozenset[Span]] = {}
