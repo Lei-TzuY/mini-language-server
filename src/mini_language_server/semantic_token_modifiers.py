@@ -260,20 +260,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
         namespace_token_type = _TOKEN_TYPE_INDEX["namespace"]
         namespace_declaration = self._modifier_bits("declaration")
-        namespace_bindings: dict[str, list[Any]] = {}
-        for imported in parsed.imports:
-            if imported.namespace is None or imported.namespace_span is None:
-                continue
-            namespace_bindings.setdefault(imported.namespace, []).append(imported)
-        for namespace, bindings in namespace_bindings.items():
-            if len(bindings) != 1:
-                continue
-            imported = bindings[0]
-            spans = [imported.namespace_span]
+        for binding in self._nova_import_namespace_bindings(
+            semantics,
+            snapshots,
+        ):
+            spans = [binding.span]
             spans.extend(
                 span
                 for reference_name, span in parsed.namespace_references
-                if reference_name == namespace
+                if reference_name == binding.name
             )
             for index, span in enumerate(spans):
                 identity = self._token_identity(source, span, requested_span)
