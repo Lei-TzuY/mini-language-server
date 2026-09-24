@@ -471,3 +471,64 @@ def test_will_delete_rejects_detached_disk_drift_and_refreshes_index(
     refreshed = server.workspace_symbols.get(uri)
     assert refreshed is not None
     assert refreshed.symbols.syntax.document.text == "fn after() {}\n"
+
+
+def test_will_create_rejects_unindexed_local_disk_collision(tmp_path: Path) -> None:
+    target = tmp_path / "external.nova"
+    target.write_bytes(b"\xff")
+    server = initialized_server(tmp_path, will_create=True)
+    uri = target.as_uri()
+    assert server.workspace_symbols.get(uri) is None
+
+    response = file_preflight(
+        server,
+        "workspace/willCreateFiles",
+        uri,
+        request_id=23,
+    )
+
+    assert response is not None
+    assert response["error"]["code"] == -32803
+    assert "create target already exists on disk" in response["error"]["message"]
+    assert target.read_bytes() == b"\xff"
+    assert server.workspace_symbols.get(uri) is None
+
+
+def test_will_delete_rejects_unindexed_local_path_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "external.nova"
+    source.write_bytes(b"\xff")
+    server = initialized_server(tmp_path, will_delete=True)
+    uri = source.as_uri()
+    assert server.workspace_symbols.get(uri) is None
+    original = server.workspace_symbols.commit_snapshots_if_current
+    removed = False
+
+    def remove_then_commit(snapshots, callback):
+        nonlocal removed
+        if not removed:
+            removed = True
+            source.unlink()
+        return original(snapshots, callback)
+
+    monkeypatch.setattr(
+        server.workspace_symbols,
+        "commit_snapshots_if_current",
+        remove_then_commit,
+    )
+
+    response = file_preflight(
+        server,
+        "workspace/willDeleteFiles",
+        uri,
+        request_id=24,
+    )
+
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 24,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
+    assert not source.exists()
