@@ -506,3 +506,21 @@ def test_cross_file_semantic_return_reachability_rebinds() -> None:
     )
 
     assert hover_value(server, main_uri, main) == "variable value: Int"
+
+def test_inferred_wrapper_follows_each_modules_import_visibility() -> None:
+    server = initialized_server()
+    helper = "file:///workspace/helper.nova"
+    middle = "file:///workspace/middle.nova"
+    other = "file:///workspace/other.nova"
+    caller = "file:///workspace/caller.nova"
+    open_nova(server, helper, 'fn source() { return "value"; }\n')
+    open_nova(
+        server,
+        middle,
+        "import ./helper.nova;\nfn wrapper() { return source(); }\n",
+    )
+    open_nova(server, other, "fn source() { return true; }\n")
+    text = "import ./middle.nova;\nfn main() { let value = wrapper() value }\n"
+    open_nova(server, caller, text)
+
+    assert hover_value(server, caller, text) == "variable value: String"
