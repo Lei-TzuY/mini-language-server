@@ -297,3 +297,49 @@ def test_namespace_member_definition_still_targets_provider_function() -> None:
     )
     assert qualifier is not None
     assert qualifier["result"]["uri"] == caller_uri
+
+
+def test_namespace_definition_does_not_depend_on_declaration_source_order() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    caller_uri = "file:///workspace/caller.nova"
+    open_nova(server, provider_uri, "fn target() {}\n")
+    caller = (
+        "fn main() { api::target(); }\n"
+        "import * as api from ./provider.nova;\n"
+    )
+    open_nova(server, caller_uri, caller)
+
+    response = server.handle(
+        request(
+            "textDocument/definition",
+            60,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": position(caller, "api::target", delta=1),
+            },
+        )
+    )
+    assert response is not None
+    assert response["result"]["uri"] == caller_uri
+    assert response["result"]["range"]["start"] == {
+        "line": 1,
+        "character": len("import * as "),
+    }
+
+    references = server.handle(
+        request(
+            "textDocument/references",
+            61,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": position(caller, "api::target", delta=1),
+                "context": {"includeDeclaration": False},
+            },
+        )
+    )
+    assert references is not None
+    assert [item["range"]["start"] for item in references["result"]] == [
+        {"line": 0, "character": len("fn main() { ")}
+    ]
