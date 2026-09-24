@@ -54,33 +54,53 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 continue
             if not any(item is diagnostic for item in current.diagnostics):
                 continue
-            if start_offset == end_offset:
-                overlaps = diagnostic.span.start <= start_offset <= diagnostic.span.end
-            else:
-                overlaps = (
-                    diagnostic.span.start < end_offset
-                    and start_offset < diagnostic.span.end
-                )
-            if not overlaps:
+            if not self._division_diagnostic_overlaps(
+                diagnostic,
+                start_offset=start_offset,
+                end_offset=end_offset,
+            ):
                 continue
             actions.append(
-                {
-                    "title": "Replace zero divisor with 1",
-                    "kind": "quickfix",
-                    "diagnostics": [self._diagnostic(source, diagnostic)],
-                    "edit": {
-                        "changes": {
-                            uri: [
-                                {
-                                    "range": self._range(source, diagnostic.span),
-                                    "newText": "1",
-                                }
-                            ]
-                        }
-                    },
-                }
+                self._division_by_zero_action(
+                    uri,
+                    source,
+                    diagnostic,
+                )
             )
         return actions
+
+    def _division_by_zero_action(
+        self,
+        uri: str,
+        source: Any,
+        diagnostic: Diagnostic,
+    ) -> dict[str, Any]:
+        return {
+            "title": "Replace zero divisor with 1",
+            "kind": "quickfix",
+            "diagnostics": [self._diagnostic(source, diagnostic)],
+            "edit": {
+                "changes": {
+                    uri: [
+                        {
+                            "range": self._range(source, diagnostic.span),
+                            "newText": "1",
+                        }
+                    ]
+                }
+            },
+        }
+
+    @staticmethod
+    def _division_diagnostic_overlaps(
+        diagnostic: Diagnostic,
+        *,
+        start_offset: int,
+        end_offset: int,
+    ) -> bool:
+        if start_offset == end_offset:
+            return diagnostic.span.start <= start_offset <= diagnostic.span.end
+        return diagnostic.span.start < end_offset and start_offset < diagnostic.span.end
 
     def _nova_division_by_zero_diagnostics(
         self, semantic: SemanticSnapshot
