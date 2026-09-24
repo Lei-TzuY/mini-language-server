@@ -2427,3 +2427,38 @@ def test_closed_scalar_diagnostics_match_live_analyzer_results(
     ]
 
     assert live_scalar == closed_scalar
+
+def test_closed_import_visibility_honors_explicit_exports(tmp_path: Path) -> None:
+    provider = tmp_path / "provider-exports.nova"
+    caller = tmp_path / "caller-exports.nova"
+    provider.write_text(
+        (
+            "export fn public() {}\n"
+            "fn private() {}\n"
+        ),
+        encoding="utf-8",
+    )
+    caller.write_text(
+        (
+            "import ./provider-exports.nova;\n"
+            "fn caller() { public(); private(); }\n"
+        ),
+        encoding="utf-8",
+    )
+    server = initialized_server(tmp_path)
+
+    report = reports_by_uri(workspace_diagnostics(server))[
+        caller.absolute().as_uri()
+    ]
+
+    assert [
+        (item["code"], item["message"])
+        for item in report["items"]
+    ] == [
+        (
+            "nova.unresolved-function",
+            "unresolved function 'private'",
+        )
+    ]
+    assert server.documents.get(caller.absolute().as_uri()) is None
+    assert server.diagnostics.get(caller.absolute().as_uri()) is None
