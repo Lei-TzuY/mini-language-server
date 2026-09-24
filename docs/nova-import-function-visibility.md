@@ -30,6 +30,7 @@ The visibility resolver is shared by the executable function-call surfaces in th
 - workspace completion and inferred-return completion detail;
 - call-hierarchy prepare/incoming/outgoing resolution;
 - prepare-rename and exact workspace function rename, including importer-local namespace alias declaration/qualifier rename without changing canonical member identity;
+- importer-local namespace definition/references/document highlights and `namespace` semantic tokens, all bound to the same exact declaration/qualifier syntax identity;
 - reference CodeLens counts and the matching execute-command locations;
 - function-reference semantic tokens, including range/full/delta publication through the existing exact-workspace token gate;
 - parameter inlay hints and their existing workspace refresh lifecycle;
@@ -44,7 +45,7 @@ All request surfaces retain their existing exact workspace snapshot commit gates
 This phase does not claim a general Nova module system. It does not add:
 
 - package/module search lists beyond the bounded configured-workspace-root `@/` form;
-- wildcard import syntax that merges names into the importer namespace, namespace re-export or cross-module namespace-alias graphs beyond the bounded importer-local `* as ns` call/member-completion/local-alias-rename form;
+- wildcard import syntax that merges names into the importer namespace, namespace re-export or cross-module namespace-alias graphs beyond the bounded importer-local `* as ns` call/member-completion/local-alias-rename and exact namespace-symbol identity form;
 - friend/package visibility, wildcard export forms, or declaration-level visibility beyond bounded `private fn` plus explicit function export lists;
 - non-function imported namespaces;
 - cross-authority or remote-provider module resolution;
