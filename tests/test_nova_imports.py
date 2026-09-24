@@ -112,6 +112,26 @@ def test_import_syntax_is_top_level_and_trivia_safe() -> None:
     ]
 
 
+def test_import_syntax_accepts_workspace_root_bare_and_selective_paths() -> None:
+    server = NovaProductLanguageServer()
+    text = (
+        "import @/lib/dep.nova;\n"
+        "import { target } from @/api/provider.nova;\n"
+        "fn main() {}\n"
+    )
+
+    tree = server.nova_adapter.parse(text)
+
+    assert isinstance(tree, NovaFunctionSyntax)
+    assert [item.path for item in tree.imports] == [
+        "@/lib/dep.nova",
+        "@/api/provider.nova",
+    ]
+    assert tree.imports[0].has_name_list is False
+    assert tree.imports[1].has_name_list is True
+    assert [item.name for item in tree.imports[1].names] == ["target"]
+
+
 def test_import_syntax_accepts_crlf_line_endings() -> None:
     server = NovaProductLanguageServer()
     text = "import ./dep.nova;\r\nfn main() {}\r\n"
@@ -139,6 +159,120 @@ def test_open_import_diagnostic_tracks_exact_workspace_membership() -> None:
 
     server.handle(notify("textDocument/didClose", {"textDocument": {"uri": target_uri}}))
     assert "nova.unresolved-import" in diagnostic_codes(server, importer_uri)
+
+
+def test_workspace_root_import_rebinds_to_most_specific_folder() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        folders=[{"uri": "file:///workspace", "name": "root"}],
+    )
+    parent_uri = "file:///workspace/provider.nova"
+    nested_uri = "file:///workspace/app/provider.nova"
+    caller_uri = "file:///workspace/app/main.nova"
+    caller = (
+        "import { target } from @/provider.nova;\n"
+        "fn caller() { target(); }\n"
+    )
+    open_nova(server, parent_uri, "fn target() { let parent = 1; }\n")
+    open_nova(server, nested_uri, "fn target() { let nested = 1; }\n")
+    open_nova(server, caller_uri, caller)
+
+    before_snapshots = server.workspace_symbols.snapshots()
+    before_objects = tuple(before_snapshots)
+    position = {
+        "line": 1,
+        "character": caller.splitlines()[1].index("target") + 1,
+    }
+    first = server.handle(
+        request(
+            "textDocument/definition",
+            30,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": position,
+            },
+        )
+    )
+    assert first is not None
+    assert first["result"]["uri"] == parent_uri
+    assert "nova.unresolved-import" not in diagnostic_codes(server, caller_uri)
+
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [
+                        {
+                            "uri": "file:///workspace/app",
+                            "name": "app",
+                        }
+                    ],
+                    "removed": [],
+                }
+            },
+        )
+    )
+
+    after_snapshots = server.workspace_symbols.snapshots()
+    assert tuple(after_snapshots) == before_objects
+    assert all(
+        current is previous
+        for current, previous in zip(
+            after_snapshots,
+            before_objects,
+            strict=True,
+        )
+    )
+    assert after_snapshots.generation != before_snapshots.generation
+
+    second = server.handle(
+        request(
+            "textDocument/definition",
+            31,
+            {
+                "textDocument": {"uri": caller_uri},
+                "position": position,
+            },
+        )
+    )
+    assert second is not None
+    assert second["result"]["uri"] == nested_uri
+    assert "nova.unresolved-import" not in diagnostic_codes(server, caller_uri)
+
+
+def test_workspace_root_import_requires_scoped_workspace() -> None:
+    server = NovaProductLanguageServer()
+    initialize(server)
+    provider_uri = "file:///workspace/provider.nova"
+    caller_uri = "file:///workspace/main.nova"
+    open_nova(server, provider_uri, "fn target() {}\n")
+    open_nova(
+        server,
+        caller_uri,
+        "import @/provider.nova;\nfn main() { target(); }\n",
+    )
+
+    assert "nova.unresolved-import" in diagnostic_codes(server, caller_uri)
+
+
+def test_workspace_root_import_rejects_parent_escape() -> None:
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        folders=[{"uri": "file:///workspace/app", "name": "app"}],
+    )
+    provider_uri = "file:///workspace/provider.nova"
+    caller_uri = "file:///workspace/app/main.nova"
+    open_nova(server, provider_uri, "fn target() {}\n")
+    open_nova(
+        server,
+        caller_uri,
+        "import @/../provider.nova;\nfn main() { target(); }\n",
+    )
+
+    assert "nova.unresolved-import" in diagnostic_codes(server, caller_uri)
 
 
 def test_closed_import_diagnostic_uses_detached_workspace(tmp_path: Path) -> None:
@@ -214,6 +348,47 @@ def test_will_rename_rewrites_open_import_with_exact_version(tmp_path: Path) -> 
                         "end": {"line": 0, "character": 17},
                     },
                     "newText": "./renamed.nova",
+                }
+            ],
+        }
+    ]
+
+
+def test_will_rename_preserves_workspace_root_import_spelling(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "dep.nova"
+    target.write_text("fn dep() {}\n")
+    new_target = tmp_path / "renamed.nova"
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        folders=[{"uri": tmp_path.as_uri(), "name": "workspace"}],
+        will_rename=True,
+        document_changes=True,
+    )
+    importer_uri = (tmp_path / "main.nova").as_uri()
+    source = "import @/dep.nova;\nfn main() {}\n"
+    open_nova(server, importer_uri, source, version=8)
+
+    response = will_rename(
+        server,
+        target.as_uri(),
+        new_target.as_uri(),
+        request_id=201,
+    )
+
+    assert response is not None
+    assert response["result"]["documentChanges"] == [
+        {
+            "textDocument": {"uri": importer_uri, "version": 8},
+            "edits": [
+                {
+                    "range": {
+                        "start": {"line": 0, "character": 7},
+                        "end": {"line": 0, "character": 17},
+                    },
+                    "newText": "@/renamed.nova",
                 }
             ],
         }
