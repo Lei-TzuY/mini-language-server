@@ -226,6 +226,7 @@ def test_argument_type_quick_fix_honors_cancellation_checkpoint() -> None:
         "error": {"code": -32800, "message": "Request cancelled"},
     }
 
+
 def test_argument_type_quick_fix_follows_transitive_import_visibility() -> None:
     server = initialized_server()
     helper = "file:///workspace/helper.nova"
