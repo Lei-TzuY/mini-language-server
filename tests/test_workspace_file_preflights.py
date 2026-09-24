@@ -472,6 +472,7 @@ def test_will_delete_rejects_detached_disk_drift_and_refreshes_index(
     assert refreshed is not None
     assert refreshed.symbols.syntax.document.text == "fn after() {}\n"
 
+
 def test_will_create_rejects_unindexed_local_disk_collision(tmp_path: Path) -> None:
     target = tmp_path / "external.nova"
     target.write_bytes(b"\xff")
