@@ -21,8 +21,10 @@ from .syntax import SyntaxError
 from .workspace import WorkspaceIndexError, WorkspaceSymbolIndex
 from .workspace_files import (
     ClosedWorkspaceFile,
+    LocalWorkspacePathEvidence,
     WorkspaceUriIdentity,
     local_path_from_file_uri,
+    probe_local_workspace_path,
     read_closed_workspace_file,
     scan_closed_workspace_files,
 )
@@ -446,6 +448,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             ) in captured_closed
             and captured_closed[identity] == snapshot.uri
         )
+        captured_local = {
+            identity: evidence
+            for uri, identity in relevant
+            if (evidence := probe_local_workspace_path(uri)) is not None
+        }
 
         try:
             context = self.requests.start(request_id)
@@ -454,6 +461,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
         validation_error: DocumentError | None = None
         stale_closed_inputs = False
+        stale_local_inputs = False
         try:
             self.requests.checkpoint(context)
             if not self._closed_workspace_snapshots_current(
@@ -463,7 +471,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 return self._error(request_id, -32801, "Content modified")
 
             def publish() -> dict[str, Any] | None:
-                nonlocal validation_error, stale_closed_inputs
+                nonlocal validation_error, stale_closed_inputs, stale_local_inputs
+                if not self._local_workspace_path_evidence_current(captured_local):
+                    stale_local_inputs = True
+                    return None
                 if any(
                     self._closed_workspace_uris.get(identity) != uri
                     for identity, uri in captured_closed.items()
@@ -476,6 +487,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         relevant,
                         captured_documents=captured_documents,
                         captured_closed=captured_closed,
+                        captured_local=captured_local,
                     )
                 except DocumentError as exc:
                     validation_error = exc
@@ -484,6 +496,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     captured_closed_snapshots
                 ):
                     stale_closed_inputs = True
+                    return None
+                if not self._local_workspace_path_evidence_current(captured_local):
+                    stale_local_inputs = True
                     return None
                 self.requests.checkpoint(context)
                 return self._result(request_id, None)
@@ -507,7 +522,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             except (DocumentError, WorkspaceIndexError, WorkspaceFolderError):
                 return self._error(request_id, -32801, "Content modified")
 
-            if stale_closed_inputs:
+            if stale_closed_inputs or stale_local_inputs:
                 self._refresh_closed_workspace_files()
                 return self._error(request_id, -32801, "Content modified")
             if validation_error is not None:
@@ -530,6 +545,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         *,
         captured_documents: tuple[Document, ...],
         captured_closed: dict[WorkspaceUriIdentity, str],
+        captured_local: dict[WorkspaceUriIdentity, LocalWorkspacePathEvidence],
     ) -> None:
         """Validate operation-specific invariants over one exact capture."""
         if operation == "delete":
@@ -548,6 +564,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             closed_uri = captured_closed.get(identity)
             if closed_uri is not None:
                 raise DocumentError(f"create target already indexed: {closed_uri}")
+            local = captured_local.get(identity)
+            if local is not None and local.exists:
+                raise DocumentError(f"create target already exists on disk: {uri}")
 
     def _handle_workspace_will_rename(
         self, request_id: Any, params: Any
@@ -588,6 +607,17 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             ) in captured_closed
             and captured_closed[identity] == snapshot.uri
         )
+        captured_local: dict[
+            WorkspaceUriIdentity, LocalWorkspacePathEvidence
+        ] = {}
+        for old_uri, new_uri in renames:
+            for uri in (old_uri, new_uri):
+                identity = WorkspaceFolderSet.uri_identity(uri)
+                if identity in captured_local:
+                    continue
+                evidence = probe_local_workspace_path(uri)
+                if evidence is not None:
+                    captured_local[identity] = evidence
 
         try:
             context = self.requests.start(request_id)
@@ -596,6 +626,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
         validation_error: DocumentError | None = None
         stale_closed_inputs = False
+        stale_local_inputs = False
         try:
             self.requests.checkpoint(context)
             if not self._closed_workspace_snapshots_current(
@@ -605,7 +636,10 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 return self._error(request_id, -32801, "Content modified")
 
             def publish() -> dict[str, Any] | None:
-                nonlocal validation_error, stale_closed_inputs
+                nonlocal validation_error, stale_closed_inputs, stale_local_inputs
+                if not self._local_workspace_path_evidence_current(captured_local):
+                    stale_local_inputs = True
+                    return None
                 if any(
                     self._closed_workspace_uris.get(identity) != uri
                     for identity, uri in captured_closed.items()
@@ -618,6 +652,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         renames,
                         captured_documents=captured_documents,
                         captured_closed=captured_closed,
+                        captured_local=captured_local,
                     )
                 except DocumentError as exc:
                     validation_error = exc
@@ -627,6 +662,9 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     captured_closed_snapshots
                 ):
                     stale_closed_inputs = True
+                    return None
+                if not self._local_workspace_path_evidence_current(captured_local):
+                    stale_local_inputs = True
                     return None
                 self.requests.checkpoint(context)
                 return self._result(request_id, None)
@@ -649,7 +687,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             except (DocumentError, WorkspaceIndexError, WorkspaceFolderError):
                 return self._error(request_id, -32801, "Content modified")
 
-            if stale_closed_inputs:
+            if stale_closed_inputs or stale_local_inputs:
                 self._refresh_closed_workspace_files()
                 return self._error(request_id, -32801, "Content modified")
             if validation_error is not None:
@@ -671,6 +709,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         *,
         captured_documents: tuple[Document, ...],
         captured_closed: dict[WorkspaceUriIdentity, str],
+        captured_local: dict[WorkspaceUriIdentity, LocalWorkspacePathEvidence],
     ) -> None:
         """Validate canonical open/detached ownership for one rename batch."""
         source_identities = tuple(
@@ -712,6 +751,25 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 raise DocumentError(
                     f"rename destination already indexed: {closed_uri}"
                 )
+            local = captured_local.get(destination_identity)
+            if (
+                local is not None
+                and local.exists
+                and destination_identity not in moving_sources
+            ):
+                raise DocumentError(
+                    f"rename destination already exists on disk: {new_uri}"
+                )
+
+    @staticmethod
+    def _local_workspace_path_evidence_current(
+        captured: dict[WorkspaceUriIdentity, LocalWorkspacePathEvidence],
+    ) -> bool:
+        """Return whether every captured local path entry is byte-identity agnostic current."""
+        return all(
+            probe_local_workspace_path(evidence.uri) == evidence
+            for evidence in captured.values()
+        )
 
     def _handle_workspace_watched_file_change(self, params: Any) -> None:
         """Reconcile detached Nova files after one validated watcher batch."""
