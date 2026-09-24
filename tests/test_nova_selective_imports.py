@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from mini_language_server import NovaProductLanguageServer
+from mini_language_server.nova import NovaFunctionAdapter
 
 
 def request(method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
