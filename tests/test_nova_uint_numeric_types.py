@@ -222,3 +222,24 @@ def test_same_version_workspace_replacement_suppresses_stale_uint_numeric_result
     current_helper = server.workspace_symbols.get(helper_uri)
     assert current_helper is not None and current_helper is not original_helper
     assert server.diagnostics.get(main_uri) is original_diagnostics
+
+def test_uint_call_result_follows_transitive_import_visibility() -> None:
+    server = initialized_server()
+    helper = "file:///workspace/helper.nova"
+    middle = "file:///workspace/middle.nova"
+    other = "file:///workspace/other.nova"
+    caller = "file:///workspace/caller.nova"
+    open_nova(server, helper, "fn source() -> UInt { return UInt::MAX; }\n")
+    open_nova(server, middle, "import ./helper.nova;\nfn middle() {}\n")
+    open_nova(server, other, "fn source() -> Int { return 1; }\n")
+    open_nova(
+        server,
+        caller,
+        "import ./middle.nova;\n"
+        "fn sink(value: Int) -> Unit { return (); }\n"
+        "fn main() -> Unit { sink(source()); return (); }\n",
+    )
+
+    items = diagnostics(server, caller, "nova.argument-type")
+    assert len(items) == 1
+    assert items[0].message == "argument 1 to 'sink' has type 'UInt'; expected 'Int'"
