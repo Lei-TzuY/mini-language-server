@@ -141,7 +141,7 @@ def test_selective_import_filters_direct_tooling() -> None:
             10,
             {
                 "textDocument": {"uri": caller_uri},
-                "position": position(caller, "visible", delta=1),
+                "position": position(caller, "visible();", delta=1),
             },
         )
     )
