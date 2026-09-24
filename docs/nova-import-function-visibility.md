@@ -30,7 +30,7 @@ The visibility resolver is shared by the executable function-call surfaces in th
 - workspace completion and inferred-return completion detail;
 - call-hierarchy prepare/incoming/outgoing resolution;
 - prepare-rename and exact workspace function rename, including importer-local namespace alias declaration/qualifier rename without changing canonical member identity;
-- importer-local namespace definition/references/document highlights and `namespace` semantic tokens, all bound to the same exact declaration/qualifier syntax identity;
+- importer-local namespace bindings published as real `namespace` symbols plus exact qualifier semantic references, so generic definition/references/hover/document highlights, document/workspace symbols, local completion, and semantic-token infrastructure share one identity;
 - reference CodeLens counts and the matching execute-command locations;
 - function-reference semantic tokens, including range/full/delta publication through the existing exact-workspace token gate;
 - parameter inlay hints and their existing workspace refresh lifecycle;
