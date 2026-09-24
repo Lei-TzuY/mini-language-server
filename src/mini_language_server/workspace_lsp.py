@@ -1751,6 +1751,29 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return None
         return bindings[0], addressed_span
 
+    @staticmethod
+    def _nova_import_namespace_spans(
+        importer: SemanticSnapshot,
+        imported: NovaImportSyntax,
+    ) -> tuple[Span, ...]:
+        """Return declaration plus exact qualifier references for one local namespace."""
+        tree = importer.symbols.syntax.tree
+        if (
+            not isinstance(tree, NovaFunctionSyntax)
+            or imported.namespace is None
+            or imported.namespace_span is None
+        ):
+            return ()
+        spans = [imported.namespace_span]
+        spans.extend(
+            span
+            for namespace, span in tree.namespace_references
+            if namespace == imported.namespace
+        )
+        spans.sort(key=lambda span: span.start)
+        return tuple(spans)
+
+
     def _nova_import_alias_target(
         self,
         importer: SemanticSnapshot,
@@ -3028,12 +3051,91 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
     def _handle_workspace_navigation(
         self, method: str, request_id: Any, params: Any
     ) -> dict[str, Any] | None:
-        """Resolve Nova functions across exact current workspace snapshots.
+        """Resolve importer-local namespaces or Nova functions from exact snapshots."""
+        parsed = self._semantic_query(params)
+        if parsed is not None:
+            semantics, offset, source = parsed
+            if semantics is not None:
+                namespace_target = self._nova_import_namespace_target(
+                    semantics,
+                    offset,
+                )
+                if namespace_target is not None:
+                    imported, _ = namespace_target
+                    spans = self._nova_import_namespace_spans(
+                        semantics,
+                        imported,
+                    )
+                    snapshots = self.workspace_symbols.snapshots()
+                    try:
+                        context = self.requests.start(request_id, uri=semantics.uri)
+                    except RequestError:
+                        return self._error(request_id, -32602, "Invalid params")
+                    try:
+                        self.requests.checkpoint(context)
+                        if method == "textDocument/definition":
+                            declaration = imported.namespace_span
+                            result: Any = (
+                                None
+                                if declaration is None
+                                else self._location(
+                                    semantics.uri,
+                                    source,
+                                    declaration,
+                                )
+                            )
+                        else:
+                            include_declaration = self._include_declaration(params)
+                            if include_declaration is None:
+                                return self._error(
+                                    request_id,
+                                    -32602,
+                                    "Invalid params",
+                                )
+                            namespace_spans = (
+                                spans
+                                if include_declaration
+                                else tuple(
+                                    span
+                                    for span in spans
+                                    if span != imported.namespace_span
+                                )
+                            )
+                            result = [
+                                self._location(
+                                    semantics.uri,
+                                    source,
+                                    span,
+                                )
+                                for span in namespace_spans
+                            ]
+                        self.requests.checkpoint(context)
+                        try:
+                            return self.workspace_symbols.commit_snapshots_if_current(
+                                snapshots,
+                                lambda: self._result(request_id, result),
+                            )
+                        except WorkspaceIndexError:
+                            return self._error(
+                                request_id,
+                                -32801,
+                                "Content modified",
+                            )
+                    except RequestCancelled:
+                        return self._error(
+                            request_id,
+                            -32800,
+                            "Request cancelled",
+                        )
+                    except StaleRequest:
+                        return self._error(
+                            request_id,
+                            -32801,
+                            "Content modified",
+                        )
+                    finally:
+                        self.requests.finish(context)
 
-        Returning ``None`` delegates non-Nova/local-only targets to the generic server.
-        A Nova function name becomes workspace-addressable only when exactly one indexed
-        function declaration owns that name, so ambiguous workspaces never guess.
-        """
         query = self._workspace_function_query(params)
         if query is None:
             return None
@@ -3053,7 +3155,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         try:
             self.requests.checkpoint(context)
             if len(declarations) != 1:
-                result: Any = [] if method == "textDocument/references" else None
+                result = [] if method == "textDocument/references" else None
                 return self.workspace_symbols.commit_snapshots_if_current(
                     snapshots, lambda: self._result(request_id, result)
                 )

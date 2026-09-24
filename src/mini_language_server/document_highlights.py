@@ -69,7 +69,34 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             target = semantics.definition_at(offset)
             self.requests.checkpoint(context)
             if target is None:
-                return self._current_semantic_result(semantics, request_id, [])
+                namespace_target = self._nova_import_namespace_target(
+                    semantics,
+                    offset,
+                )
+                if namespace_target is None:
+                    return self._current_semantic_result(semantics, request_id, [])
+                imported, _ = namespace_target
+                spans = self._nova_import_namespace_spans(
+                    semantics,
+                    imported,
+                )
+                highlights = [
+                    {
+                        "range": self._range(source, span),
+                        "kind": (
+                            _DOCUMENT_HIGHLIGHT_WRITE
+                            if imported.namespace_span == span
+                            else _DOCUMENT_HIGHLIGHT_READ
+                        ),
+                    }
+                    for span in spans
+                ]
+                self.requests.checkpoint(context)
+                return self._current_semantic_result(
+                    semantics,
+                    request_id,
+                    highlights,
+                )
 
             spans = semantics.references_to(target, include_declaration=True)
             highlights = [
