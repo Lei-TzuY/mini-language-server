@@ -267,10 +267,10 @@ class DiagnosticStore:
             for related in diagnostic.related_information:
                 if related.semantic is None:
                     if related.uri != semantic.uri:
-                        raise DiagnosticError(
-                            "cross-URI diagnostic related information requires "
-                            "an exact semantic snapshot"
-                        )
+                        # Cross-URI location-only metadata deliberately carries no
+                        # freshness ownership. Consumers that require an exact
+                        # dependency must attach a semantic parent instead.
+                        continue
                     related_semantic = semantic
                 else:
                     related_semantic = related.semantic
