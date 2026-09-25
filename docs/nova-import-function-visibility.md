@@ -35,7 +35,7 @@ The visibility resolver is shared by the executable function-call surfaces in th
 - reference CodeLens counts and the matching execute-command locations;
 - function-reference semantic tokens, including range/full/delta publication through the existing exact-workspace token gate;
 - parameter inlay hints and their existing workspace refresh lifecycle;
-- argument-count and argument-type call-site quick-fix revalidation, including namespace-qualified calls whose exact member span remains the edit owner.
+- argument-count and argument-type call-site quick-fix revalidation, including namespace-qualified calls whose exact member span remains the edit owner;\n- import-path completion for incomplete top-level import/export-from tokens, using only the exact captured open+detached workspace plus captured folder topology to suggest relative, current-root, and uniquely named-root module paths.
 
 Wildcard function re-export edges are also first-class local-file dependencies for exact import-cycle diagnostics, `textDocument/documentLink`, and `workspace/willRenameFiles` path rewriting. Canonical function identity remains the provider declaration, so ordinary references/navigation/call hierarchy/rename naturally cross wildcard facades without editing the `*` edge. Outward alias API rename treats a wildcard facade as a transparent propagation node only while that facade's exact outward view still resolves the old binding uniquely to the same canonical declaration; collisions or ambiguity fail closed.
 
@@ -49,7 +49,7 @@ All request surfaces retain their existing exact workspace snapshot commit gates
 
 This phase does not claim a general Nova module system. It does not add:
 
-- arbitrary package/module search lists beyond the bounded current-root `@/` and unique named-workspace-root `@name/` forms;
+- arbitrary package/module search lists beyond the bounded current-root `@/` and unique named-workspace-root `@name/` forms; import-path completion does not walk unindexed filesystem entries, package registries, or remote providers;
 - wildcard name-merging **import** syntax beyond existing bare imports, nested/package namespace objects, and namespace-object wildcard re-export/identity shapes beyond the bounded explicit local-file star/selective namespace graph; function-only `export * from <local-file>` does not imply any of those broader namespace/package semantics;
 - friend/package visibility, wildcard export forms, or declaration-level visibility beyond bounded `private fn` plus explicit function export lists;
 - non-function imported namespaces;
