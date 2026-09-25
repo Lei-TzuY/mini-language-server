@@ -692,14 +692,15 @@ def test_configured_bare_module_search_roots_restore_completion_for_precedence(
     ]
 
 
-def test_configured_module_search_root_tracks_workspace_folder_lifecycle(
+def test_configured_module_root_survives_workspace_folder_lifecycle(
     tmp_path: Path,
 ) -> None:
     app = tmp_path / "app"
     shared = tmp_path / "shared"
     app.mkdir()
     (shared / "pkg").mkdir(parents=True)
-    (shared / "pkg" / "provider.nova").write_text(
+    provider = shared / "pkg" / "provider.nova"
+    provider.write_text(
         "fn target() {}\n",
         encoding="utf-8",
     )
@@ -733,8 +734,10 @@ def test_configured_module_search_root_tracks_workspace_folder_lifecycle(
         )
     )
     codes = diagnostic_codes(server, caller.as_uri())
-    assert "nova.unresolved-import" in codes
-    assert "nova.unresolved-function" in codes
+    assert "nova.unresolved-import" not in codes
+    assert "nova.unresolved-function" not in codes
+    assert server.workspace_symbols.get(provider.as_uri()) is not None
+    assert server.workspace_folders.contains(provider.as_uri()) is False
 
     server.handle(
         notify(
