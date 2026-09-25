@@ -3242,14 +3242,13 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         parsed = self._semantic_query(params)
         if parsed is None:
             return None
-        semantics, offset, source = parsed
+        semantics, _, _ = parsed
         if semantics is None or not isinstance(
             semantics.symbols.syntax.tree, NovaFunctionSyntax
         ):
             return None
 
         snapshots = self.workspace_symbols.snapshots()
-        folder_scope = self.workspace_folders.snapshot()
         try:
             context = self.requests.start(request_id, uri=semantics.uri)
         except RequestError:
@@ -3257,50 +3256,24 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
         try:
             self.requests.checkpoint(context)
-            import_context = self._nova_import_completion_context(
-                semantics.symbols.syntax.document.text,
-                offset,
-            )
-            if import_context is not None:
-                replace_span, prefix = import_context
-                result = self._nova_import_completion_items(
-                    semantics,
-                    snapshots,
-                    folder_scope,
-                    source,
-                    replace_span,
-                    prefix,
-                )
-            else:
-                items: set[tuple[str, str]] = {
-                    (symbol.name, symbol.kind) for symbol in semantics.symbols.symbols
-                }
-                visible = self._nova_visible_function_map(semantics, snapshots)
-                for binding_name, declarations in visible.items():
-                    for declaration in declarations:
-                        items.add((binding_name, declaration.symbol.kind))
+            items: set[tuple[str, str]] = {
+                (symbol.name, symbol.kind) for symbol in semantics.symbols.symbols
+            }
+            visible = self._nova_visible_function_map(semantics, snapshots)
+            for binding_name, declarations in visible.items():
+                for declaration in declarations:
+                    items.add((binding_name, declaration.symbol.kind))
 
-                result = [
-                    {"label": name, "detail": kind}
-                    for name, kind in sorted(
-                        items,
-                        key=lambda item: (item[0], item[1]),
-                    )
-                ]
+            result = [
+                {"label": name, "detail": kind}
+                for name, kind in sorted(items, key=lambda item: (item[0], item[1]))
+            ]
             self.requests.checkpoint(context)
-
-            def publish() -> dict[str, Any]:
-                return self.workspace_folders.commit_if_current(
-                    folder_scope.generation,
-                    lambda: self._result(request_id, result),
-                )
-
             try:
                 return self.workspace_symbols.commit_snapshots_if_current(
-                    snapshots,
-                    publish,
+                    snapshots, lambda: self._result(request_id, result)
                 )
-            except (WorkspaceIndexError, WorkspaceFolderError):
+            except WorkspaceIndexError:
                 return self._error(request_id, -32801, "Content modified")
         except RequestCancelled:
             return self._error(request_id, -32800, "Request cancelled")
@@ -3308,160 +3281,6 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return self._error(request_id, -32801, "Content modified")
         finally:
             self.requests.finish(context)
-
-    @staticmethod
-    def _nova_import_completion_context(
-        text: str,
-        offset: int,
-    ) -> tuple[Span, str] | None:
-        """Return the incomplete import path token at one cursor, if any."""
-        if offset < 0 or offset > len(text):
-            return None
-        line_start = text.rfind("\n", 0, offset) + 1
-        line_end = text.find("\n", offset)
-        if line_end < 0:
-            line_end = len(text)
-        before = text[line_start:offset]
-        stripped = before.lstrip(" \t")
-
-        token_start: int | None = None
-        if stripped.startswith("import "):
-            marker = " from "
-            marker_index = stripped.rfind(marker)
-            if marker_index >= 0:
-                token_start = (
-                    line_start
-                    + (len(before) - len(stripped))
-                    + marker_index
-                    + len(marker)
-                )
-            elif not stripped.startswith("import {") and not stripped.startswith(
-                "import *"
-            ):
-                token_start = (
-                    line_start
-                    + (len(before) - len(stripped))
-                    + len("import ")
-                )
-        elif stripped.startswith("export * from "):
-            token_start = (
-                line_start
-                + (len(before) - len(stripped))
-                + len("export * from ")
-            )
-        if token_start is None or token_start > offset:
-            return None
-
-        prefix = text[token_start:offset]
-        if any(character.isspace() for character in prefix):
-            return None
-        allowed = frozenset(
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-            "abcdefghijklmnopqrstuvwxyz"
-            "0123456789"
-            "._~%+-/@"
-        )
-        if any(character not in allowed for character in prefix):
-            return None
-
-        end = offset
-        while end < line_end and text[end] in allowed:
-            end += 1
-        return Span(token_start, end), prefix
-
-    def _nova_import_completion_items(
-        self,
-        importer: SemanticSnapshot,
-        snapshots: tuple[SemanticSnapshot, ...],
-        folder_scope: WorkspaceFolderSnapshot,
-        source: Any,
-        replace_span: Span,
-        prefix: str,
-    ) -> list[dict[str, Any]]:
-        """Return exact server-known Nova module paths for one import token."""
-        importer_identity = WorkspaceFolderSet.uri_identity(importer.uri)
-        candidates: set[tuple[str, int]] = set()
-
-        def add(label: str, kind: int) -> None:
-            if not label.startswith(prefix):
-                return
-            candidates.add((label, kind))
-
-        if prefix == "" or prefix == "@":
-            if folder_scope.scope_uri_for(importer.uri) is not None:
-                add("@/", 19)
-            names: dict[str, int] = {}
-            for folder in folder_scope.folders:
-                names[folder.name] = names.get(folder.name, 0) + 1
-            for name, count in sorted(names.items()):
-                if (
-                    count == 1
-                    and name
-                    and (name[0].isalpha() or name[0] == "_")
-                    and all(
-                        character.isalnum() or character in "_.-"
-                        for character in name[1:]
-                    )
-                ):
-                    add(f"@{name}/", 19)
-
-        for target in snapshots:
-            if WorkspaceFolderSet.uri_identity(target.uri) == importer_identity:
-                continue
-
-            labels: list[str] = []
-            if prefix.startswith("@/"):
-                folder_uri = folder_scope.scope_uri_for(importer.uri)
-                if folder_uri is not None:
-                    rendered = self._nova_import_path_from_workspace_folder(
-                        importer.uri,
-                        target.uri,
-                        folder_uri=folder_uri,
-                        prefix="@/",
-                    )
-                    if rendered is not None:
-                        labels.append(rendered)
-            elif prefix.startswith("@"):
-                root_name, separator, _ = prefix[1:].partition("/")
-                if separator and root_name:
-                    matches = tuple(
-                        folder
-                        for folder in folder_scope.folders
-                        if folder.name == root_name
-                    )
-                    if len(matches) == 1 and folder_scope.contains(importer.uri):
-                        rendered = self._nova_import_path_from_workspace_folder(
-                            importer.uri,
-                            target.uri,
-                            folder_uri=matches[0].uri,
-                            prefix=f"@{root_name}/",
-                        )
-                        if rendered is not None:
-                            labels.append(rendered)
-            elif prefix.startswith("./") or prefix.startswith("../"):
-                rendered = self._nova_relative_import_path(
-                    importer.uri,
-                    target.uri,
-                )
-                if rendered is not None:
-                    labels.append(rendered)
-
-            for label in labels:
-                add(label, 17)
-
-        edit_range = self._range(source, replace_span)
-        return [
-            {
-                "label": label,
-                "kind": kind,
-                "detail": "module folder" if kind == 19 else "Nova module",
-                "textEdit": {
-                    "range": edit_range,
-                    "newText": label,
-                },
-            }
-            for label, kind in sorted(candidates, key=lambda item: (item[0], item[1]))
-        ]
 
     @staticmethod
     def _function_signature(declaration: Any) -> str:
