@@ -2475,6 +2475,28 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             )
         return ()
 
+    @staticmethod
+    def _nova_module_resolution_related_information(
+        resolution: NovaModuleResolution,
+        indexed: dict[WorkspaceUriIdentity, SemanticSnapshot],
+        path: str,
+    ) -> tuple[DiagnosticRelatedInformation, ...]:
+        """Render deterministic related locations for exact ambiguous modules."""
+        related: list[DiagnosticRelatedInformation] = []
+        for uri in resolution.candidate_uris:
+            candidate = indexed.get(WorkspaceFolderSet.uri_identity(uri))
+            if candidate is None:
+                continue
+            related.append(
+                DiagnosticRelatedInformation(
+                    candidate.uri,
+                    Span(0, 0),
+                    f"candidate module for '{path}' is here",
+                    semantic=candidate,
+                )
+            )
+        return tuple(related)
+
     def _nova_import_diagnostics(
         self,
         snapshot: SemanticSnapshot,
@@ -2517,11 +2539,34 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         )
                     )
                 seen_namespaces.add(item.namespace)
-            target_uri = self._nova_import_target_uri(snapshot.uri, item.path, snapshots=snapshots)
+            resolution = self._nova_import_resolution(
+                snapshot.uri,
+                item.path,
+                snapshots=snapshot_tuple,
+            )
+            if resolution.status == "ambiguous":
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"ambiguous import '{item.path}'",
+                        code="nova.ambiguous-import",
+                        source="nova",
+                        related_information=(
+                            self._nova_module_resolution_related_information(
+                                resolution,
+                                indexed,
+                                item.path,
+                            )
+                        ),
+                    )
+                )
+                continue
             target = (
                 None
-                if target_uri is None
-                else indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
+                if resolution.target_uri is None
+                else indexed.get(
+                    WorkspaceFolderSet.uri_identity(resolution.target_uri)
+                )
             )
             if target is None:
                 diagnostics.append(
@@ -2704,11 +2749,34 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     )
 
         for item in tree.wildcard_exports:
-            target_uri = self._nova_import_target_uri(snapshot.uri, item.path, snapshots=snapshots)
+            resolution = self._nova_import_resolution(
+                snapshot.uri,
+                item.path,
+                snapshots=snapshot_tuple,
+            )
+            if resolution.status == "ambiguous":
+                diagnostics.append(
+                    Diagnostic(
+                        item.span,
+                        f"ambiguous wildcard export target '{item.path}'",
+                        code="nova.ambiguous-export-target",
+                        source="nova",
+                        related_information=(
+                            self._nova_module_resolution_related_information(
+                                resolution,
+                                indexed,
+                                item.path,
+                            )
+                        ),
+                    )
+                )
+                continue
             target = (
                 None
-                if target_uri is None
-                else indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
+                if resolution.target_uri is None
+                else indexed.get(
+                    WorkspaceFolderSet.uri_identity(resolution.target_uri)
+                )
             )
             if target is None:
                 diagnostics.append(
