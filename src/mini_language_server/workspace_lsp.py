@@ -1359,7 +1359,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         return semantic, diagnostics
 
     def _nova_import_target_uri(self, importer_uri: str, path: str) -> str | None:
-        """Resolve one bounded relative or workspace-root Nova file import."""
+        """Resolve one bounded relative, current-root, or named-root Nova import."""
         if not path.endswith(".nova"):
             return None
         try:
@@ -1373,17 +1373,30 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         ):
             return None
 
+        folder_uri: str | None = None
+        relative: str | None = None
         if path.startswith("@/"):
+            folder_uri = self.workspace_folders.scope_uri_for(importer_uri)
             relative = path[2:]
-            if not relative:
+        elif path.startswith("@"):
+            root_name, separator, relative_path = path[1:].partition("/")
+            if not separator or not root_name or not relative_path:
                 return None
-            if any(
+            matches = tuple(
+                folder
+                for folder in self.workspace_folders.folders()
+                if folder.name == root_name
+            )
+            if len(matches) != 1 or not self.workspace_folders.contains(importer_uri):
+                return None
+            folder_uri = matches[0].uri
+            relative = relative_path
+
+        if folder_uri is not None and relative is not None:
+            if not relative or any(
                 urllib.parse.unquote(segment) in {".", ".."}
                 for segment in relative.split("/")
             ):
-                return None
-            folder_uri = self.workspace_folders.scope_uri_for(importer_uri)
-            if folder_uri is None:
                 return None
             try:
                 folder = urllib.parse.urlsplit(folder_uri)
@@ -2660,10 +2673,46 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
     ) -> str | None:
         """Render one target relative to the importer's most-specific workspace root."""
         folder_uri = self.workspace_folders.scope_uri_for(importer_uri)
-        if folder_uri is None or not WorkspaceFolderSet._contains(
-            folder_uri,
+        if folder_uri is None:
+            return None
+        return self._nova_import_path_from_workspace_folder(
+            importer_uri,
             target_uri,
-        ):
+            folder_uri=folder_uri,
+            prefix="@/",
+        )
+
+    def _nova_named_workspace_root_import_path(
+        self,
+        importer_uri: str,
+        target_uri: str,
+        root_name: str,
+    ) -> str | None:
+        """Render one target through one unique configured workspace-folder name."""
+        matches = tuple(
+            folder
+            for folder in self.workspace_folders.folders()
+            if folder.name == root_name
+        )
+        if len(matches) != 1 or not self.workspace_folders.contains(importer_uri):
+            return None
+        return self._nova_import_path_from_workspace_folder(
+            importer_uri,
+            target_uri,
+            folder_uri=matches[0].uri,
+            prefix=f"@{root_name}/",
+        )
+
+    @staticmethod
+    def _nova_import_path_from_workspace_folder(
+        importer_uri: str,
+        target_uri: str,
+        *,
+        folder_uri: str,
+        prefix: str,
+    ) -> str | None:
+        """Render one exact target below a selected local workspace folder."""
+        if not WorkspaceFolderSet._contains(folder_uri, target_uri):
             return None
         try:
             folder = urllib.parse.urlsplit(folder_uri)
@@ -2692,7 +2741,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         relative = posixpath.relpath(target_path, start=root_path)
         if relative == ".." or relative.startswith("../"):
             return None
-        return f"@/{relative}"
+        return prefix + relative
 
     @staticmethod
     def _nova_relative_import_path(
@@ -2752,17 +2801,23 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 if importer_identity not in renamed and target_identity not in renamed:
                     continue
                 post_target_uri = renamed.get(target_identity, target_uri)
-                replacement = (
-                    self._nova_workspace_root_import_path(
+                if item.path.startswith("@/"):
+                    replacement = self._nova_workspace_root_import_path(
                         post_importer_uri,
                         post_target_uri,
                     )
-                    if item.path.startswith("@/")
-                    else self._nova_relative_import_path(
+                elif item.path.startswith("@"):
+                    root_name = item.path[1:].split("/", 1)[0]
+                    replacement = self._nova_named_workspace_root_import_path(
+                        post_importer_uri,
+                        post_target_uri,
+                        root_name,
+                    )
+                else:
+                    replacement = self._nova_relative_import_path(
                         post_importer_uri,
                         post_target_uri,
                     )
-                )
                 if replacement is None:
                     raise DocumentError(
                         f"rename cannot preserve Nova import '{item.path}' "
