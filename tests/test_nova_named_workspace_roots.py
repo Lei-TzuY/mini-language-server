@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from mini_language_server import NovaProductLanguageServer
 from mini_language_server.nova import NovaFunctionSyntax
 
@@ -387,3 +389,78 @@ def test_will_rename_preserves_named_root_spelling(tmp_path: Path) -> None:
             ],
         }
     ]
+
+
+def test_named_root_rename_rejects_folder_topology_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = tmp_path / "app"
+    shared = tmp_path / "shared"
+    app.mkdir()
+    shared.mkdir()
+    provider = shared / "provider.nova"
+    renamed = shared / "renamed.nova"
+    provider.write_text("fn target() {}\n", encoding="utf-8")
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": shared.as_uri(), "name": "shared"},
+        ],
+        will_rename=True,
+        document_changes=True,
+    )
+    caller = app / "main.nova"
+    open_nova(
+        server,
+        caller.as_uri(),
+        "import @shared/provider.nova;\nfn caller() { target(); }\n",
+        version=8,
+    )
+    original = server._nova_import_rename_changes
+
+    def rename_root_during_planning(snapshots, renames):
+        changes = original(snapshots, renames)
+        server.handle(
+            notify(
+                "workspace/didChangeWorkspaceFolders",
+                {
+                    "event": {
+                        "removed": [
+                            {"uri": shared.as_uri(), "name": "shared"}
+                        ],
+                        "added": [
+                            {"uri": shared.as_uri(), "name": "library"}
+                        ],
+                    }
+                },
+            )
+        )
+        return changes
+
+    monkeypatch.setattr(
+        server,
+        "_nova_import_rename_changes",
+        rename_root_during_planning,
+    )
+
+    assert server.handle(
+        request(
+            "workspace/willRenameFiles",
+            21,
+            {
+                "files": [
+                    {
+                        "oldUri": provider.as_uri(),
+                        "newUri": renamed.as_uri(),
+                    }
+                ]
+            },
+        )
+    ) == {
+        "jsonrpc": "2.0",
+        "id": 21,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
