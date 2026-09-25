@@ -300,6 +300,17 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             ordered.append(root)
         return tuple(ordered)
 
+    def _watched_file_affects_semantic_index(self, uri: str) -> bool:
+        """Accept reported changes from configured local semantic providers."""
+        if super()._watched_file_affects_semantic_index(uri):
+            return True
+        path = local_path_from_file_uri(uri)
+        return (
+            path is not None
+            and path.suffix == ".nova"
+            and self._workspace_semantic_scope_contains(uri)
+        )
+
     def _nova_bare_workspace_resolution(
         self,
         importer_uri: str,
