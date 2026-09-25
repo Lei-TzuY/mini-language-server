@@ -1562,7 +1562,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             not path
             or not path.endswith(".nova")
             or path.startswith(("@", ".", "/"))
-            or not self.workspace_folders.contains(importer_uri)
+            or not self._workspace_semantic_scope_contains(importer_uri)
         ):
             return ()
         segments = path.split("/")
