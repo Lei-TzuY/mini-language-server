@@ -668,6 +668,39 @@ def test_configured_bare_module_search_roots_restore_completion_for_precedence(
     ]
 
 
+def test_remote_file_module_search_root_fails_closed(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    shared = tmp_path / "shared"
+    app.mkdir()
+    (shared / "pkg").mkdir(parents=True)
+    (shared / "pkg" / "provider.nova").write_text(
+        "fn target() {}\n",
+        encoding="utf-8",
+    )
+    caller = app / "main.nova"
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": shared.as_uri(), "name": "shared"},
+        ],
+        module_search_roots=["file://remote-host/workspace"],
+    )
+    open_nova(
+        server,
+        caller.as_uri(),
+        "import pkg/provider.nova;\nfn caller() { target(); }\n",
+    )
+
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" in codes
+    assert "nova.unresolved-function" in codes
+
+
 def test_invalid_explicit_module_search_roots_fail_closed(
     tmp_path: Path,
 ) -> None:
