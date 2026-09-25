@@ -1605,7 +1605,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
         candidates: dict[str, list[SemanticSnapshot]] = {}
         for imported in tree.imports:
-            target_uri = self._nova_import_target_uri(snapshot.uri, imported.path, snapshots=snapshots)
+            target_uri = self._nova_import_target_uri(
+                snapshot.uri,
+                imported.path,
+                snapshots=snapshots,
+            )
             if target_uri is None:
                 continue
             target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
@@ -1828,7 +1832,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                             binding_counts.get(selected.binding_name, 0) + 1
                         )
             for item in snapshot_tree.imports:
-                target_uri = self._nova_import_target_uri(snapshot.uri, item.path, snapshots=snapshots)
+                target_uri = self._nova_import_target_uri(
+                    snapshot.uri,
+                    item.path,
+                    snapshots=snapshots,
+                )
                 if target_uri is None:
                     continue
                 target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
@@ -2010,7 +2018,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for imported in tree.imports:
             if not imported.has_name_list:
                 continue
-            target_uri = self._nova_import_target_uri(importer.uri, imported.path, snapshots=snapshots)
+            target_uri = self._nova_import_target_uri(
+                importer.uri,
+                imported.path,
+                snapshots=snapshots,
+            )
             if target_uri is None:
                 continue
             target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
@@ -2091,7 +2103,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 continue
             if not imported.has_name_list:
                 continue
-            target_uri = self._nova_import_target_uri(importer.uri, imported.path, snapshots=snapshots)
+            target_uri = self._nova_import_target_uri(
+                importer.uri,
+                imported.path,
+                snapshots=snapshots,
+            )
             if target_uri is None:
                 continue
             target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
@@ -2290,7 +2306,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if not isinstance(tree, NovaFunctionSyntax):
                 continue
             for item in self._nova_module_dependency_edges(tree):
-                target_uri = self._nova_import_target_uri(snapshot.uri, item.path, snapshots=snapshots)
+                target_uri = self._nova_import_target_uri(
+                    snapshot.uri,
+                    item.path,
+                    snapshots=snapshots,
+                )
                 if target_uri is None:
                     continue
                 target_identity = WorkspaceFolderSet.uri_identity(target_uri)
@@ -2928,7 +2948,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             source = self._source_text(snapshot.symbols.syntax.document.text)
 
             for item in self._nova_module_dependency_edges(tree):
-                target_uri = self._nova_import_target_uri(snapshot.uri, item.path, snapshots=snapshots)
+                target_uri = self._nova_import_target_uri(
+                    snapshot.uri,
+                    item.path,
+                    snapshots=snapshots,
+                )
                 if target_uri is None:
                     continue
                 target_identity = WorkspaceFolderSet.uri_identity(target_uri)
@@ -3259,7 +3283,11 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for item in self._nova_module_dependency_edges(
                 semantics.symbols.syntax.tree
             ):
-                target_uri = self._nova_import_target_uri(semantics.uri, item.path, snapshots=snapshots)
+                target_uri = self._nova_import_target_uri(
+                    semantics.uri,
+                    item.path,
+                    snapshots=snapshots,
+                )
                 if target_uri is None:
                     continue
                 indexed_uri = indexed.get(
