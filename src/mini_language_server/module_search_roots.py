@@ -9,8 +9,8 @@ from .server import ServerState
 from .will_save_formatting import (
     _FORMATTING_CONFIGURATION_REGISTRATION_ID,
     _FORMATTING_CONFIGURATION_SECTION,
-    NovaProductLanguageServer as _NovaProductLanguageServer,
 )
+from .will_save_formatting import NovaProductLanguageServer as _NovaProductLanguageServer
 from .workspace_files import WorkspaceUriIdentity, local_path_from_file_uri
 from .workspace_folders import WorkspaceFolderSet
 from .workspace_lsp import NovaModuleResolution
