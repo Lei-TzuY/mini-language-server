@@ -28,11 +28,21 @@ def initialize(
     will_rename: bool = False,
     document_changes: bool = False,
     module_search_roots: list[str] | None = None,
+    configuration: bool = False,
+    dynamic_configuration_registration: bool = False,
+    diagnostic_refresh: bool = False,
 ) -> None:
     text_document: dict[str, Any] = {"completion": {}}
     if document_links:
         text_document["documentLink"] = {}
-    workspace: dict[str, Any] = {"workspaceFolders": True}
+    workspace: dict[str, Any] = {
+        "workspaceFolders": True,
+        "configuration": configuration,
+    }
+    if dynamic_configuration_registration:
+        workspace["didChangeConfiguration"] = {"dynamicRegistration": True}
+    if diagnostic_refresh:
+        workspace["diagnostics"] = {"refreshSupport": True}
     if will_rename:
         workspace["fileOperations"] = {"willRename": True}
     if document_changes:
@@ -57,6 +67,17 @@ def initialize(
     )
     assert response is not None
     server.handle(notify("initialized", {}))
+
+
+def module_configuration_result(
+    configuration_request: dict[str, Any],
+    roots: list[str] | None,
+) -> list[Any]:
+    items = configuration_request["params"]["items"]
+    assert items[-1] == {
+        "section": "mini-language-server.nova.moduleSearchRoots"
+    }
+    return [None] * (len(items) - 1) + [roots]
 
 
 def open_nova(
@@ -792,3 +813,268 @@ def test_invalid_explicit_module_search_roots_fail_closed(
     codes = diagnostic_codes(server, caller.as_uri())
     assert "nova.unresolved-import" in codes
     assert "nova.unresolved-function" in codes
+
+
+def test_workspace_configuration_overrides_module_search_root_order(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    for root in (app, left, right):
+        root.mkdir()
+    for root in (left, right):
+        (root / "pkg").mkdir()
+        (root / "pkg" / "provider.nova").write_text(
+            "fn target() {}\n",
+            encoding="utf-8",
+        )
+    caller = app / "main.nova"
+    source = (
+        "import { target } from pkg/provider.nova;\n"
+        "fn caller() { target(); }\n"
+    )
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": left.as_uri(), "name": "left"},
+            {"uri": right.as_uri(), "name": "right"},
+        ],
+        module_search_roots=[left.as_uri(), right.as_uri()],
+        configuration=True,
+    )
+    open_nova(server, caller.as_uri(), source)
+
+    snapshots = server.workspace_symbols.snapshots()
+    initial = server._nova_import_resolution(
+        caller.as_uri(),
+        "pkg/provider.nova",
+        snapshots=snapshots,
+    )
+    assert initial.target_uri == (left / "pkg" / "provider.nova").as_uri()
+
+    requests = server.drain_server_requests()
+    assert len(requests) == 1
+    config = requests[0]
+    assert config["method"] == "workspace/configuration"
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": config["id"],
+            "result": module_configuration_result(
+                config,
+                [right.as_uri(), left.as_uri()],
+            ),
+        }
+    ) is None
+
+    updated = server._nova_import_resolution(
+        caller.as_uri(),
+        "pkg/provider.nova",
+        snapshots=server.workspace_symbols.snapshots(),
+    )
+    assert updated.target_uri == (right / "pkg" / "provider.nova").as_uri()
+    assert updated.candidate_uris == (
+        (right / "pkg" / "provider.nova").as_uri(),
+        (left / "pkg" / "provider.nova").as_uri(),
+    )
+    assert "nova.unresolved-import" not in diagnostic_codes(server, caller.as_uri())
+    assert "nova.ambiguous-import" not in diagnostic_codes(server, caller.as_uri())
+
+
+def test_configuration_change_supersedes_module_root_generation(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    for root in (app, left, right):
+        root.mkdir()
+    for root in (left, right):
+        (root / "pkg").mkdir()
+        (root / "pkg" / "provider.nova").write_text(
+            "fn target() {}\n",
+            encoding="utf-8",
+        )
+    caller = app / "main.nova"
+    source = "import pkg/provider.nova;\nfn caller() { target(); }\n"
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": left.as_uri(), "name": "left"},
+            {"uri": right.as_uri(), "name": "right"},
+        ],
+        module_search_roots=[left.as_uri(), right.as_uri()],
+        configuration=True,
+    )
+    open_nova(server, caller.as_uri(), source)
+    first = server.drain_server_requests()[0]
+
+    server.handle(
+        notify(
+            "workspace/didChangeConfiguration",
+            {"settings": {"nova": {"moduleSearchRoots": ["ignored"]}}},
+        )
+    )
+
+    assert server.drain_notifications() == [
+        {
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": {"id": first["id"]},
+        }
+    ]
+    second_requests = server.drain_server_requests()
+    assert len(second_requests) == 1
+    second = second_requests[0]
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": first["id"],
+            "result": module_configuration_result(
+                first,
+                [right.as_uri(), left.as_uri()],
+            ),
+        }
+    ) is None
+    still_initial = server._nova_import_resolution(
+        caller.as_uri(),
+        "pkg/provider.nova",
+        snapshots=server.workspace_symbols.snapshots(),
+    )
+    assert still_initial.target_uri == (left / "pkg" / "provider.nova").as_uri()
+
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": second["id"],
+            "result": module_configuration_result(second, []),
+        }
+    ) is None
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" in codes
+    assert "nova.unresolved-function" in codes
+
+
+def test_dynamic_module_root_registration_uses_distinct_section(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [{"uri": root.as_uri(), "name": "workspace"}],
+        module_search_roots=[root.as_uri()],
+        configuration=True,
+        dynamic_configuration_registration=True,
+    )
+
+    requests = server.drain_server_requests()
+    assert [item["method"] for item in requests] == [
+        "client/registerCapability",
+        "workspace/configuration",
+    ]
+    registrations = requests[0]["params"]["registrations"]
+    assert [item["registerOptions"]["section"] for item in registrations] == [
+        "mini-language-server.formatting",
+        "mini-language-server.nova.moduleSearchRoots",
+    ]
+
+
+def test_module_policy_change_invalidates_inflight_definition(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    for root in (app, left, right):
+        root.mkdir()
+    for root in (left, right):
+        (root / "pkg").mkdir()
+        (root / "pkg" / "provider.nova").write_text(
+            "fn target() {}\n",
+            encoding="utf-8",
+        )
+    caller = app / "main.nova"
+    source = (
+        "import { target } from pkg/provider.nova;\n"
+        "fn caller() { target(); }\n"
+    )
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": left.as_uri(), "name": "left"},
+            {"uri": right.as_uri(), "name": "right"},
+        ],
+        module_search_roots=[left.as_uri(), right.as_uri()],
+        configuration=True,
+    )
+    open_nova(server, caller.as_uri(), source)
+    initial_config = server.drain_server_requests()[0]
+    server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": initial_config["id"],
+            "result": module_configuration_result(
+                initial_config,
+                [left.as_uri(), right.as_uri()],
+            ),
+        }
+    )
+
+    server.handle(notify("workspace/didChangeConfiguration", {"settings": {}}))
+    update = server.drain_server_requests()[0]
+    real_commit = server.workspace_symbols.commit_snapshots_if_current
+    injected = False
+
+    def switch_policy_before_commit(snapshots, callback):
+        nonlocal injected
+        if not injected:
+            injected = True
+            server.workspace_symbols.commit_snapshots_if_current = real_commit
+            server.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": update["id"],
+                    "result": module_configuration_result(
+                        update,
+                        [right.as_uri(), left.as_uri()],
+                    ),
+                }
+            )
+        return real_commit(snapshots, callback)
+
+    server.workspace_symbols.commit_snapshots_if_current = (
+        switch_policy_before_commit
+    )  # type: ignore[method-assign]
+
+    response = server.handle(
+        request(
+            "textDocument/definition",
+            90,
+            {
+                "textDocument": {"uri": caller.as_uri()},
+                "position": {
+                    "line": 1,
+                    "character": source.splitlines()[1].index("target") + 1,
+                },
+            },
+        )
+    )
+    assert response == {
+        "jsonrpc": "2.0",
+        "id": 90,
+        "error": {"code": -32801, "message": "Content modified"},
+    }
