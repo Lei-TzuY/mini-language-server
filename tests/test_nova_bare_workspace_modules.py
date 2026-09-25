@@ -206,8 +206,31 @@ def test_bare_module_lookup_is_ambiguous_across_workspace_roots(
     source = "import pkg/provider.nova;\nfn caller() { target(); }\n"
     open_nova(server, caller.as_uri(), source)
 
-    assert "nova.unresolved-import" in diagnostic_codes(server, caller.as_uri())
-    assert "nova.unresolved-function" in diagnostic_codes(server, caller.as_uri())
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.ambiguous-import" in codes
+    assert "nova.unresolved-import" not in codes
+    assert "nova.unresolved-function" in codes
+
+    snapshot = server.diagnostics.get(caller.as_uri())
+    assert snapshot is not None
+    diagnostic = next(
+        item
+        for item in snapshot.diagnostics
+        if item.code == "nova.ambiguous-import"
+    )
+    assert [item.uri for item in diagnostic.related_information] == [
+        (left / "pkg" / "provider.nova").as_uri(),
+        (right / "pkg" / "provider.nova").as_uri(),
+    ]
+    assert all(
+        item.span.start == 0 and item.span.end == 0
+        for item in diagnostic.related_information
+    )
+    assert all(
+        item.semantic is None
+        for item in diagnostic.related_information
+    )
+
     links = server.handle(
         request(
             "textDocument/documentLink",
@@ -385,4 +408,104 @@ def test_will_rename_preserves_unique_bare_module_spelling(
                 }
             ],
         }
+    ]
+
+
+def test_closed_bare_ambiguity_surfaces_related_documents(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    for root in (app, left, right):
+        root.mkdir()
+    for root in (left, right):
+        (root / "pkg").mkdir()
+        (root / "pkg" / "provider.nova").write_text(
+            "fn target() {}\n",
+            encoding="utf-8",
+        )
+    caller = app / "main.nova"
+    caller.write_text(
+        "import pkg/provider.nova;\nfn caller() { target(); }\n",
+        encoding="utf-8",
+    )
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": left.as_uri(), "name": "left"},
+            {"uri": right.as_uri(), "name": "right"},
+        ],
+    )
+
+    response = server.handle(
+        request(
+            "textDocument/diagnostic",
+            40,
+            {"textDocument": {"uri": caller.as_uri()}},
+        )
+    )
+
+    assert response is not None
+    ambiguity = next(
+        item
+        for item in response["result"]["items"]
+        if item["code"] == "nova.ambiguous-import"
+    )
+    assert ambiguity["message"] == "ambiguous import 'pkg/provider.nova'"
+    related = response["result"]["relatedDocuments"]
+    assert list(related) == [
+        (left / "pkg" / "provider.nova").as_uri(),
+        (right / "pkg" / "provider.nova").as_uri(),
+    ]
+    assert all(report["kind"] == "full" for report in related.values())
+
+
+def test_bare_wildcard_export_reports_ambiguous_target(
+    tmp_path: Path,
+) -> None:
+    facade = tmp_path / "facade"
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    for root in (facade, left, right):
+        root.mkdir()
+    for root in (left, right):
+        (root / "pkg").mkdir()
+        (root / "pkg" / "provider.nova").write_text(
+            "fn target() {}\n",
+            encoding="utf-8",
+        )
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": facade.as_uri(), "name": "facade"},
+            {"uri": left.as_uri(), "name": "left"},
+            {"uri": right.as_uri(), "name": "right"},
+        ],
+    )
+    module = facade / "module.nova"
+    open_nova(
+        server,
+        module.as_uri(),
+        "export * from pkg/provider.nova;\nfn facade() {}\n",
+    )
+
+    codes = diagnostic_codes(server, module.as_uri())
+    assert "nova.ambiguous-export-target" in codes
+    assert "nova.unresolved-export-target" not in codes
+    snapshot = server.diagnostics.get(module.as_uri())
+    assert snapshot is not None
+    diagnostic = next(
+        item
+        for item in snapshot.diagnostics
+        if item.code == "nova.ambiguous-export-target"
+    )
+    assert [item.uri for item in diagnostic.related_information] == [
+        (left / "pkg" / "provider.nova").as_uri(),
+        (right / "pkg" / "provider.nova").as_uri(),
     ]

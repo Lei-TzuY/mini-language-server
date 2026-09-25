@@ -8,6 +8,7 @@ from mini_language_server import DocumentStore, Span
 from mini_language_server.diagnostics import (
     Diagnostic,
     DiagnosticError,
+    DiagnosticRelatedInformation,
     DiagnosticSnapshot,
     DiagnosticStore,
 )
@@ -53,6 +54,33 @@ def test_publish_is_deterministic_and_version_bound() -> None:
         Diagnostic(Span(4, 10), "invalid declaration"),
         Diagnostic(Span(13, 19), "unused reference", "warning", "W001"),
     )
+
+
+
+def test_cross_uri_location_only_related_information_has_no_semantic_parent() -> None:
+    *_, database, _, _, _, semantic = current_semantics()
+    store = DiagnosticStore(database)
+    related = DiagnosticRelatedInformation(
+        "file:///workspace/provider.nova",
+        Span(0, 0),
+        "candidate module is here",
+        location_only=True,
+    )
+
+    snapshot = store.publish(
+        semantic,
+        [
+            Diagnostic(
+                Span(4, 10),
+                "ambiguous import",
+                related_information=(related,),
+            )
+        ],
+    )
+
+    assert store.get(semantic.uri) is snapshot
+    assert snapshot.diagnostics[0].related_information == (related,)
+    assert snapshot.related_semantics == ()
 
 
 def test_semantic_republication_invalidates_diagnostics() -> None:
