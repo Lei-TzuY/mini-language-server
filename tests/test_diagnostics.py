@@ -64,6 +64,7 @@ def test_cross_uri_location_only_related_information_has_no_semantic_parent() ->
         "file:///workspace/provider.nova",
         Span(0, 0),
         "candidate module is here",
+        location_only=True,
     )
 
     snapshot = store.publish(
