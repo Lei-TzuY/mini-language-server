@@ -1,6 +1,6 @@
 # Nova import-graph function visibility
 
-The Nova imported-symbol namespace gives bounded semantic meaning to top-level local-file imports without introducing a general package/module search list. Besides `./` / `../` relative imports, a scoped workspace may use `@/path.nova` for the importer's most-specific configured workspace folder or `@name/path.nova` for one uniquely named LSP `workspaceFolder`. Named roots are exact folder-name aliases, not precedence-ordered package paths: duplicate names, parent escapes, unsupported/non-local folders, and cross-authority targets fail closed.
+The Nova imported-symbol namespace gives bounded semantic meaning to top-level local-file imports without introducing a general package/module search list. Besides `./` / `../` relative imports, a scoped workspace may use `@/path.nova` for the importer's most-specific configured workspace folder or `@name/path.nova` for one uniquely named LSP `workspaceFolder`. Named roots are exact folder-name aliases, not precedence-ordered package paths. Only path-safe folder names matching `[A-Za-z_][A-Za-z0-9_.-]*` have an `@name/` spelling; duplicate names, parent escapes, unsupported/non-local folders, and cross-authority targets fail closed.
 
 ## Visibility contract
 
