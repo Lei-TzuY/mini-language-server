@@ -6,10 +6,19 @@ import urllib.parse
 from typing import Any
 
 from .server import ServerState
-from .will_save_formatting import NovaProductLanguageServer as _NovaProductLanguageServer
+from .will_save_formatting import (
+    _FORMATTING_CONFIGURATION_REGISTRATION_ID,
+    _FORMATTING_CONFIGURATION_SECTION,
+    NovaProductLanguageServer as _NovaProductLanguageServer,
+)
 from .workspace_files import WorkspaceUriIdentity, local_path_from_file_uri
 from .workspace_folders import WorkspaceFolderSet
 from .workspace_lsp import NovaModuleResolution
+
+_MODULE_SEARCH_CONFIGURATION_SECTION = "mini-language-server.nova.moduleSearchRoots"
+_MODULE_SEARCH_CONFIGURATION_REGISTRATION_ID = (
+    "mini-language-server.nova.moduleSearchRoots.didChangeConfiguration"
+)
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -17,18 +26,29 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     def __init__(self) -> None:
         super().__init__()
+        self._initial_module_search_root_identities: (
+            tuple[WorkspaceUriIdentity, ...] | None
+        ) = None
         self._module_search_root_identities: (
             tuple[WorkspaceUriIdentity, ...] | None
         ) = None
+        self._module_search_configuration_generation = 0
+        self._module_search_configuration_requests: dict[str, int] = {}
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
-        if (
-            message.get("method") == "initialize"
-            and self.state is ServerState.PRE_INITIALIZE
+        method = message.get("method")
+        if method == "initialize" and self.state is ServerState.PRE_INITIALIZE:
+            roots = self._parse_module_search_roots(message.get("params"))
+            self._initial_module_search_root_identities = roots
+            self._module_search_root_identities = roots
+        elif (
+            method == "workspace/didChangeConfiguration"
+            and "id" not in message
+            and self.state is ServerState.RUNNING
+            and self._workspace_configuration_support
         ):
-            self._module_search_root_identities = self._parse_module_search_roots(
-                message.get("params")
-            )
+            with self._formatting_configuration_lock:
+                self._module_search_configuration_generation += 1
         return super().handle(message)
 
     @staticmethod
@@ -44,7 +64,15 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         nova = options.get("nova")
         if not isinstance(nova, dict) or "moduleSearchRoots" not in nova:
             return None
-        configured = nova.get("moduleSearchRoots")
+        return NovaProductLanguageServer._parse_module_search_root_values(
+            nova.get("moduleSearchRoots")
+        )
+
+    @staticmethod
+    def _parse_module_search_root_values(
+        configured: Any,
+    ) -> tuple[WorkspaceUriIdentity, ...]:
+        """Parse one explicit root list; malformed values fail closed."""
         if not isinstance(configured, list):
             return ()
 
@@ -70,6 +98,160 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             seen.add(identity)
             roots.append(identity)
         return tuple(roots)
+
+    def _queue_formatting_configuration_registration(self) -> None:
+        """Register both configuration sections in one tracked request."""
+        if (
+            not self._workspace_configuration_support
+            or not self._did_change_configuration_dynamic_registration
+            or self._formatting_configuration_registration_attempted
+        ):
+            return
+        self._formatting_configuration_registration_attempted = True
+
+        def own_registration(request_id: str) -> None:
+            self._formatting_configuration_registration_request = request_id
+
+        self._queue_server_request(
+            "client/registerCapability",
+            {
+                "registrations": [
+                    {
+                        "id": _FORMATTING_CONFIGURATION_REGISTRATION_ID,
+                        "method": "workspace/didChangeConfiguration",
+                        "registerOptions": {
+                            "section": _FORMATTING_CONFIGURATION_SECTION,
+                        },
+                    },
+                    {
+                        "id": _MODULE_SEARCH_CONFIGURATION_REGISTRATION_ID,
+                        "method": "workspace/didChangeConfiguration",
+                        "registerOptions": {
+                            "section": _MODULE_SEARCH_CONFIGURATION_SECTION,
+                        },
+                    },
+                ]
+            },
+            on_queued=own_registration,
+        )
+
+    def _queue_formatting_configuration(self) -> None:
+        """Queue one exact request for formatting plus module-root authority."""
+        if (
+            not self._workspace_configuration_support
+            or self._has_pending_server_request("workspace/configuration")
+        ):
+            return
+        scopes = self._formatting_configuration_scopes()
+        items: list[dict[str, Any]] = []
+        for scope in scopes:
+            item: dict[str, Any] = {
+                "section": _FORMATTING_CONFIGURATION_SECTION
+            }
+            if scope is not None:
+                item["scopeUri"] = scope
+            items.append(item)
+        items.append({"section": _MODULE_SEARCH_CONFIGURATION_SECTION})
+        with self._formatting_configuration_lock:
+            formatting_generation = self._formatting_configuration_generation
+            module_generation = self._module_search_configuration_generation
+
+        def own_configuration(request_id: str) -> None:
+            with self._formatting_configuration_lock:
+                self._formatting_configuration_requests[request_id] = (
+                    formatting_generation,
+                    scopes,
+                )
+                self._module_search_configuration_requests[request_id] = (
+                    module_generation
+                )
+
+        self._queue_server_request(
+            "workspace/configuration",
+            {"items": items},
+            on_queued=own_configuration,
+        )
+
+    def _server_request_cancelled(self, request_id: str, method: str) -> None:
+        super()._server_request_cancelled(request_id, method)
+        if method == "workspace/configuration":
+            with self._formatting_configuration_lock:
+                self._module_search_configuration_requests.pop(request_id, None)
+
+    def _server_request_completed(
+        self,
+        request_id: str,
+        method: str,
+        *,
+        result: Any,
+        error: dict[str, Any] | None,
+    ) -> None:
+        if method != "workspace/configuration":
+            super()._server_request_completed(
+                request_id,
+                method,
+                result=result,
+                error=error,
+            )
+            return
+
+        with self._formatting_configuration_lock:
+            module_generation = self._module_search_configuration_requests.pop(
+                request_id,
+                None,
+            )
+            formatting_record = self._formatting_configuration_requests.get(
+                request_id
+            )
+            scopes = None if formatting_record is None else formatting_record[1]
+
+        valid_result = (
+            isinstance(result, list)
+            and scopes is not None
+            and len(result) == len(scopes) + 1
+        )
+        formatting_result = result[:-1] if valid_result else result
+        module_value = result[-1] if valid_result else None
+
+        super()._server_request_completed(
+            request_id,
+            method,
+            result=formatting_result,
+            error=error,
+        )
+
+        if module_generation is None:
+            return
+        with self._formatting_configuration_lock:
+            stale = (
+                module_generation != self._module_search_configuration_generation
+            )
+        if stale:
+            self._queue_formatting_configuration()
+            return
+        if error is not None or not valid_result:
+            return
+
+        roots = (
+            self._initial_module_search_root_identities
+            if module_value is None
+            else self._parse_module_search_root_values(module_value)
+        )
+        self._apply_module_search_roots(roots)
+
+    def _apply_module_search_roots(
+        self,
+        roots: tuple[WorkspaceUriIdentity, ...] | None,
+    ) -> None:
+        """Install one authority policy and invalidate complete-workspace results."""
+        if roots == self._module_search_root_identities:
+            return
+        before = self.workspace_symbols.snapshots()
+        self._module_search_root_identities = roots
+        self.workspace_symbols.invalidate_complete_queries()
+        self._publish_workspace_diagnostics()
+        after = self.workspace_symbols.snapshots()
+        self._workspace_scope_changed(before, after)
 
     def _nova_bare_workspace_resolution(
         self,
