@@ -1,6 +1,6 @@
 # Nova import-graph function visibility
 
-The Nova imported-symbol namespace gives bounded semantic meaning to top-level local-file imports without introducing a general package/module search list. Besides `./` / `../` relative imports, a scoped workspace may use `@/path.nova` for the importer's most-specific configured workspace folder or `@name/path.nova` for one uniquely named LSP `workspaceFolder`. Named roots are exact folder-name aliases, not precedence-ordered package paths. Only path-safe folder names matching `[A-Za-z_][A-Za-z0-9_.-]*` have an `@name/` spelling; duplicate names, parent escapes, unsupported/non-local folders, and cross-authority targets fail closed.
+The Nova imported-symbol namespace gives bounded semantic meaning to top-level local-file imports without introducing a general package manager or precedence-ordered search path. Besides `./` / `../` relative imports, a scoped workspace may use `@/path.nova` for the importer's most-specific configured workspace folder, `@name/path.nova` for one uniquely named LSP `workspaceFolder`, or a bare `pkg/path.nova` spelling that is searched across the configured workspace-folder set and accepted only when exactly one captured server-known module owns that path. Named roots are exact folder-name aliases; bare lookup has no precedence and 0 or multiple matches fail closed. Only path-safe folder names matching `[A-Za-z_][A-Za-z0-9_.-]*` have an `@name/` spelling; duplicate names, parent escapes, unsupported/non-local folders, and cross-authority targets fail closed.
 
 ## Visibility contract
 
@@ -49,7 +49,7 @@ All request surfaces retain their existing exact workspace snapshot commit gates
 
 This phase does not claim a general Nova module system. It does not add:
 
-- arbitrary package/module search lists beyond the bounded current-root `@/` and unique named-workspace-root `@name/` forms; import-path completion does not walk unindexed filesystem entries, package registries, or remote providers;
+- arbitrary precedence-ordered or external package/module search lists beyond the bounded current-root `@/`, unique named-workspace-root `@name/`, and unique captured bare-workspace lookup forms; import-path completion does not walk unindexed filesystem entries, package registries, or remote providers;
 - wildcard name-merging **import** syntax beyond existing bare imports, nested/package namespace objects, and namespace-object wildcard re-export/identity shapes beyond the bounded explicit local-file star/selective namespace graph; function-only `export * from <local-file>` does not imply any of those broader namespace/package semantics;
 - friend/package visibility, wildcard export forms, or declaration-level visibility beyond bounded `private fn` plus explicit function export lists;
 - non-function imported namespaces;
