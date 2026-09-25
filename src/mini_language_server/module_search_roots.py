@@ -7,7 +7,7 @@ from typing import Any
 
 from .server import ServerState
 from .will_save_formatting import NovaProductLanguageServer as _NovaProductLanguageServer
-from .workspace_files import WorkspaceUriIdentity
+from .workspace_files import WorkspaceUriIdentity, local_path_from_file_uri
 from .workspace_folders import WorkspaceFolderSet
 from .workspace_lsp import NovaModuleResolution
 
@@ -62,6 +62,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 parsed.scheme.lower() != "file"
                 or parsed.query
                 or parsed.fragment
+                or local_path_from_file_uri(value) is None
             ):
                 return ()
             if identity in seen:
