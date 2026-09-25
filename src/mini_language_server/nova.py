@@ -27,7 +27,7 @@ _QUALIFIED_CALL = re.compile(
 )
 _MODULE_ROOT_NAME = r"[A-Za-z_][A-Za-z0-9_.-]*"
 _IMPORT_PATH = (
-    rf"(?:(?:\./|\.\./|@/|@{_MODULE_ROOT_NAME}/)"
+    rf"(?:(?:\./|\.\./|@/|@{_MODULE_ROOT_NAME}/)?"
     r"(?:[A-Za-z0-9_.~%+-]+/)*[A-Za-z0-9_.~%+-]+\.nova)"
 )
 _IMPORT_DECLARATION = re.compile(
@@ -94,7 +94,7 @@ class NovaImportNameSyntax:
 
 @dataclass(frozen=True, slots=True)
 class NovaImportSyntax:
-    """One exact relative or named/workspace-root Nova file dependency."""
+    """One exact relative, workspace-root, named-root, or bare Nova dependency."""
 
     path: str
     span: Span
