@@ -409,7 +409,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return
         if method not in {"textDocument/didOpen", "textDocument/didChange"}:
             return
-        if not self.workspace_folders.contains(uri):
+        if not self._workspace_semantic_scope_contains(uri):
             if previous is not None:
                 with suppress(WorkspaceIndexError):
                     self.workspace_symbols.remove(uri, expected=previous)
@@ -1192,7 +1192,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 semantic = self.nova_adapter.publish(self, document)
             except SyntaxError:
                 continue
-            if not self.workspace_folders.contains(document.uri):
+            if not self._workspace_semantic_scope_contains(document.uri):
                 continue
             self.workspace_symbols.replace(
                 semantic,
@@ -1218,7 +1218,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self.workspace_symbols.invalidate_complete_queries()
 
         for snapshot in tuple(before):
-            if self.workspace_folders.contains(snapshot.uri):
+            if self._workspace_semantic_scope_contains(snapshot.uri):
                 continue
             document = self.documents.get(snapshot.uri)
             if (
@@ -1233,7 +1233,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for document in self.documents.snapshots():
             if (
                 document.language_id != self.nova_adapter.language_id
-                or not self.workspace_folders.contains(document.uri)
+                or not self._workspace_semantic_scope_contains(document.uri)
             ):
                 continue
             semantic = self.semantics.get(document.uri)
@@ -1255,6 +1255,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if before.generation != after.generation:
             self._workspace_scope_changed(before, after)
 
+    def _workspace_semantic_scope_contains(self, uri: str) -> bool:
+        """Return whether one URI participates in the combined semantic workspace."""
+        return self.workspace_folders.contains(uri)
+
+    def _closed_workspace_scan_root_uris(self) -> tuple[str, ...]:
+        """Return bounded local roots whose closed Nova files feed the workspace."""
+        return tuple(folder.uri for folder in self.workspace_folders.folders())
+
     def _refresh_closed_workspace_files(self) -> None:
         """Rescan bounded local closed Nova files as one workspace transition."""
         before = self.workspace_symbols.snapshots()
@@ -1267,7 +1275,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def _sync_closed_workspace_files(self) -> bool:
         """Reconcile local closed-file snapshots without displacing open buffers."""
-        if not self.workspace_folders.scoped:
+        roots = self._closed_workspace_scan_root_uris()
+        if not roots:
             return False
 
         open_identities = frozenset(
@@ -1275,7 +1284,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for document in self.documents.snapshots()
         )
         files = scan_closed_workspace_files(
-            tuple(folder.uri for folder in self.workspace_folders.folders()),
+            roots,
             exclude_identities=open_identities,
         )
         discovered = {item.identity: item for item in files}
@@ -1336,19 +1345,17 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def _restore_closed_workspace_file(self, uri: str) -> bool:
         """Restore disk content after the last open buffer relinquishes one URI."""
-        if not self.workspace_folders.scoped:
-            return False
         identity = WorkspaceFolderSet.uri_identity(uri)
         if any(
             WorkspaceFolderSet.uri_identity(document.uri) == identity
             for document in self.documents.snapshots()
         ):
             return False
-        if not self.workspace_folders.contains(uri):
+        if not self._workspace_semantic_scope_contains(uri):
             return False
 
         item = read_closed_workspace_file(uri)
-        if item is None or not self.workspace_folders.contains(item.uri):
+        if item is None or not self._workspace_semantic_scope_contains(item.uri):
             return False
         current = self.workspace_symbols.get(item.uri)
         semantic, base_diagnostics = self._detached_nova_snapshot(item)
