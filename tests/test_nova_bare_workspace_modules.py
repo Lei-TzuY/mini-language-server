@@ -27,6 +27,7 @@ def initialize(
     document_links: bool = False,
     will_rename: bool = False,
     document_changes: bool = False,
+    module_search_roots: list[str] | None = None,
 ) -> None:
     text_document: dict[str, Any] = {"completion": {}}
     if document_links:
@@ -36,17 +37,22 @@ def initialize(
         workspace["fileOperations"] = {"willRename": True}
     if document_changes:
         workspace["workspaceEdit"] = {"documentChanges": True}
+    params: dict[str, Any] = {
+        "capabilities": {
+            "textDocument": text_document,
+            "workspace": workspace,
+        },
+        "workspaceFolders": folders,
+    }
+    if module_search_roots is not None:
+        params["initializationOptions"] = {
+            "nova": {"moduleSearchRoots": module_search_roots}
+        }
     response = server.handle(
         request(
             "initialize",
             1,
-            {
-                "capabilities": {
-                    "textDocument": text_document,
-                    "workspace": workspace,
-                },
-                "workspaceFolders": folders,
-            },
+            params,
         )
     )
     assert response is not None
@@ -509,3 +515,280 @@ def test_bare_wildcard_export_reports_ambiguous_target(
         (left / "pkg" / "provider.nova").as_uri(),
         (right / "pkg" / "provider.nova").as_uri(),
     ]
+
+
+def test_configured_bare_module_search_root_order_selects_first_match(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    for root in (app, left, right):
+        root.mkdir()
+    for root, body in (
+        (left, "fn target() { return 1; }\n"),
+        (right, "fn target() { return 2; }\n"),
+    ):
+        (root / "pkg").mkdir()
+        (root / "pkg" / "provider.nova").write_text(body, encoding="utf-8")
+
+    caller = app / "main.nova"
+    source = (
+        "import { target } from pkg/provider.nova;\n"
+        "fn caller() { target(); }\n"
+    )
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": left.as_uri(), "name": "left"},
+            {"uri": right.as_uri(), "name": "right"},
+        ],
+        module_search_roots=[right.as_uri(), left.as_uri()],
+    )
+    open_nova(server, caller.as_uri(), source)
+
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.ambiguous-import" not in codes
+    assert "nova.unresolved-import" not in codes
+    assert "nova.unresolved-function" not in codes
+
+    snapshots = server.workspace_symbols.snapshots()
+    resolution = server._nova_import_resolution(
+        caller.as_uri(),
+        "pkg/provider.nova",
+        snapshots=snapshots,
+    )
+    assert resolution.status == "resolved"
+    assert resolution.target_uri == (right / "pkg" / "provider.nova").as_uri()
+    assert resolution.candidate_uris == (
+        (right / "pkg" / "provider.nova").as_uri(),
+        (left / "pkg" / "provider.nova").as_uri(),
+    )
+
+    definition = server.handle(
+        request(
+            "textDocument/definition",
+            60,
+            {
+                "textDocument": {"uri": caller.as_uri()},
+                "position": {
+                    "line": 1,
+                    "character": source.splitlines()[1].index("target") + 1,
+                },
+            },
+        )
+    )
+    assert definition is not None
+    assert definition["result"]["uri"] == (
+        right / "pkg" / "provider.nova"
+    ).as_uri()
+
+
+def test_configured_bare_module_search_roots_filter_unlisted_folders(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    listed = tmp_path / "listed"
+    hidden = tmp_path / "hidden"
+    for root in (app, listed, hidden):
+        root.mkdir()
+    (hidden / "pkg").mkdir()
+    (hidden / "pkg" / "provider.nova").write_text(
+        "fn target() {}\n",
+        encoding="utf-8",
+    )
+    caller = app / "main.nova"
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": listed.as_uri(), "name": "listed"},
+            {"uri": hidden.as_uri(), "name": "hidden"},
+        ],
+        module_search_roots=[listed.as_uri()],
+    )
+    open_nova(
+        server,
+        caller.as_uri(),
+        "import pkg/provider.nova;\nfn caller() { target(); }\n",
+    )
+
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" in codes
+    assert "nova.ambiguous-import" not in codes
+    assert "nova.unresolved-function" in codes
+
+
+def test_configured_bare_module_search_roots_restore_completion_for_precedence(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    for root in (app, left, right):
+        root.mkdir()
+    for root in (left, right):
+        (root / "pkg").mkdir()
+        (root / "pkg" / "provider.nova").write_text(
+            "fn target() {}\n",
+            encoding="utf-8",
+        )
+    main = app / "main.nova"
+    text = "import pkg/pro"
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": left.as_uri(), "name": "left"},
+            {"uri": right.as_uri(), "name": "right"},
+        ],
+        module_search_roots=[right.as_uri(), left.as_uri()],
+    )
+    open_nova(server, main.as_uri(), text)
+
+    response = server.handle(
+        request(
+            "textDocument/completion",
+            61,
+            {
+                "textDocument": {"uri": main.as_uri()},
+                "position": {"line": 0, "character": len(text)},
+            },
+        )
+    )
+    assert response is not None
+    assert [item["label"] for item in response["result"]] == [
+        "pkg/provider.nova"
+    ]
+
+
+def test_configured_module_search_root_tracks_workspace_folder_lifecycle(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    shared = tmp_path / "shared"
+    app.mkdir()
+    (shared / "pkg").mkdir(parents=True)
+    (shared / "pkg" / "provider.nova").write_text(
+        "fn target() {}\n",
+        encoding="utf-8",
+    )
+    caller = app / "main.nova"
+    source = "import pkg/provider.nova;\nfn caller() { target(); }\n"
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": shared.as_uri(), "name": "shared"},
+        ],
+        module_search_roots=[shared.as_uri()],
+    )
+    open_nova(server, caller.as_uri(), source)
+
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" not in codes
+    assert "nova.unresolved-function" not in codes
+
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [],
+                    "removed": [{"uri": shared.as_uri(), "name": "shared"}],
+                }
+            },
+        )
+    )
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" in codes
+    assert "nova.unresolved-function" in codes
+
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [{"uri": shared.as_uri(), "name": "shared"}],
+                    "removed": [],
+                }
+            },
+        )
+    )
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" not in codes
+    assert "nova.unresolved-function" not in codes
+
+
+def test_remote_file_module_search_root_fails_closed(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    shared = tmp_path / "shared"
+    app.mkdir()
+    (shared / "pkg").mkdir(parents=True)
+    (shared / "pkg" / "provider.nova").write_text(
+        "fn target() {}\n",
+        encoding="utf-8",
+    )
+    caller = app / "main.nova"
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": shared.as_uri(), "name": "shared"},
+        ],
+        module_search_roots=["file://remote-host/workspace"],
+    )
+    open_nova(
+        server,
+        caller.as_uri(),
+        "import pkg/provider.nova;\nfn caller() { target(); }\n",
+    )
+
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" in codes
+    assert "nova.unresolved-function" in codes
+
+
+def test_invalid_explicit_module_search_roots_fail_closed(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    shared = tmp_path / "shared"
+    app.mkdir()
+    (shared / "pkg").mkdir(parents=True)
+    (shared / "pkg" / "provider.nova").write_text(
+        "fn target() {}\n",
+        encoding="utf-8",
+    )
+    caller = app / "main.nova"
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": shared.as_uri(), "name": "shared"},
+        ],
+        module_search_roots=["https://example.com/not-a-workspace-root"],
+    )
+    open_nova(
+        server,
+        caller.as_uri(),
+        "import pkg/provider.nova;\nfn caller() { target(); }\n",
+    )
+
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" in codes
+    assert "nova.unresolved-function" in codes
