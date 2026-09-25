@@ -162,8 +162,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 for wildcard in importer_tree.wildcard_exports:
                     target_uri = self._nova_import_target_uri(
                         importer.uri,
-                        wildcard.path,
-                    )
+                        wildcard.path, snapshots=snapshots)
                     if (
                         target_uri is not None
                         and WorkspaceFolderSet.uri_identity(target_uri)
@@ -173,8 +172,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 for imported in importer_tree.imports:
                     target_uri = self._nova_import_target_uri(
                         importer.uri,
-                        imported.path,
-                    )
+                        imported.path, snapshots=snapshots)
                     if target_uri is None:
                         continue
                     if (
@@ -345,8 +343,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         }
         target_uri = self._nova_import_target_uri(
             importer.uri,
-            binding.imported.path,
-        )
+            binding.imported.path, snapshots=snapshots)
         if target_uri is None:
             return None
         target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
@@ -498,8 +495,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         continue
                     target_uri = self._nova_import_target_uri(
                         importer.uri,
-                        imported.path,
-                    )
+                        imported.path, snapshots=snapshots)
                     if (
                         target_uri is None
                         or WorkspaceFolderSet.uri_identity(target_uri)
@@ -1294,8 +1290,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                         continue
                     target_uri = self._nova_import_target_uri(
                         snapshot.uri,
-                        imported.path,
-                    )
+                        imported.path, snapshots=snapshots)
                     if target_uri is None:
                         continue
                     target = indexed.get(
