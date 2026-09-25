@@ -26,6 +26,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     def __init__(self) -> None:
         super().__init__()
+        self._module_search_configuration_enabled = False
         self._initial_module_search_root_identities: (
             tuple[WorkspaceUriIdentity, ...] | None
         ) = None
@@ -38,7 +39,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
         if method == "initialize" and self.state is ServerState.PRE_INITIALIZE:
-            roots = self._parse_module_search_roots(message.get("params"))
+            params = message.get("params")
+            self._module_search_configuration_enabled = (
+                self._has_module_search_roots_option(params)
+            )
+            roots = self._parse_module_search_roots(params)
             self._initial_module_search_root_identities = roots
             self._module_search_root_identities = roots
         elif (
@@ -46,10 +51,21 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             and "id" not in message
             and self.state is ServerState.RUNNING
             and self._workspace_configuration_support
+            and self._module_search_configuration_enabled
         ):
             with self._formatting_configuration_lock:
                 self._module_search_configuration_generation += 1
         return super().handle(message)
+
+    @staticmethod
+    def _has_module_search_roots_option(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        options = params.get("initializationOptions")
+        if not isinstance(options, dict):
+            return False
+        nova = options.get("nova")
+        return isinstance(nova, dict) and "moduleSearchRoots" in nova
 
     @staticmethod
     def _parse_module_search_roots(
@@ -100,7 +116,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         return tuple(roots)
 
     def _queue_formatting_configuration_registration(self) -> None:
-        """Register both configuration sections in one tracked request."""
+        """Register both configuration sections only after explicit module opt-in."""
+        if not self._module_search_configuration_enabled:
+            super()._queue_formatting_configuration_registration()
+            return
         if (
             not self._workspace_configuration_support
             or not self._did_change_configuration_dynamic_registration
@@ -136,7 +155,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         )
 
     def _queue_formatting_configuration(self) -> None:
-        """Queue one exact request for formatting plus module-root authority."""
+        """Queue one exact request for formatting plus opted-in module authority."""
+        if not self._module_search_configuration_enabled:
+            super()._queue_formatting_configuration()
+            return
         if (
             not self._workspace_configuration_support
             or self._has_pending_server_request("workspace/configuration")
@@ -186,7 +208,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         result: Any,
         error: dict[str, Any] | None,
     ) -> None:
-        if method != "workspace/configuration":
+        if (
+            method != "workspace/configuration"
+            or not self._module_search_configuration_enabled
+        ):
             super()._server_request_completed(
                 request_id,
                 method,
