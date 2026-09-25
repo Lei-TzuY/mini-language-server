@@ -965,11 +965,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         except DocumentError:
             return
         if not any(
-            self._workspace_file_affects_closed_index(uri)
+            self._watched_file_affects_semantic_index(uri)
             for uri, _ in changes
         ):
             return
         self._refresh_closed_workspace_files()
+
+    def _watched_file_affects_semantic_index(self, uri: str) -> bool:
+        """Return whether one client-reported watcher URI can change the index."""
+        return self._workspace_file_affects_closed_index(uri)
 
     @staticmethod
     def _workspace_watched_file_changes(
