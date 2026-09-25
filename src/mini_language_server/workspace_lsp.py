@@ -1543,6 +1543,21 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         folders: tuple[Any, ...],
     ) -> tuple[str, ...]:
         """Collect exact bare-path matches in the caller-supplied root order."""
+        return self._nova_bare_module_candidates(
+            importer_uri,
+            path,
+            workspace_uris,
+            tuple(folder.uri for folder in folders),
+        )
+
+    def _nova_bare_module_candidates(
+        self,
+        importer_uri: str,
+        path: str,
+        workspace_uris: tuple[str, ...],
+        root_uris: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Collect exact bare-path matches from one explicit ordered root authority."""
         if (
             not path
             or not path.endswith(".nova")
@@ -1574,24 +1589,24 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         }
         matches: dict[WorkspaceUriIdentity, str] = {}
         ordered: list[str] = []
-        for folder in folders:
+        for root_uri in root_uris:
             try:
-                folder_parts = urllib.parse.urlsplit(folder.uri)
+                root = urllib.parse.urlsplit(root_uri)
                 candidate_uri = urllib.parse.urljoin(
-                    folder.uri.rstrip("/") + "/",
+                    root_uri.rstrip("/") + "/",
                     path,
                 )
                 candidate = urllib.parse.urlsplit(candidate_uri)
             except ValueError:
                 continue
             if (
-                folder_parts.scheme.lower() != "file"
-                or folder_parts.query
-                or folder_parts.fragment
+                root.scheme.lower() != "file"
+                or root.query
+                or root.fragment
                 or candidate.scheme.lower() != "file"
                 or candidate.query
                 or candidate.fragment
-                or not WorkspaceFolderSet._contains(folder.uri, candidate_uri)
+                or not WorkspaceFolderSet._contains(root_uri, candidate_uri)
             ):
                 continue
             identity = WorkspaceFolderSet.uri_identity(candidate_uri)
@@ -1610,13 +1625,28 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         workspace_uris: tuple[str, ...],
     ) -> tuple[str, ...]:
         """Render every unique bare label that resolves back to one exact target."""
+        return self._nova_bare_module_import_paths(
+            importer_uri,
+            target_uri,
+            workspace_uris,
+            tuple(folder.uri for folder in self.workspace_folders.folders()),
+        )
+
+    def _nova_bare_module_import_paths(
+        self,
+        importer_uri: str,
+        target_uri: str,
+        workspace_uris: tuple[str, ...],
+        root_uris: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Render exact bare labels from one explicit ordered root authority."""
         target_identity = WorkspaceFolderSet.uri_identity(target_uri)
         labels: set[str] = set()
-        for folder in self.workspace_folders.folders():
+        for root_uri in root_uris:
             label = self._nova_import_path_from_workspace_folder(
                 importer_uri,
                 target_uri,
-                folder_uri=folder.uri,
+                folder_uri=root_uri,
                 prefix="",
             )
             if not label or label.startswith(("@", ".", "/")):
