@@ -2490,16 +2490,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if candidate is None:
                 continue
             live_candidate = self.semantics.get(candidate.uri)
+            owns_semantic = detached_primary or live_candidate is candidate
             related.append(
                 DiagnosticRelatedInformation(
                     candidate.uri,
                     Span(0, 0),
                     f"candidate module for '{path}' is here",
-                    semantic=(
-                        candidate
-                        if detached_primary or live_candidate is candidate
-                        else None
-                    ),
+                    semantic=candidate if owns_semantic else None,
+                    location_only=not owns_semantic,
                 )
             )
         return tuple(related)
