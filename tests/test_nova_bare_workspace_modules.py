@@ -668,6 +668,66 @@ def test_configured_bare_module_search_roots_restore_completion_for_precedence(
     ]
 
 
+def test_configured_module_search_root_tracks_workspace_folder_lifecycle(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    shared = tmp_path / "shared"
+    app.mkdir()
+    (shared / "pkg").mkdir(parents=True)
+    (shared / "pkg" / "provider.nova").write_text(
+        "fn target() {}\n",
+        encoding="utf-8",
+    )
+    caller = app / "main.nova"
+    source = "import pkg/provider.nova;\nfn caller() { target(); }\n"
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": shared.as_uri(), "name": "shared"},
+        ],
+        module_search_roots=[shared.as_uri()],
+    )
+    open_nova(server, caller.as_uri(), source)
+
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" not in codes
+    assert "nova.unresolved-function" not in codes
+
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [],
+                    "removed": [{"uri": shared.as_uri(), "name": "shared"}],
+                }
+            },
+        )
+    )
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" in codes
+    assert "nova.unresolved-function" in codes
+
+    server.handle(
+        notify(
+            "workspace/didChangeWorkspaceFolders",
+            {
+                "event": {
+                    "added": [{"uri": shared.as_uri(), "name": "shared"}],
+                    "removed": [],
+                }
+            },
+        )
+    )
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" not in codes
+    assert "nova.unresolved-function" not in codes
+
+
 def test_remote_file_module_search_root_fails_closed(
     tmp_path: Path,
 ) -> None:
