@@ -2475,24 +2475,31 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             )
         return ()
 
-    @staticmethod
     def _nova_module_resolution_related_information(
+        self,
         resolution: NovaModuleResolution,
         indexed: dict[WorkspaceUriIdentity, SemanticSnapshot],
         path: str,
+        *,
+        detached_primary: bool,
     ) -> tuple[DiagnosticRelatedInformation, ...]:
-        """Render deterministic related locations for exact ambiguous modules."""
+        """Render ambiguity evidence without claiming false live ownership."""
         related: list[DiagnosticRelatedInformation] = []
         for uri in resolution.candidate_uris:
             candidate = indexed.get(WorkspaceFolderSet.uri_identity(uri))
             if candidate is None:
                 continue
+            live_candidate = self.semantics.get(candidate.uri)
             related.append(
                 DiagnosticRelatedInformation(
                     candidate.uri,
                     Span(0, 0),
                     f"candidate module for '{path}' is here",
-                    semantic=candidate,
+                    semantic=(
+                        candidate
+                        if detached_primary or live_candidate is candidate
+                        else None
+                    ),
                 )
             )
         return tuple(related)
@@ -2516,6 +2523,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if cycle_edges is None:
             cycle_edges = self._nova_import_cycle_edges(snapshot_tuple)
         snapshot_identity = WorkspaceFolderSet.uri_identity(snapshot.uri)
+        detached_primary = self.semantics.get(snapshot.uri) is not snapshot
         diagnostics: list[Diagnostic] = []
         seen_namespaces: set[str] = set()
         for item in tree.imports:
@@ -2556,6 +2564,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                                 resolution,
                                 indexed,
                                 item.path,
+                                detached_primary=detached_primary,
                             )
                         ),
                     )
@@ -2766,6 +2775,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                                 resolution,
                                 indexed,
                                 item.path,
+                                detached_primary=detached_primary,
                             )
                         ),
                     )
