@@ -30,6 +30,7 @@ class DiagnosticRelatedInformation:
         compare=False,
         repr=False,
     )
+    location_only: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.uri, str) or not self.uri:
@@ -44,6 +45,10 @@ class DiagnosticRelatedInformation:
             raise DiagnosticError(
                 "diagnostic related-information message must be a non-empty string"
             )
+        if not isinstance(self.location_only, bool):
+            raise DiagnosticError(
+                "diagnostic related-information location_only must be a bool"
+            )
         if self.semantic is not None:
             if not isinstance(self.semantic, SemanticSnapshot):
                 raise DiagnosticError(
@@ -53,6 +58,11 @@ class DiagnosticRelatedInformation:
             if self.semantic.uri != self.uri:
                 raise DiagnosticError(
                     "diagnostic related-information semantic URI must match its URI"
+                )
+            if self.location_only:
+                raise DiagnosticError(
+                    "location-only diagnostic related information cannot "
+                    "carry a semantic snapshot"
                 )
 
 
@@ -267,7 +277,12 @@ class DiagnosticStore:
             for related in diagnostic.related_information:
                 if related.semantic is None:
                     if related.uri != semantic.uri:
-                        # Cross-URI location-only metadata deliberately carries no
+                        if not related.location_only:
+                            raise DiagnosticError(
+                                "cross-URI diagnostic related information requires "
+                                "an exact semantic snapshot"
+                            )
+                        # Explicit location-only metadata deliberately carries no
                         # freshness ownership. Consumers that require an exact
                         # dependency must attach a semantic parent instead.
                         continue
