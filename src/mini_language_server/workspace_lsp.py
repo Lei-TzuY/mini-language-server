@@ -481,7 +481,6 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             )
         )
         captured_workspace = self.workspace_symbols.snapshots()
-        captured_folders = self.workspace_folders.snapshot()
         captured_closed = {
             identity: uri
             for identity, uri in self._closed_workspace_uris.items()
@@ -664,6 +663,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for uri in (old_uri, new_uri)
         )
         captured_workspace = self.workspace_symbols.snapshots()
+        captured_folders = self.workspace_folders.snapshot()
         try:
             import_changes = self._nova_import_rename_changes(
                 captured_workspace,
