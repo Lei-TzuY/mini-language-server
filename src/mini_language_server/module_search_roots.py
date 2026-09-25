@@ -11,7 +11,7 @@ from .will_save_formatting import (
     _FORMATTING_CONFIGURATION_SECTION,
 )
 from .will_save_formatting import NovaProductLanguageServer as _NovaProductLanguageServer
-from .workspace_files import WorkspaceUriIdentity, local_path_from_file_uri
+from .workspace_files import local_path_from_file_uri
 from .workspace_folders import WorkspaceFolderSet
 from .workspace_lsp import NovaModuleResolution
 
@@ -27,12 +27,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     def __init__(self) -> None:
         super().__init__()
         self._module_search_configuration_enabled = False
-        self._initial_module_search_root_identities: (
-            tuple[WorkspaceUriIdentity, ...] | None
-        ) = None
-        self._module_search_root_identities: (
-            tuple[WorkspaceUriIdentity, ...] | None
-        ) = None
+        self._initial_module_search_roots: tuple[str, ...] | None = None
+        self._module_search_roots: tuple[str, ...] | None = None
         self._module_search_configuration_generation = 0
         self._module_search_configuration_requests: dict[str, int] = {}
 
@@ -44,8 +40,8 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 self._has_module_search_roots_option(params)
             )
             roots = self._parse_module_search_roots(params)
-            self._initial_module_search_root_identities = roots
-            self._module_search_root_identities = roots
+            self._initial_module_search_roots = roots
+            self._module_search_roots = roots
         elif (
             method == "workspace/didChangeConfiguration"
             and "id" not in message
@@ -70,7 +66,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     @staticmethod
     def _parse_module_search_roots(
         params: Any,
-    ) -> tuple[WorkspaceUriIdentity, ...] | None:
+    ) -> tuple[str, ...] | None:
         """Return explicit canonical root order, None when no policy is configured."""
         if not isinstance(params, dict):
             return None
@@ -87,13 +83,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
     @staticmethod
     def _parse_module_search_root_values(
         configured: Any,
-    ) -> tuple[WorkspaceUriIdentity, ...]:
+    ) -> tuple[str, ...]:
         """Parse one explicit root list; malformed values fail closed."""
         if not isinstance(configured, list):
             return ()
 
-        roots: list[WorkspaceUriIdentity] = []
-        seen: set[WorkspaceUriIdentity] = set()
+        roots: list[str] = []
+        seen: set[tuple[str, str, str, str, str]] = set()
         for value in configured:
             if not isinstance(value, str) or not value:
                 return ()
@@ -112,7 +108,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if identity in seen:
                 continue
             seen.add(identity)
-            roots.append(identity)
+            roots.append(urllib.parse.urlunsplit(identity))
         return tuple(roots)
 
     def _queue_formatting_configuration_registration(self) -> None:
@@ -258,7 +254,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return
 
         roots = (
-            self._initial_module_search_root_identities
+            self._initial_module_search_roots
             if module_value is None
             else self._parse_module_search_root_values(module_value)
         )
@@ -266,17 +262,54 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
 
     def _apply_module_search_roots(
         self,
-        roots: tuple[WorkspaceUriIdentity, ...] | None,
+        roots: tuple[str, ...] | None,
     ) -> None:
-        """Install one authority policy and invalidate complete-workspace results."""
-        if roots == self._module_search_root_identities:
+        """Install one provider authority and invalidate complete-workspace results."""
+        if roots == self._module_search_roots:
             return
         before = self.workspace_symbols.snapshots()
-        self._module_search_root_identities = roots
+        self._module_search_roots = roots
         self.workspace_symbols.invalidate_complete_queries()
+        self._sync_closed_workspace_files()
         self._publish_workspace_diagnostics()
         after = self.workspace_symbols.snapshots()
         self._workspace_scope_changed(before, after)
+
+    def _workspace_semantic_scope_contains(self, uri: str) -> bool:
+        """Include configured local module providers without widening folder ownership."""
+        if super()._workspace_semantic_scope_contains(uri):
+            return True
+        roots = self._module_search_roots
+        if roots is None:
+            return False
+        return any(WorkspaceFolderSet._contains(root, uri) for root in roots)
+
+    def _closed_workspace_scan_root_uris(self) -> tuple[str, ...]:
+        """Scan workspace roots plus explicit local module-provider roots."""
+        base = super()._closed_workspace_scan_root_uris()
+        roots = self._module_search_roots
+        if roots is None:
+            return base
+        ordered: list[str] = []
+        seen: set[tuple[str, str, str, str, str]] = set()
+        for root in (*base, *roots):
+            identity = WorkspaceFolderSet.uri_identity(root)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            ordered.append(root)
+        return tuple(ordered)
+
+    def _watched_file_affects_semantic_index(self, uri: str) -> bool:
+        """Accept reported changes from configured local semantic providers."""
+        if super()._watched_file_affects_semantic_index(uri):
+            return True
+        path = local_path_from_file_uri(uri)
+        return (
+            path is not None
+            and path.suffix == ".nova"
+            and self._workspace_semantic_scope_contains(uri)
+        )
 
     def _nova_bare_workspace_resolution(
         self,
@@ -284,7 +317,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         path: str,
         workspace_uris: tuple[str, ...],
     ) -> NovaModuleResolution:
-        roots = self._module_search_root_identities
+        roots = self._module_search_roots
         if roots is None:
             return super()._nova_bare_workspace_resolution(
                 importer_uri,
@@ -292,20 +325,11 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 workspace_uris,
             )
 
-        active = {
-            WorkspaceFolderSet.uri_identity(folder.uri): folder
-            for folder in self.workspace_folders.folders()
-        }
-        folders = tuple(
-            active[identity]
-            for identity in roots
-            if identity in active
-        )
-        candidates = self._nova_bare_workspace_candidates(
+        candidates = self._nova_bare_module_candidates(
             importer_uri,
             path,
             workspace_uris,
-            folders,
+            roots,
         )
         if not candidates:
             return NovaModuleResolution("bare")
@@ -313,4 +337,24 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             "bare",
             target_uri=candidates[0],
             candidate_uris=candidates,
+        )
+
+    def _nova_bare_workspace_import_paths(
+        self,
+        importer_uri: str,
+        target_uri: str,
+        workspace_uris: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        roots = self._module_search_roots
+        if roots is None:
+            return super()._nova_bare_workspace_import_paths(
+                importer_uri,
+                target_uri,
+                workspace_uris,
+            )
+        return self._nova_bare_module_import_paths(
+            importer_uri,
+            target_uri,
+            workspace_uris,
+            roots,
         )

@@ -409,7 +409,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             return
         if method not in {"textDocument/didOpen", "textDocument/didChange"}:
             return
-        if not self.workspace_folders.contains(uri):
+        if not self._workspace_semantic_scope_contains(uri):
             if previous is not None:
                 with suppress(WorkspaceIndexError):
                     self.workspace_symbols.remove(uri, expected=previous)
@@ -965,11 +965,15 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         except DocumentError:
             return
         if not any(
-            self._workspace_file_affects_closed_index(uri)
+            self._watched_file_affects_semantic_index(uri)
             for uri, _ in changes
         ):
             return
         self._refresh_closed_workspace_files()
+
+    def _watched_file_affects_semantic_index(self, uri: str) -> bool:
+        """Return whether one client-reported watcher URI can change the index."""
+        return self._workspace_file_affects_closed_index(uri)
 
     @staticmethod
     def _workspace_watched_file_changes(
@@ -1192,7 +1196,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 semantic = self.nova_adapter.publish(self, document)
             except SyntaxError:
                 continue
-            if not self.workspace_folders.contains(document.uri):
+            if not self._workspace_semantic_scope_contains(document.uri):
                 continue
             self.workspace_symbols.replace(
                 semantic,
@@ -1218,7 +1222,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         self.workspace_symbols.invalidate_complete_queries()
 
         for snapshot in tuple(before):
-            if self.workspace_folders.contains(snapshot.uri):
+            if self._workspace_semantic_scope_contains(snapshot.uri):
                 continue
             document = self.documents.get(snapshot.uri)
             if (
@@ -1233,7 +1237,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for document in self.documents.snapshots():
             if (
                 document.language_id != self.nova_adapter.language_id
-                or not self.workspace_folders.contains(document.uri)
+                or not self._workspace_semantic_scope_contains(document.uri)
             ):
                 continue
             semantic = self.semantics.get(document.uri)
@@ -1255,6 +1259,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         if before.generation != after.generation:
             self._workspace_scope_changed(before, after)
 
+    def _workspace_semantic_scope_contains(self, uri: str) -> bool:
+        """Return whether one URI participates in the combined semantic workspace."""
+        return self.workspace_folders.contains(uri)
+
+    def _closed_workspace_scan_root_uris(self) -> tuple[str, ...]:
+        """Return bounded local roots whose closed Nova files feed the workspace."""
+        return tuple(folder.uri for folder in self.workspace_folders.folders())
+
     def _refresh_closed_workspace_files(self) -> None:
         """Rescan bounded local closed Nova files as one workspace transition."""
         before = self.workspace_symbols.snapshots()
@@ -1267,7 +1279,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def _sync_closed_workspace_files(self) -> bool:
         """Reconcile local closed-file snapshots without displacing open buffers."""
-        if not self.workspace_folders.scoped:
+        roots = self._closed_workspace_scan_root_uris()
+        if not roots:
             return False
 
         open_identities = frozenset(
@@ -1275,7 +1288,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for document in self.documents.snapshots()
         )
         files = scan_closed_workspace_files(
-            tuple(folder.uri for folder in self.workspace_folders.folders()),
+            roots,
             exclude_identities=open_identities,
         )
         discovered = {item.identity: item for item in files}
@@ -1336,19 +1349,17 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
     def _restore_closed_workspace_file(self, uri: str) -> bool:
         """Restore disk content after the last open buffer relinquishes one URI."""
-        if not self.workspace_folders.scoped:
-            return False
         identity = WorkspaceFolderSet.uri_identity(uri)
         if any(
             WorkspaceFolderSet.uri_identity(document.uri) == identity
             for document in self.documents.snapshots()
         ):
             return False
-        if not self.workspace_folders.contains(uri):
+        if not self._workspace_semantic_scope_contains(uri):
             return False
 
         item = read_closed_workspace_file(uri)
-        if item is None or not self.workspace_folders.contains(item.uri):
+        if item is None or not self._workspace_semantic_scope_contains(item.uri):
             return False
         current = self.workspace_symbols.get(item.uri)
         semantic, base_diagnostics = self._detached_nova_snapshot(item)
@@ -1536,11 +1547,26 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         folders: tuple[Any, ...],
     ) -> tuple[str, ...]:
         """Collect exact bare-path matches in the caller-supplied root order."""
+        return self._nova_bare_module_candidates(
+            importer_uri,
+            path,
+            workspace_uris,
+            tuple(folder.uri for folder in folders),
+        )
+
+    def _nova_bare_module_candidates(
+        self,
+        importer_uri: str,
+        path: str,
+        workspace_uris: tuple[str, ...],
+        root_uris: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Collect exact bare-path matches from one explicit ordered root authority."""
         if (
             not path
             or not path.endswith(".nova")
             or path.startswith(("@", ".", "/"))
-            or not self.workspace_folders.contains(importer_uri)
+            or not self._workspace_semantic_scope_contains(importer_uri)
         ):
             return ()
         segments = path.split("/")
@@ -1567,24 +1593,24 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         }
         matches: dict[WorkspaceUriIdentity, str] = {}
         ordered: list[str] = []
-        for folder in folders:
+        for root_uri in root_uris:
             try:
-                folder_parts = urllib.parse.urlsplit(folder.uri)
+                root = urllib.parse.urlsplit(root_uri)
                 candidate_uri = urllib.parse.urljoin(
-                    folder.uri.rstrip("/") + "/",
+                    root_uri.rstrip("/") + "/",
                     path,
                 )
                 candidate = urllib.parse.urlsplit(candidate_uri)
             except ValueError:
                 continue
             if (
-                folder_parts.scheme.lower() != "file"
-                or folder_parts.query
-                or folder_parts.fragment
+                root.scheme.lower() != "file"
+                or root.query
+                or root.fragment
                 or candidate.scheme.lower() != "file"
                 or candidate.query
                 or candidate.fragment
-                or not WorkspaceFolderSet._contains(folder.uri, candidate_uri)
+                or not WorkspaceFolderSet._contains(root_uri, candidate_uri)
             ):
                 continue
             identity = WorkspaceFolderSet.uri_identity(candidate_uri)
@@ -1603,13 +1629,28 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         workspace_uris: tuple[str, ...],
     ) -> tuple[str, ...]:
         """Render every unique bare label that resolves back to one exact target."""
+        return self._nova_bare_module_import_paths(
+            importer_uri,
+            target_uri,
+            workspace_uris,
+            tuple(folder.uri for folder in self.workspace_folders.folders()),
+        )
+
+    def _nova_bare_module_import_paths(
+        self,
+        importer_uri: str,
+        target_uri: str,
+        workspace_uris: tuple[str, ...],
+        root_uris: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Render exact bare labels from one explicit ordered root authority."""
         target_identity = WorkspaceFolderSet.uri_identity(target_uri)
         labels: set[str] = set()
-        for folder in self.workspace_folders.folders():
+        for root_uri in root_uris:
             label = self._nova_import_path_from_workspace_folder(
                 importer_uri,
                 target_uri,
-                folder_uri=folder.uri,
+                folder_uri=root_uri,
                 prefix="",
             )
             if not label or label.startswith(("@", ".", "/")):
