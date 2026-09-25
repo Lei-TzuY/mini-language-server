@@ -31,6 +31,7 @@ def initialize(
     configuration: bool = False,
     dynamic_configuration_registration: bool = False,
     diagnostic_refresh: bool = False,
+    watched_files: bool = False,
 ) -> None:
     text_document: dict[str, Any] = {"completion": {}}
     if document_links:
@@ -43,6 +44,8 @@ def initialize(
         workspace["didChangeConfiguration"] = {"dynamicRegistration": True}
     if diagnostic_refresh:
         workspace["diagnostics"] = {"refreshSupport": True}
+    if watched_files:
+        workspace["didChangeWatchedFiles"] = {"dynamicRegistration": True}
     if will_rename:
         workspace["fileOperations"] = {"willRename": True}
     if document_changes:
@@ -1282,3 +1285,114 @@ def test_runtime_module_root_switch_replaces_external_provider_set(
         server,
         caller.as_uri(),
     )
+
+
+def test_external_provider_can_resolve_bare_imports_inside_provider_graph(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    external = tmp_path / "external"
+    app.mkdir()
+    (external / "pkg").mkdir(parents=True)
+    core = external / "pkg" / "core.nova"
+    core.write_text("fn target() {}\n", encoding="utf-8")
+    facade = external / "facade.nova"
+    facade.write_text(
+        "import { target } from pkg/core.nova;\n"
+        "export { target };\n",
+        encoding="utf-8",
+    )
+    caller = app / "main.nova"
+    source = (
+        "import { target } from facade.nova;\n"
+        "fn caller() { target(); }\n"
+    )
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [{"uri": app.as_uri(), "name": "app"}],
+        module_search_roots=[external.as_uri()],
+    )
+    open_nova(server, caller.as_uri(), source)
+
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" not in codes
+    assert "nova.unresolved-import-name" not in codes
+    assert "nova.unresolved-function" not in codes
+
+    definition = server.handle(
+        request(
+            "textDocument/definition",
+            102,
+            {
+                "textDocument": {"uri": caller.as_uri()},
+                "position": {
+                    "line": 1,
+                    "character": source.splitlines()[1].index("target") + 1,
+                },
+            },
+        )
+    )
+    assert definition is not None
+    assert definition["result"]["uri"] == core.as_uri()
+
+
+def test_reported_external_module_change_refreshes_detached_provider(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    external = tmp_path / "external"
+    app.mkdir()
+    (external / "pkg").mkdir(parents=True)
+    provider = external / "pkg" / "provider.nova"
+    provider.write_text("fn target(value: Int) {}\n", encoding="utf-8")
+    caller = app / "main.nova"
+    source = (
+        "import { target } from pkg/provider.nova;\n"
+        "fn caller() { target(1); }\n"
+    )
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [{"uri": app.as_uri(), "name": "app"}],
+        module_search_roots=[external.as_uri()],
+        watched_files=True,
+    )
+    registration = server.drain_server_requests()
+    assert len(registration) == 1
+    assert registration[0]["method"] == "client/registerCapability"
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": registration[0]["id"],
+            "result": None,
+        }
+    ) is None
+
+    open_nova(server, caller.as_uri(), source)
+    assert "nova.argument-count" not in diagnostic_codes(
+        server,
+        caller.as_uri(),
+    )
+
+    provider.write_text("fn target() {}\n", encoding="utf-8")
+    server.handle(
+        notify(
+            "workspace/didChangeWatchedFiles",
+            {
+                "changes": [
+                    {"uri": provider.as_uri(), "type": 2},
+                ]
+            },
+        )
+    )
+
+    assert "nova.argument-count" in diagnostic_codes(
+        server,
+        caller.as_uri(),
+    )
+    current = server.workspace_symbols.get(provider.as_uri())
+    assert current is not None
+    assert current.symbols.syntax.document.text == "fn target() {}\n"
