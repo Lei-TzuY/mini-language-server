@@ -53,6 +53,7 @@ _CLOSED_WORKSPACE_WATCH_KIND = 7
 _NOVA_IMPORT_DIAGNOSTIC_CODES = frozenset(
     {
         "nova.unresolved-import",
+        "nova.ambiguous-import",
         "nova.import-cycle",
         "nova.duplicate-import-name",
         "nova.duplicate-import-namespace",
@@ -62,10 +63,28 @@ _NOVA_IMPORT_DIAGNOSTIC_CODES = frozenset(
         "nova.duplicate-export",
         "nova.unresolved-export",
         "nova.unresolved-export-target",
+        "nova.ambiguous-export-target",
         "nova.ambiguous-export",
         "nova.private-export",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class NovaModuleResolution:
+    """One exact module-path resolution result over captured workspace evidence."""
+
+    spelling: str
+    target_uri: str | None = None
+    candidate_uris: tuple[str, ...] = ()
+
+    @property
+    def status(self) -> str:
+        if self.target_uri is not None:
+            return "resolved"
+        if len(self.candidate_uris) > 1:
+            return "ambiguous"
+        return "unresolved"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1365,19 +1384,41 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         *,
         snapshots: tuple[SemanticSnapshot, ...] | None = None,
     ) -> str | None:
-        """Resolve one bounded relative, rooted, named-root, or bare Nova import."""
+        """Return only one exact resolved module target; ambiguity stays fail-closed."""
+        return self._nova_import_resolution(
+            importer_uri,
+            path,
+            snapshots=snapshots,
+        ).target_uri
+
+    def _nova_import_resolution(
+        self,
+        importer_uri: str,
+        path: str,
+        *,
+        snapshots: tuple[SemanticSnapshot, ...] | None = None,
+    ) -> NovaModuleResolution:
+        """Resolve one module path while preserving exact ambiguity provenance."""
+        spelling = "bare"
+        if path.startswith("@/"):
+            spelling = "workspace-root"
+        elif path.startswith("@"):
+            spelling = "named-root"
+        elif path.startswith("./") or path.startswith("../"):
+            spelling = "relative"
+
         if not path.endswith(".nova"):
-            return None
+            return NovaModuleResolution(spelling)
         try:
             importer = urllib.parse.urlsplit(importer_uri)
         except ValueError:
-            return None
+            return NovaModuleResolution(spelling)
         if (
             importer.scheme.lower() != "file"
             or importer.query
             or importer.fragment
         ):
-            return None
+            return NovaModuleResolution(spelling)
 
         folder_uri: str | None = None
         relative: str | None = None
@@ -1387,14 +1428,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         elif path.startswith("@"):
             root_name, separator, relative_path = path[1:].partition("/")
             if not separator or not root_name or not relative_path:
-                return None
+                return NovaModuleResolution(spelling)
             matches = tuple(
                 folder
                 for folder in self.workspace_folders.folders()
                 if folder.name == root_name
             )
             if len(matches) != 1 or not self.workspace_folders.contains(importer_uri):
-                return None
+                return NovaModuleResolution(spelling)
             folder_uri = matches[0].uri
             relative = relative_path
 
@@ -1403,7 +1444,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 urllib.parse.unquote(segment) in {".", ".."}
                 for segment in relative.split("/")
             ):
-                return None
+                return NovaModuleResolution(spelling)
             try:
                 folder = urllib.parse.urlsplit(folder_uri)
                 target_uri = urllib.parse.urljoin(
@@ -1412,7 +1453,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 )
                 target = urllib.parse.urlsplit(target_uri)
             except ValueError:
-                return None
+                return NovaModuleResolution(spelling)
             if (
                 folder.scheme.lower() != "file"
                 or folder.query
@@ -1422,23 +1463,23 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 or target.fragment
                 or not WorkspaceFolderSet._contains(folder_uri, target_uri)
             ):
-                return None
+                return NovaModuleResolution(spelling)
         elif path.startswith("./") or path.startswith("../"):
             try:
                 target_uri = urllib.parse.urljoin(importer_uri, path)
                 target = urllib.parse.urlsplit(target_uri)
             except ValueError:
-                return None
+                return NovaModuleResolution(spelling)
             if (
                 target.scheme.lower() != "file"
                 or target.query
                 or target.fragment
             ):
-                return None
+                return NovaModuleResolution(spelling)
         else:
             if snapshots is None:
-                return None
-            return self._nova_bare_workspace_target_uri(
+                return NovaModuleResolution(spelling)
+            return self._nova_bare_workspace_resolution(
                 importer_uri,
                 path,
                 tuple(snapshot.uri for snapshot in snapshots),
@@ -1447,8 +1488,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         importer_identity = WorkspaceFolderSet.uri_identity(importer_uri)
         target_identity = WorkspaceFolderSet.uri_identity(target_uri)
         if importer_identity[:2] != target_identity[:2]:
-            return None
-        return target_uri
+            return NovaModuleResolution(spelling)
+        return NovaModuleResolution(spelling, target_uri=target_uri)
 
     def _nova_bare_workspace_target_uri(
         self,
@@ -1456,30 +1497,44 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         path: str,
         workspace_uris: tuple[str, ...],
     ) -> str | None:
-        """Resolve one bare path only when one exact workspace target owns it."""
+        """Return one bare target only when captured evidence proves uniqueness."""
+        return self._nova_bare_workspace_resolution(
+            importer_uri,
+            path,
+            workspace_uris,
+        ).target_uri
+
+    def _nova_bare_workspace_resolution(
+        self,
+        importer_uri: str,
+        path: str,
+        workspace_uris: tuple[str, ...],
+    ) -> NovaModuleResolution:
+        """Resolve a bare path and retain every exact conflicting module candidate."""
+        unresolved = NovaModuleResolution("bare")
         if (
             not path
             or not path.endswith(".nova")
             or path.startswith(("@", ".", "/"))
             or not self.workspace_folders.contains(importer_uri)
         ):
-            return None
+            return unresolved
         segments = path.split("/")
         if any(
             not segment or urllib.parse.unquote(segment) in {".", ".."}
             for segment in segments
         ):
-            return None
+            return unresolved
         try:
             importer = urllib.parse.urlsplit(importer_uri)
         except ValueError:
-            return None
+            return unresolved
         if (
             importer.scheme.lower() != "file"
             or importer.query
             or importer.fragment
         ):
-            return None
+            return unresolved
 
         importer_identity = WorkspaceFolderSet.uri_identity(importer_uri)
         indexed = {
@@ -1513,9 +1568,24 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             current_uri = indexed.get(identity)
             if current_uri is not None:
                 matches[identity] = current_uri
-        if len(matches) != 1:
-            return None
-        return next(iter(matches.values()))
+
+        candidates = tuple(
+            uri
+            for _, uri in sorted(
+                matches.items(),
+                key=lambda item: item[0],
+            )
+        )
+        if len(candidates) == 1:
+            return NovaModuleResolution(
+                "bare",
+                target_uri=candidates[0],
+                candidate_uris=candidates,
+            )
+        return NovaModuleResolution(
+            "bare",
+            candidate_uris=candidates,
+        )
 
     def _nova_bare_workspace_import_paths(
         self,
