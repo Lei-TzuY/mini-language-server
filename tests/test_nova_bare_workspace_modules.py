@@ -1181,7 +1181,7 @@ def test_external_module_open_buffer_takes_over_and_close_restores_disk(
     app.mkdir()
     (external / "pkg").mkdir(parents=True)
     provider = external / "pkg" / "provider.nova"
-    provider.write_text("fn target(value: Int) {}\n", encoding="utf-8")
+    provider.write_bytes(b"fn target(value: Int) {}\n")
     caller = app / "main.nova"
     source = (
         "import { target } from pkg/provider.nova;\n"
@@ -1349,7 +1349,7 @@ def test_reported_external_module_change_refreshes_detached_provider(
     app.mkdir()
     (external / "pkg").mkdir(parents=True)
     provider = external / "pkg" / "provider.nova"
-    provider.write_text("fn target(value: Int) {}\n", encoding="utf-8")
+    provider.write_bytes(b"fn target(value: Int) {}\n")
     caller = app / "main.nova"
     source = (
         "import { target } from pkg/provider.nova;\n"
@@ -1380,7 +1380,7 @@ def test_reported_external_module_change_refreshes_detached_provider(
         caller.as_uri(),
     )
 
-    provider.write_text("fn target() {}\n", encoding="utf-8")
+    provider.write_bytes(b"fn target() {}\n")
     server.handle(
         notify(
             "workspace/didChangeWatchedFiles",
