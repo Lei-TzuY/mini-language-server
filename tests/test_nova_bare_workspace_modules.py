@@ -915,6 +915,7 @@ def test_configuration_change_supersedes_module_root_generation(
     )
     open_nova(server, caller.as_uri(), source)
     first = server.drain_server_requests()[0]
+    server.drain_notifications()
 
     server.handle(
         notify(
