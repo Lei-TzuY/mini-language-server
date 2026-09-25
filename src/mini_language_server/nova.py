@@ -25,19 +25,21 @@ _CALL = re.compile(rf"\b({_IDENTIFIER})\s*(?=\()")
 _QUALIFIED_CALL = re.compile(
     rf"\b({_IDENTIFIER})\s*::\s*({_IDENTIFIER})\s*(?=\()"
 )
+_MODULE_ROOT_NAME = r"[A-Za-z_][A-Za-z0-9_.-]*"
+_IMPORT_PATH = (
+    rf"(?:(?:\./|\.\./|@/|@{_MODULE_ROOT_NAME}/)"
+    r"(?:[A-Za-z0-9_.~%+-]+/)*[A-Za-z0-9_.~%+-]+\.nova)"
+)
 _IMPORT_DECLARATION = re.compile(
-    r"(?m)^[ \t]*import[ \t]+((?:\./|\.\./|@/)(?:[A-Za-z0-9_.~%+-]+/)*"
-    r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
+    rf"(?m)^[ \t]*import[ \t]+({_IMPORT_PATH})[ \t]*;?[ \t]*\r?$"
 )
 _SELECTIVE_IMPORT_DECLARATION = re.compile(
-    r"(?m)^[ \t]*import[ \t]*\{([^}\r\n]*)\}[ \t]+from[ \t]+"
-    r"((?:\./|\.\./|@/)(?:[A-Za-z0-9_.~%+-]+/)*"
-    r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
+    rf"(?m)^[ \t]*import[ \t]*\{{([^}}\r\n]*)\}}[ \t]+from[ \t]+"
+    rf"({_IMPORT_PATH})[ \t]*;?[ \t]*\r?$"
 )
 _NAMESPACE_IMPORT_DECLARATION = re.compile(
     rf"(?m)^[ \t]*import[ \t]+\*[ \t]+as[ \t]+({_IDENTIFIER})[ \t]+"
-    r"from[ \t]+((?:\./|\.\./|@/)(?:[A-Za-z0-9_.~%+-]+/)*"
-    r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
+    rf"from[ \t]+({_IMPORT_PATH})[ \t]*;?[ \t]*\r?$"
 )
 _IMPORT_NAME = re.compile(rf"(?:^|,)[ \t]*({_IDENTIFIER})[ \t]*(?=,|$)")
 _ALIASED_IMPORT_NAME = re.compile(
@@ -48,9 +50,8 @@ _EXPORT_DECLARATION = re.compile(
     r"(?m)^[ \t]*export[ \t]*\{([^}\r\n]*)\}[ \t]*;?[ \t]*\r?$"
 )
 _WILDCARD_EXPORT_DECLARATION = re.compile(
-    r"(?m)^[ \t]*export[ \t]+\*[ \t]+from[ \t]+"
-    r"((?:\./|\.\./|@/)(?:[A-Za-z0-9_.~%+-]+/)*"
-    r"[A-Za-z0-9_.~%+-]+\.nova)[ \t]*;?[ \t]*\r?$"
+    rf"(?m)^[ \t]*export[ \t]+\*[ \t]+from[ \t]+"
+    rf"({_IMPORT_PATH})[ \t]*;?[ \t]*\r?$"
 )
 _EXPORT_NAME = re.compile(rf"(?:^|,)[ \t]*({_IDENTIFIER})[ \t]*(?=,|$)")
 _IDENTIFIER_MATCH = re.compile(rf"\b({_IDENTIFIER})\b")
@@ -93,7 +94,7 @@ class NovaImportNameSyntax:
 
 @dataclass(frozen=True, slots=True)
 class NovaImportSyntax:
-    """One exact relative or workspace-root Nova file dependency declaration."""
+    """One exact relative or named/workspace-root Nova file dependency."""
 
     path: str
     span: Span
