@@ -108,7 +108,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if identity in seen:
                 continue
             seen.add(identity)
-            roots.append(value)
+            roots.append(urllib.parse.urlunsplit(identity))
         return tuple(roots)
 
     def _queue_formatting_configuration_registration(self) -> None:
