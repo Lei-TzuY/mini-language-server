@@ -481,6 +481,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             )
         )
         captured_workspace = self.workspace_symbols.snapshots()
+        captured_folders = self.workspace_folders.snapshot()
         captured_closed = {
             identity: uri
             for identity, uri in self._closed_workspace_uris.items()
@@ -700,7 +701,6 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             captured_document_by_identity[identity]
             for identity in sorted(captured_document_by_identity)
         )
-        captured_folders = self.workspace_folders.snapshot()
         captured_closed = {
             identity: uri
             for identity, uri in self._closed_workspace_uris.items()
