@@ -1079,3 +1079,206 @@ def test_module_policy_change_invalidates_inflight_definition(
         "id": 90,
         "error": {"code": -32801, "message": "Content modified"},
     }
+
+
+def test_external_local_module_root_resolves_closed_provider(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    external = tmp_path / "external"
+    app.mkdir()
+    (external / "pkg").mkdir(parents=True)
+    provider = external / "pkg" / "provider.nova"
+    provider.write_text("fn target(value: Int) {}\n", encoding="utf-8")
+    caller = app / "main.nova"
+    source = (
+        "import { target } from pkg/provider.nova;\n"
+        "fn caller() { target(1); }\n"
+    )
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [{"uri": app.as_uri(), "name": "app"}],
+        module_search_roots=[external.as_uri()],
+    )
+    open_nova(server, caller.as_uri(), source)
+
+    codes = diagnostic_codes(server, caller.as_uri())
+    assert "nova.unresolved-import" not in codes
+    assert "nova.ambiguous-import" not in codes
+    assert "nova.unresolved-function" not in codes
+    assert "nova.argument-count" not in codes
+    assert server.documents.get(provider.as_uri()) is None
+    assert server.workspace_symbols.get(provider.as_uri()) is not None
+
+    definition = server.handle(
+        request(
+            "textDocument/definition",
+            100,
+            {
+                "textDocument": {"uri": caller.as_uri()},
+                "position": {
+                    "line": 1,
+                    "character": source.splitlines()[1].index("target") + 1,
+                },
+            },
+        )
+    )
+    assert definition is not None
+    assert definition["result"]["uri"] == provider.as_uri()
+
+
+def test_external_local_module_root_participates_in_import_completion(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    external = tmp_path / "external"
+    app.mkdir()
+    (external / "pkg").mkdir(parents=True)
+    (external / "pkg" / "provider.nova").write_text(
+        "fn target() {}\n",
+        encoding="utf-8",
+    )
+    main = app / "main.nova"
+    text = "import pkg/pro"
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [{"uri": app.as_uri(), "name": "app"}],
+        module_search_roots=[external.as_uri()],
+    )
+    open_nova(server, main.as_uri(), text)
+
+    response = server.handle(
+        request(
+            "textDocument/completion",
+            101,
+            {
+                "textDocument": {"uri": main.as_uri()},
+                "position": {"line": 0, "character": len(text)},
+            },
+        )
+    )
+    assert response is not None
+    assert [item["label"] for item in response["result"]] == [
+        "pkg/provider.nova"
+    ]
+
+
+def test_external_module_open_buffer_takes_over_and_close_restores_disk(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    external = tmp_path / "external"
+    app.mkdir()
+    (external / "pkg").mkdir(parents=True)
+    provider = external / "pkg" / "provider.nova"
+    provider.write_text("fn target(value: Int) {}\n", encoding="utf-8")
+    caller = app / "main.nova"
+    source = (
+        "import { target } from pkg/provider.nova;\n"
+        "fn caller() { target(1); }\n"
+    )
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [{"uri": app.as_uri(), "name": "app"}],
+        module_search_roots=[external.as_uri()],
+    )
+    open_nova(server, caller.as_uri(), source)
+    assert "nova.argument-count" not in diagnostic_codes(
+        server,
+        caller.as_uri(),
+    )
+
+    open_nova(
+        server,
+        provider.as_uri(),
+        "fn target() {}\n",
+    )
+    assert server.documents.get(provider.as_uri()) is not None
+    assert "nova.argument-count" in diagnostic_codes(
+        server,
+        caller.as_uri(),
+    )
+
+    server.handle(
+        notify(
+            "textDocument/didClose",
+            {"textDocument": {"uri": provider.as_uri()}},
+        )
+    )
+    assert server.documents.get(provider.as_uri()) is None
+    restored = server.workspace_symbols.get(provider.as_uri())
+    assert restored is not None
+    assert restored.symbols.syntax.document.text == "fn target(value: Int) {}\n"
+    assert "nova.argument-count" not in diagnostic_codes(
+        server,
+        caller.as_uri(),
+    )
+
+
+def test_runtime_module_root_switch_replaces_external_provider_set(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    app.mkdir()
+    for root, body in (
+        (left, "fn target(value: Int) {}\n"),
+        (right, "fn target() {}\n"),
+    ):
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "provider.nova").write_text(body, encoding="utf-8")
+    caller = app / "main.nova"
+    source = (
+        "import { target } from pkg/provider.nova;\n"
+        "fn caller() { target(1); }\n"
+    )
+
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [{"uri": app.as_uri(), "name": "app"}],
+        module_search_roots=[left.as_uri()],
+        configuration=True,
+    )
+    open_nova(server, caller.as_uri(), source)
+    assert "nova.argument-count" not in diagnostic_codes(
+        server,
+        caller.as_uri(),
+    )
+    assert server.workspace_symbols.get(
+        (left / "pkg" / "provider.nova").as_uri()
+    ) is not None
+    assert server.workspace_symbols.get(
+        (right / "pkg" / "provider.nova").as_uri()
+    ) is None
+
+    configuration = server.drain_server_requests()[0]
+    assert configuration["method"] == "workspace/configuration"
+    assert server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": configuration["id"],
+            "result": module_configuration_result(
+                configuration,
+                [right.as_uri()],
+            ),
+        }
+    ) is None
+
+    assert server.workspace_symbols.get(
+        (left / "pkg" / "provider.nova").as_uri()
+    ) is None
+    assert server.workspace_symbols.get(
+        (right / "pkg" / "provider.nova").as_uri()
+    ) is not None
+    assert "nova.argument-count" in diagnostic_codes(
+        server,
+        caller.as_uri(),
+    )
