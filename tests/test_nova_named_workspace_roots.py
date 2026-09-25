@@ -208,6 +208,38 @@ def test_named_root_namespace_and_wildcard_export_share_module_graph(
     )
 
 
+def test_named_roots_participate_in_cross_folder_import_cycles(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app"
+    shared = tmp_path / "shared"
+    app.mkdir()
+    shared.mkdir()
+    server = NovaProductLanguageServer()
+    initialize(
+        server,
+        [
+            {"uri": app.as_uri(), "name": "app"},
+            {"uri": shared.as_uri(), "name": "shared"},
+        ],
+    )
+    left = app / "left.nova"
+    right = shared / "right.nova"
+    open_nova(
+        server,
+        left.as_uri(),
+        "import @shared/right.nova;\nfn left() {}\n",
+    )
+    open_nova(
+        server,
+        right.as_uri(),
+        "import @app/left.nova;\nfn right() {}\n",
+    )
+
+    assert "nova.import-cycle" in diagnostic_codes(server, left.as_uri())
+    assert "nova.import-cycle" in diagnostic_codes(server, right.as_uri())
+
+
 def test_named_root_is_fail_closed_when_folder_name_is_ambiguous(
     tmp_path: Path,
 ) -> None:
