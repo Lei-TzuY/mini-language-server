@@ -670,7 +670,11 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
 
         if prefix == "":
             add("./", 19)
-        if prefix == "" or prefix == "@":
+        root_prefix = (
+            prefix.startswith("@")
+            and "/" not in prefix[1:]
+        )
+        if prefix == "" or root_prefix:
             if folder_scope.scope_uri_for(importer.uri) is not None:
                 add("@/", 19)
             names: dict[str, int] = {}
