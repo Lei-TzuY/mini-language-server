@@ -1511,30 +1511,54 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         workspace_uris: tuple[str, ...],
     ) -> NovaModuleResolution:
         """Resolve a bare path and retain every exact conflicting module candidate."""
-        unresolved = NovaModuleResolution("bare")
+        candidates = self._nova_bare_workspace_candidates(
+            importer_uri,
+            path,
+            workspace_uris,
+            self.workspace_folders.folders(),
+        )
+        if len(candidates) == 1:
+            return NovaModuleResolution(
+                "bare",
+                target_uri=candidates[0],
+                candidate_uris=candidates,
+            )
+        return NovaModuleResolution(
+            "bare",
+            candidate_uris=candidates,
+        )
+
+    def _nova_bare_workspace_candidates(
+        self,
+        importer_uri: str,
+        path: str,
+        workspace_uris: tuple[str, ...],
+        folders: tuple[Any, ...],
+    ) -> tuple[str, ...]:
+        """Collect exact bare-path matches in the caller-supplied root order."""
         if (
             not path
             or not path.endswith(".nova")
             or path.startswith(("@", ".", "/"))
             or not self.workspace_folders.contains(importer_uri)
         ):
-            return unresolved
+            return ()
         segments = path.split("/")
         if any(
             not segment or urllib.parse.unquote(segment) in {".", ".."}
             for segment in segments
         ):
-            return unresolved
+            return ()
         try:
             importer = urllib.parse.urlsplit(importer_uri)
         except ValueError:
-            return unresolved
+            return ()
         if (
             importer.scheme.lower() != "file"
             or importer.query
             or importer.fragment
         ):
-            return unresolved
+            return ()
 
         importer_identity = WorkspaceFolderSet.uri_identity(importer_uri)
         indexed = {
@@ -1542,7 +1566,8 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for uri in workspace_uris
         }
         matches: dict[WorkspaceUriIdentity, str] = {}
-        for folder in self.workspace_folders.folders():
+        ordered: list[str] = []
+        for folder in folders:
             try:
                 folder_parts = urllib.parse.urlsplit(folder.uri)
                 candidate_uri = urllib.parse.urljoin(
@@ -1563,29 +1588,13 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             ):
                 continue
             identity = WorkspaceFolderSet.uri_identity(candidate_uri)
-            if identity[:2] != importer_identity[:2]:
+            if identity[:2] != importer_identity[:2] or identity in matches:
                 continue
             current_uri = indexed.get(identity)
             if current_uri is not None:
                 matches[identity] = current_uri
-
-        candidates = tuple(
-            uri
-            for _, uri in sorted(
-                matches.items(),
-                key=lambda item: item[0],
-            )
-        )
-        if len(candidates) == 1:
-            return NovaModuleResolution(
-                "bare",
-                target_uri=candidates[0],
-                candidate_uris=candidates,
-            )
-        return NovaModuleResolution(
-            "bare",
-            candidate_uris=candidates,
-        )
+                ordered.append(current_uri)
+        return tuple(ordered)
 
     def _nova_bare_workspace_import_paths(
         self,
