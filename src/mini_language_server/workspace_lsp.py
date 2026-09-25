@@ -1358,8 +1358,14 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             raise SemanticError("detached Nova diagnostics failed to publish")
         return semantic, diagnostics
 
-    def _nova_import_target_uri(self, importer_uri: str, path: str) -> str | None:
-        """Resolve one bounded relative, current-root, or named-root Nova import."""
+    def _nova_import_target_uri(
+        self,
+        importer_uri: str,
+        path: str,
+        *,
+        snapshots: tuple[SemanticSnapshot, ...] | None = None,
+    ) -> str | None:
+        """Resolve one bounded relative, rooted, named-root, or bare Nova import."""
         if not path.endswith(".nova"):
             return None
         try:
@@ -1430,13 +1436,135 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             ):
                 return None
         else:
-            return None
+            if snapshots is None:
+                return None
+            return self._nova_bare_workspace_target_uri(
+                importer_uri,
+                path,
+                tuple(snapshot.uri for snapshot in snapshots),
+            )
 
         importer_identity = WorkspaceFolderSet.uri_identity(importer_uri)
         target_identity = WorkspaceFolderSet.uri_identity(target_uri)
         if importer_identity[:2] != target_identity[:2]:
             return None
         return target_uri
+
+    def _nova_bare_workspace_target_uri(
+        self,
+        importer_uri: str,
+        path: str,
+        workspace_uris: tuple[str, ...],
+    ) -> str | None:
+        """Resolve one bare path only when one exact workspace target owns it."""
+        if (
+            not path
+            or not path.endswith(".nova")
+            or path.startswith(("@", ".", "/"))
+            or not self.workspace_folders.contains(importer_uri)
+        ):
+            return None
+        segments = path.split("/")
+        if any(
+            not segment or urllib.parse.unquote(segment) in {".", ".."}
+            for segment in segments
+        ):
+            return None
+        try:
+            importer = urllib.parse.urlsplit(importer_uri)
+        except ValueError:
+            return None
+        if (
+            importer.scheme.lower() != "file"
+            or importer.query
+            or importer.fragment
+        ):
+            return None
+
+        importer_identity = WorkspaceFolderSet.uri_identity(importer_uri)
+        indexed = {
+            WorkspaceFolderSet.uri_identity(uri): uri
+            for uri in workspace_uris
+        }
+        matches: dict[WorkspaceUriIdentity, str] = {}
+        for folder in self.workspace_folders.folders():
+            try:
+                folder_parts = urllib.parse.urlsplit(folder.uri)
+                candidate_uri = urllib.parse.urljoin(
+                    folder.uri.rstrip("/") + "/",
+                    path,
+                )
+                candidate = urllib.parse.urlsplit(candidate_uri)
+            except ValueError:
+                continue
+            if (
+                folder_parts.scheme.lower() != "file"
+                or folder_parts.query
+                or folder_parts.fragment
+                or candidate.scheme.lower() != "file"
+                or candidate.query
+                or candidate.fragment
+                or not WorkspaceFolderSet._contains(folder.uri, candidate_uri)
+            ):
+                continue
+            identity = WorkspaceFolderSet.uri_identity(candidate_uri)
+            if identity[:2] != importer_identity[:2]:
+                continue
+            current_uri = indexed.get(identity)
+            if current_uri is not None:
+                matches[identity] = current_uri
+        if len(matches) != 1:
+            return None
+        return next(iter(matches.values()))
+
+    def _nova_bare_workspace_import_paths(
+        self,
+        importer_uri: str,
+        target_uri: str,
+        workspace_uris: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Render every unique bare label that resolves back to one exact target."""
+        target_identity = WorkspaceFolderSet.uri_identity(target_uri)
+        labels: set[str] = set()
+        for folder in self.workspace_folders.folders():
+            label = self._nova_import_path_from_workspace_folder(
+                importer_uri,
+                target_uri,
+                folder_uri=folder.uri,
+                prefix="",
+            )
+            if not label or label.startswith(("@", ".", "/")):
+                continue
+            resolved = self._nova_bare_workspace_target_uri(
+                importer_uri,
+                label,
+                workspace_uris,
+            )
+            if (
+                resolved is not None
+                and WorkspaceFolderSet.uri_identity(resolved) == target_identity
+            ):
+                labels.add(label)
+        return tuple(
+            sorted(
+                labels,
+                key=lambda label: (label.count("/"), len(label), label),
+            )
+        )
+
+    def _nova_bare_workspace_import_path(
+        self,
+        importer_uri: str,
+        target_uri: str,
+        workspace_uris: tuple[str, ...],
+    ) -> str | None:
+        """Return the shortest deterministic exact bare spelling for one target."""
+        paths = self._nova_bare_workspace_import_paths(
+            importer_uri,
+            target_uri,
+            workspace_uris,
+        )
+        return paths[0] if paths else None
 
     def _nova_exported_namespace_targets(
         self,
@@ -1477,7 +1605,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
 
         candidates: dict[str, list[SemanticSnapshot]] = {}
         for imported in tree.imports:
-            target_uri = self._nova_import_target_uri(snapshot.uri, imported.path)
+            target_uri = self._nova_import_target_uri(snapshot.uri, imported.path, snapshots=snapshots)
             if target_uri is None:
                 continue
             target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
@@ -1700,7 +1828,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                             binding_counts.get(selected.binding_name, 0) + 1
                         )
             for item in snapshot_tree.imports:
-                target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
+                target_uri = self._nova_import_target_uri(snapshot.uri, item.path, snapshots=snapshots)
                 if target_uri is None:
                     continue
                 target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
@@ -1790,8 +1918,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 for wildcard in snapshot_tree.wildcard_exports:
                     target_uri = self._nova_import_target_uri(
                         snapshot.uri,
-                        wildcard.path,
-                    )
+                        wildcard.path, snapshots=snapshots)
                     if target_uri is None:
                         continue
                     target = indexed.get(
@@ -1883,7 +2010,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
         for imported in tree.imports:
             if not imported.has_name_list:
                 continue
-            target_uri = self._nova_import_target_uri(importer.uri, imported.path)
+            target_uri = self._nova_import_target_uri(importer.uri, imported.path, snapshots=snapshots)
             if target_uri is None:
                 continue
             target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
@@ -1964,7 +2091,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                 continue
             if not imported.has_name_list:
                 continue
-            target_uri = self._nova_import_target_uri(importer.uri, imported.path)
+            target_uri = self._nova_import_target_uri(importer.uri, imported.path, snapshots=snapshots)
             if target_uri is None:
                 continue
             target = indexed.get(WorkspaceFolderSet.uri_identity(target_uri))
@@ -2163,7 +2290,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             if not isinstance(tree, NovaFunctionSyntax):
                 continue
             for item in self._nova_module_dependency_edges(tree):
-                target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
+                target_uri = self._nova_import_target_uri(snapshot.uri, item.path, snapshots=snapshots)
                 if target_uri is None:
                     continue
                 target_identity = WorkspaceFolderSet.uri_identity(target_uri)
@@ -2300,7 +2427,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         )
                     )
                 seen_namespaces.add(item.namespace)
-            target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
+            target_uri = self._nova_import_target_uri(snapshot.uri, item.path, snapshots=snapshots)
             target = (
                 None
                 if target_uri is None
@@ -2487,7 +2614,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                     )
 
         for item in tree.wildcard_exports:
-            target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
+            target_uri = self._nova_import_target_uri(snapshot.uri, item.path, snapshots=snapshots)
             target = (
                 None
                 if target_uri is None
@@ -2781,6 +2908,13 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             WorkspaceFolderSet.uri_identity(old_uri): new_uri
             for old_uri, new_uri in renames
         }
+        post_workspace_uris = tuple(
+            renamed.get(
+                WorkspaceFolderSet.uri_identity(snapshot.uri),
+                snapshot.uri,
+            )
+            for snapshot in snapshots
+        )
         planned: dict[str, list[tuple[int, dict[str, Any]]]] = {}
         for snapshot in snapshots:
             tree = snapshot.symbols.syntax.tree
@@ -2794,7 +2928,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             source = self._source_text(snapshot.symbols.syntax.document.text)
 
             for item in self._nova_module_dependency_edges(tree):
-                target_uri = self._nova_import_target_uri(snapshot.uri, item.path)
+                target_uri = self._nova_import_target_uri(snapshot.uri, item.path, snapshots=snapshots)
                 if target_uri is None:
                     continue
                 target_identity = WorkspaceFolderSet.uri_identity(target_uri)
@@ -2813,10 +2947,16 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
                         post_target_uri,
                         root_name,
                     )
-                else:
+                elif item.path.startswith("./") or item.path.startswith("../"):
                     replacement = self._nova_relative_import_path(
                         post_importer_uri,
                         post_target_uri,
+                    )
+                else:
+                    replacement = self._nova_bare_workspace_import_path(
+                        post_importer_uri,
+                        post_target_uri,
+                        post_workspace_uris,
                     )
                 if replacement is None:
                     raise DocumentError(
@@ -3119,7 +3259,7 @@ class WorkspaceNovaLanguageServer(NovaLanguageServer):
             for item in self._nova_module_dependency_edges(
                 semantics.symbols.syntax.tree
             ):
-                target_uri = self._nova_import_target_uri(semantics.uri, item.path)
+                target_uri = self._nova_import_target_uri(semantics.uri, item.path, snapshots=snapshots)
                 if target_uri is None:
                     continue
                 indexed_uri = indexed.get(
