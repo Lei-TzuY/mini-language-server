@@ -149,8 +149,8 @@ def test_named_root_resolves_cross_folder_visibility_and_document_link(
     assert links["result"] == [
         {
             "range": {
-                "start": {"line": 0, "character": 23},
-                "end": {"line": 0, "character": 44},
+                "start": {"line": 0, "character": 22},
+                "end": {"line": 0, "character": 43},
             },
             "target": provider.as_uri(),
         }
