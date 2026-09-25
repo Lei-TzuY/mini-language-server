@@ -226,6 +226,10 @@ def test_bare_module_lookup_is_ambiguous_across_workspace_roots(
         item.span.start == 0 and item.span.end == 0
         for item in diagnostic.related_information
     )
+    assert all(
+        item.semantic is None
+        for item in diagnostic.related_information
+    )
 
     links = server.handle(
         request(
