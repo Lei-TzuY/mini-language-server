@@ -726,6 +726,14 @@ class NovaProductLanguageServer(TraceLanguageServerMixin, _ProductLanguageServer
                     importer.uri,
                     target.uri,
                 )
+            else:
+                for bare_label in self._nova_bare_workspace_import_paths(
+                    importer.uri,
+                    target.uri,
+                    tuple(snapshot.uri for snapshot in snapshots),
+                ):
+                    add(bare_label, 17)
+                continue
 
             if label is not None:
                 add(label, 17)
