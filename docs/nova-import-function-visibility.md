@@ -1,6 +1,6 @@
 # Nova import-graph function visibility
 
-The Nova imported-symbol namespace gives bounded semantic meaning to top-level local-file imports without introducing a general package/module search path. Besides `./` / `../` relative imports, a scoped workspace may use `@/path.nova` to address a file under the importer's most-specific configured workspace folder.
+The Nova imported-symbol namespace gives bounded semantic meaning to top-level local-file imports without introducing a general package/module search list. Besides `./` / `../` relative imports, a scoped workspace may use `@/path.nova` for the importer's most-specific configured workspace folder or `@name/path.nova` for one uniquely named LSP `workspaceFolder`. Named roots are exact folder-name aliases, not precedence-ordered package paths. Only path-safe folder names matching `[A-Za-z_][A-Za-z0-9_.-]*` have an `@name/` spelling; duplicate names, parent escapes, unsupported/non-local folders, and cross-authority targets fail closed.
 
 ## Visibility contract
 
@@ -49,11 +49,11 @@ All request surfaces retain their existing exact workspace snapshot commit gates
 
 This phase does not claim a general Nova module system. It does not add:
 
-- package/module search lists beyond the bounded configured-workspace-root `@/` form;
+- arbitrary package/module search lists beyond the bounded current-root `@/` and unique named-workspace-root `@name/` forms;
 - wildcard name-merging **import** syntax beyond existing bare imports, nested/package namespace objects, and namespace-object wildcard re-export/identity shapes beyond the bounded explicit local-file star/selective namespace graph; function-only `export * from <local-file>` does not imply any of those broader namespace/package semantics;
 - friend/package visibility, wildcard export forms, or declaration-level visibility beyond bounded `private fn` plus explicit function export lists;
 - non-function imported namespaces;
 - cross-authority or remote-provider module resolution;
 - a stable external package identity.
 
-Transitive visibility is intentionally limited to function declarations reachable through existing bare or selective relative-file or scoped `@/` import edges plus the bounded private-function, explicit export-list, and explicit namespace-object export-chain rules above; it does not imply package identity, arbitrary search-path precedence, wildcard namespaces, or non-function exports. Importer-private function aliases remain independently renameable, importer-private namespace aliases retain local rename, outward namespace bindings rename only across the bounded exact selective namespace-object graph described above, and outward function aliases remain renameable only across the bounded exact relative-file graph described above; package namespaces and wildcard syntax remain outside that claim. Specialized later product layers that are not part of the shared call-resolution surfaces above remain future namespace-parity work and must not infer broader module semantics from this bounded contract.
+Transitive visibility is intentionally limited to function declarations reachable through existing bare or selective relative-file, scoped `@/`, or unique named-workspace-root `@name/` import edges plus the bounded private-function, explicit export-list, and explicit namespace-object export-chain rules above; it does not imply package identity, arbitrary search-path precedence, wildcard namespaces, or non-function exports. Importer-private function aliases remain independently renameable, importer-private namespace aliases retain local rename, outward namespace bindings rename only across the bounded exact selective namespace-object graph described above, and outward function aliases remain renameable only across the bounded exact relative-file graph described above; package namespaces and wildcard syntax remain outside that claim. Specialized later product layers that are not part of the shared call-resolution surfaces above remain future namespace-parity work and must not infer broader module semantics from this bounded contract.
