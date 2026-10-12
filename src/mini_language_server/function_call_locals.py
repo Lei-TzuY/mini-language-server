@@ -34,7 +34,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if parsed is None:
             return None
         _, expression = parsed
-        return self._function_call_return_type(expression)
+        return self._function_call_return_type(expression, snapshot)
 
     def _handle_workspace_hover(
         self, request_id: Any, params: Any

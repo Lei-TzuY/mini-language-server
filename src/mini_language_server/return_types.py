@@ -5,10 +5,12 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import replace
+from typing import Any
 
 from .constant_control_flow import proven_non_fallthrough_while_spans
 from .constant_values import bounded_boolean_constant_value
 from .diagnostics import Diagnostic
+from .local_call_initializers import _CALL_NAME
 from .range_formatting import NovaProductLanguageServer as _NovaProductLanguageServer
 from .semantic import SemanticSnapshot
 from .source import Span
@@ -21,7 +23,7 @@ _TYPED_FUNCTION = re.compile(
 _RETURN = re.compile(r"\breturn\b")
 _IF = re.compile(r"\bif\s*\(")
 _INTEGER = re.compile(r"-?[0-9]+")
-_CALL_EXPRESSION = re.compile(rf"\s*(?P<name>{_IDENTIFIER})\s*\(")
+_CALL_EXPRESSION = re.compile(rf"\s*(?P<name>{_CALL_NAME})\s*\(")
 _RETURN_ANNOTATION = re.compile(rf"->\s*(?P<type>{_IDENTIFIER}|!)\s*$")
 _RETURN_TYPE_DIAGNOSTIC = "nova.return-type"
 _MISSING_RETURN_DIAGNOSTIC = "nova.missing-return"
@@ -351,7 +353,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         )
         if len(declarations) != 1:
             return None
-        signature = self._function_signature(declarations[0])
+        return self._function_result_annotation(declarations[0])
+
+    def _function_result_annotation(self, declaration: Any) -> str | None:
+        signature = self._function_signature(declaration)
         annotation = _RETURN_ANNOTATION.search(signature)
         return None if annotation is None else annotation.group("type")
 
@@ -449,7 +454,7 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         literal_type = self._literal_type(expression)
         if literal_type is not None:
             return literal_type
-        call_type = self._function_call_return_type(expression)
+        call_type = self._function_call_return_type(expression, semantic)
         if call_type is not None:
             return call_type
         if re.fullmatch(_IDENTIFIER, expression) is None:
@@ -459,8 +464,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return None
         return self._symbol_type(semantic, target)
 
-    def _function_call_return_type(self, expression: str) -> str | None:
-        """Resolve a bounded explicit result type from one exact workspace call."""
+    def _function_call_declaration(
+        self, expression: str, semantic: SemanticSnapshot | None = None
+    ) -> Any | None:
+        """Resolve one complete call in its source module's visible bindings."""
         code = self.nova_adapter.code_view(expression)
         match = _CALL_EXPRESSION.match(code)
         if match is None:
@@ -472,8 +479,31 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
         if code[closing + 1 :].strip():
             return None
 
-        result_type = self._explicit_function_result_annotation(match.group("name"))
+        name = re.sub(r"\s*::\s*", "::", match.group("name"))
+        if semantic is not None:
+            declarations = self._nova_visible_function_declarations(
+                semantic, self.workspace_symbols.snapshots(), name
+            )
+        else:
+            declarations = tuple(
+                declaration
+                for declaration in self.workspace_symbols.declarations(name)
+                if declaration.symbol.kind == "function"
+            )
+        return declarations[0] if len(declarations) == 1 else None
+
+    def _declared_function_call_return_type(self, declaration: Any) -> str | None:
+        """Accept only the bounded explicit result types supported by this layer."""
+        result_type = self._function_result_annotation(declaration)
         return result_type if result_type in _VALUE_RETURN_TYPES else None
+
+    def _function_call_return_type(
+        self, expression: str, semantic: SemanticSnapshot | None = None
+    ) -> str | None:
+        declaration = self._function_call_declaration(expression, semantic)
+        if declaration is None:
+            return None
+        return self._declared_function_call_return_type(declaration)
 
     @staticmethod
     def _literal_type(expression: str) -> str | None:

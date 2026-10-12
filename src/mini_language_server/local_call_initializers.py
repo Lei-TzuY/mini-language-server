@@ -6,7 +6,8 @@ import re
 from collections.abc import Callable
 
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
-_LOCAL_CALL_PREFIX = re.compile(rf"\s*=\s*(?P<name>{_IDENTIFIER})\s*\(")
+_CALL_NAME = rf"{_IDENTIFIER}(?:\s*::\s*{_IDENTIFIER})?"
+_LOCAL_CALL_PREFIX = re.compile(rf"\s*=\s*(?P<name>{_CALL_NAME})\s*\(")
 _LOCAL_INITIALIZER_TAIL = re.compile(
     rf"\s*;?\s*(?=\}}|let\b|{_IDENTIFIER}(?:\s*\(|\b)|$)"
 )
@@ -37,4 +38,5 @@ def direct_local_call_initializer(
     if _LOCAL_INITIALIZER_TAIL.match(expression_code[closing + 1 :]) is None:
         return None
 
-    return call.group("name"), expression[: closing + 1]
+    name = re.sub(r"\s*::\s*", "::", call.group("name"))
+    return name, expression[: closing + 1]
