@@ -10,12 +10,13 @@ from .constant_control_flow import (
     proven_unreachable_suffix_spans,
 )
 from .function_call_locals import NovaProductLanguageServer as _NovaProductLanguageServer
+from .local_call_initializers import _CALL_NAME
+from .semantic import SemanticSnapshot
 from .source import Span
 
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
-_CALL_EXPRESSION = re.compile(rf"\s*(?P<name>{_IDENTIFIER})\s*\(")
 _LOCAL_TYPE_SUFFIX = re.compile(rf"\s*:\s*(?P<type>{_IDENTIFIER}|!)\s*(?==)")
-_LOCAL_CALL_PREFIX = re.compile(rf"\s*=\s*(?P<name>{_IDENTIFIER})\s*\(")
+_LOCAL_CALL_PREFIX = re.compile(rf"\s*=\s*(?P<name>{_CALL_NAME})\s*\(")
 _LOCAL_ALIAS_PREFIX = re.compile(
     rf"\s*=\s*(?P<name>{_IDENTIFIER})\s*"
     rf"(?=\}}|let\b|{_IDENTIFIER}(?:\s*\(|\b)|$)"
@@ -31,39 +32,26 @@ _VALUE_RETURN_TYPES = frozenset({"Int", "String", "Bool"})
 class NovaProductLanguageServer(_NovaProductLanguageServer):
     """Final Nova product with conservative bounded function-result inference."""
 
-    def _function_call_return_type(self, expression: str) -> str | None:
+    def _function_call_return_type(
+        self, expression: str, semantic: SemanticSnapshot | None = None
+    ) -> str | None:
         """Resolve grouped exact calls through explicit or inferred result typing."""
         expression = self._unwrap_parenthesized_expression(expression)
-        explicit = super()._function_call_return_type(expression)
+        explicit = super()._function_call_return_type(expression, semantic)
         if explicit is not None:
             return explicit
-        return self._inferred_function_call_return_type(expression, frozenset())
+        return self._inferred_function_call_return_type(expression, frozenset(), semantic)
 
     def _inferred_function_call_return_type(
         self,
         expression: str,
         resolving: frozenset[tuple[int, int, int]],
+        semantic: SemanticSnapshot | None = None,
     ) -> str | None:
-        """Resolve one uniquely named unannotated call through bounded inference."""
-        code = self.nova_adapter.code_view(expression)
-        match = _CALL_EXPRESSION.match(code)
-        if match is None:
+        """Infer one unique visible call while preserving canonical cycle identity."""
+        declaration = self._function_call_declaration(expression, semantic)
+        if declaration is None:
             return None
-        parsed = self._call_argument_bounds(expression, match.end("name"))
-        if parsed is None:
-            return None
-        closing = parsed[1]
-        if code[closing + 1 :].strip():
-            return None
-
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(match.group("name"))
-            if declaration.symbol.kind == "function"
-        )
-        if len(declarations) != 1:
-            return None
-        declaration = declarations[0]
 
         signature = self._function_signature(declaration)
         if _RETURN_ANNOTATION.search(self.nova_adapter.code_view(signature)) is not None:
@@ -194,9 +182,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
                 frozenset(),
             )
         if actual is None:
-            actual = super()._function_call_return_type(expression)
+            actual = super()._function_call_return_type(expression, semantic)
         if actual is None:
-            actual = self._inferred_function_call_return_type(expression, resolving)
+            actual = self._inferred_function_call_return_type(expression, resolving, semantic)
         if actual is not None:
             return actual
 
@@ -205,9 +193,9 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             return None
         actual = self._literal_type(grouped)
         if actual is None:
-            actual = super()._function_call_return_type(grouped)
+            actual = super()._function_call_return_type(grouped, semantic)
         if actual is None:
-            actual = self._inferred_function_call_return_type(grouped, resolving)
+            actual = self._inferred_function_call_return_type(grouped, resolving, semantic)
         return actual
 
     def _reference_return_type(
@@ -250,10 +238,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             if _LOCAL_INITIALIZER_TAIL.match(expression_code[closing + 1 :]) is None:
                 return None
             call_expression = expression[: closing + 1]
-            explicit_call = super()._function_call_return_type(call_expression)
+            explicit_call = super()._function_call_return_type(call_expression, semantic)
             if explicit_call is not None:
                 return explicit_call
-            return self._inferred_function_call_return_type(call_expression, resolving)
+            return self._inferred_function_call_return_type(call_expression, resolving, semantic)
 
         alias = _LOCAL_ALIAS_PREFIX.match(suffix)
         if alias is None:

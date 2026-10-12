@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from .assignment_diagnostics import _ASSIGNMENT
@@ -11,10 +10,6 @@ from .diagnostics import Diagnostic
 from .local_type_diagnostics import _ANNOTATED_INITIALIZER_PREFIX
 from .semantic import SemanticSnapshot
 from .source import Span
-
-_IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
-_CALL_EXPRESSION = re.compile(rf"\s*(?P<name>{_IDENTIFIER})\s*\(")
-_RETURN_ANNOTATION = re.compile(rf"->\s*(?P<type>{_IDENTIFIER}|!)\s*$")
 
 
 class NovaProductLanguageServer(_NovaProductLanguageServer):
@@ -100,33 +95,10 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             )
         return tuple(diagnostics)
 
-    def _function_call_return_type(self, expression: str) -> str | None:
-        """Extend exact-workspace call typing with explicit Unit results."""
-        resolved = super()._function_call_return_type(expression)
+    def _declared_function_call_return_type(self, declaration: Any) -> str | None:
+        """Extend the shared visible-call result policy with explicit Unit results."""
+        resolved = super()._declared_function_call_return_type(declaration)
         if resolved is not None:
             return resolved
 
-        expression = self._unwrap_parenthesized_expression(expression)
-        code = self.nova_adapter.code_view(expression)
-        match = _CALL_EXPRESSION.match(code)
-        if match is None:
-            return None
-        parsed = self._call_argument_bounds(expression, match.end("name"))
-        if parsed is None:
-            return None
-        closing = parsed[1]
-        if code[closing + 1 :].strip():
-            return None
-
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(match.group("name"))
-            if declaration.symbol.kind == "function"
-        )
-        if len(declarations) != 1:
-            return None
-        signature = self._function_signature(declarations[0])
-        annotation = _RETURN_ANNOTATION.search(signature)
-        if annotation is None or annotation.group("type") != "Unit":
-            return None
-        return "Unit"
+        return "Unit" if self._function_result_annotation(declaration) == "Unit" else None

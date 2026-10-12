@@ -25,11 +25,8 @@ from .semantic import SemanticSnapshot
 from .source import Span
 from .tail_expression_inference import NovaProductLanguageServer as _NovaProductLanguageServer
 
-_IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _UINT_CONSTANT = re.compile(r"\s*UInt\s*::\s*(?:MIN|MAX)\s*")
 _UINT_CONSTANT_IN_SOURCE = re.compile(r"\bUInt\s*::\s*(?:MIN|MAX)\b")
-_CALL_EXPRESSION = re.compile(rf"\s*(?P<name>{_IDENTIFIER})\s*\(")
-_RETURN_ANNOTATION = re.compile(rf"->\s*(?P<type>{_IDENTIFIER}|!)\s*$")
 _MISSING_RETURN_DIAGNOSTIC = "nova.missing-return"
 
 _UINT_NUMERIC_TYPES = frozenset({"Int", "UInt"})
@@ -312,36 +309,13 @@ class NovaProductLanguageServer(_NovaProductLanguageServer):
             resolving,
         )
 
-    def _function_call_return_type(self, expression: str) -> str | None:
-        """Extend exact-workspace call typing with explicit UInt results."""
-        resolved = super()._function_call_return_type(expression)
+    def _declared_function_call_return_type(self, declaration: Any) -> str | None:
+        """Extend the shared visible-call result policy with explicit UInt results."""
+        resolved = super()._declared_function_call_return_type(declaration)
         if resolved is not None:
             return resolved
 
-        expression = self._unwrap_parenthesized_expression(expression)
-        code = self.nova_adapter.code_view(expression)
-        match = _CALL_EXPRESSION.match(code)
-        if match is None:
-            return None
-        parsed = self._call_argument_bounds(expression, match.end("name"))
-        if parsed is None:
-            return None
-        closing = parsed[1]
-        if code[closing + 1 :].strip():
-            return None
-
-        declarations = tuple(
-            declaration
-            for declaration in self.workspace_symbols.declarations(match.group("name"))
-            if declaration.symbol.kind == "function"
-        )
-        if len(declarations) != 1:
-            return None
-        signature = self._function_signature(declarations[0])
-        annotation = _RETURN_ANNOTATION.search(signature)
-        if annotation is None or annotation.group("type") != "UInt":
-            return None
-        return "UInt"
+        return "UInt" if self._function_result_annotation(declaration) == "UInt" else None
 
     def _explicit_target_return_type(self, semantic: Any, target: Any) -> str | None:
         inherited = super()._explicit_target_return_type(semantic, target)
